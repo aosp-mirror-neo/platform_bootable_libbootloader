@@ -664,6 +664,11 @@ impl InfoSender for RamDownloader<'_> {
     }
 }
 
+/// Truncates `bytes` to the longest valid UTF-8 prefix.
+fn utf8_prefix_len(bytes: &[u8]) -> usize {
+    from_utf8(bytes).map_or_else(|e| e.valid_up_to(), |_| bytes.len())
+}
+
 /// An internal convenient macro helper for `fastboot_okay`, `fastboot_fail` and `fastboot_info`.
 macro_rules! fastboot_msg {
     ( $arr:expr, $msg_type:expr, $( $x:expr ),* $(,)? ) => {
@@ -671,7 +676,8 @@ macro_rules! fastboot_msg {
             let mut formatted_bytes = FormattedBytes::new(&mut $arr[..]);
             write!(formatted_bytes, $msg_type).unwrap();
             write!(formatted_bytes, $($x,)*).unwrap();
-            let size = formatted_bytes.size();
+            let raw_size = formatted_bytes.size();
+            let size = utf8_prefix_len(&$arr[..raw_size]);
             &mut $arr[..size]
         }
     };
@@ -833,7 +839,7 @@ impl<'a, T: Transport> Responder<'a, T> {
     /// A helper for sending a fastboot message in the buffer.
     async fn send_buffer(&mut self, size: usize) -> Result<()> {
         self.transport_error?;
-        assert!(size < self.buffer.len(), "Fastboot message size exceeds the buffer");
+        assert!(size <= self.buffer.len(), "Fastboot message size exceeds the buffer");
         self.transport_error = self.transport.send_packet(&self.buffer[..size]).await;
         self.transport_error
     }
@@ -851,7 +857,8 @@ impl<'a, T: Transport> Responder<'a, T> {
         let mut formatted_bytes = FormattedBytes::new(&mut self.buffer);
         write!(formatted_bytes, "{}", msg_type).unwrap();
         cb(&mut formatted_bytes);
-        let size = formatted_bytes.size();
+        let raw_size = formatted_bytes.size();
+        let size = utf8_prefix_len(&self.buffer[..raw_size]);
         self.send_buffer(size).await
     }
 

@@ -193,6 +193,15 @@ Examples:
   `fastboot flash gpt` and erases its GPT.
 - `fastboot erase gpt/0` -- Erase GPT to storage device 0.
 
+If a storage device's GPT is modified outside of `fastboot flash gpt` /
+`fastboot erase gpt` (for example via raw block flashing `fastboot flash
+/<storage_id>`), GBL's cached partition table can be refreshed without
+rebooting via:
+
+```sh
+fastboot oem gbl-sync-gpt <storage_id>
+```
+
 ## Non-blocking Flash
 
 If the UEFI firmware supports `EFI_BLOCK_IO2_PROTOCOL` for the storage devices,
