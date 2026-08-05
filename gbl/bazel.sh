@@ -19,4 +19,4 @@ BAZEL_PY="${MYPATH%/*}/bazel.py"
 WORKSPACE_DIR=${MYPATH%/bootable/libbootloader/gbl/*}
 
 cd "$WORKSPACE_DIR"
-exec "$WORKSPACE_DIR"/prebuilts/build-tools/path/linux-x86/python3 "$BAZEL_PY" "$@"
+exec "$WORKSPACE_DIR"/prebuilts/build-tools/linux_musl-x86/bin/py3-cmd "$BAZEL_PY" "$@"
