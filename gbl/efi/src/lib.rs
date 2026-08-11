@@ -116,18 +116,18 @@ pub fn app_main(entry: EfiEntry) -> Result<()> {
     match get_target_os(&entry, &disks) {
         #[cfg(feature = "fuchsia")]
         TargetOs::Fuchsia => {
-            let mut load = utils::get_boot_buffer(&entry, 128 * 1024 * 1024)?;
-            let mut load = load.to_boot_buffer();
+            let mut load: libgbl::android_boot::BootBuffer =
+                utils::get_boot_buffer(&entry, 128 * 1024 * 1024)?.into();
             let mut ops = Ops::new(&entry, &disks[..], Some(Os::Fuchsia), get_sp());
             let images = fuchsia_boot::efi_fuchsia_load(&mut ops, load.scratch())?;
             drop(disks);
             fuchsia_boot::efi_fuchsia_boot(entry, images)?;
         }
         TargetOs::Android => {
-            let mut load = utils::get_boot_buffer(&entry, 256 * 1024 * 1024)?;
+            let load = utils::get_boot_buffer(&entry, 256 * 1024 * 1024)?;
             let mut ops = Ops::new(&entry, &disks[..], Some(Os::Android), get_sp());
             let (ramdisk, fdt, kernel, remains) =
-                android_boot::efi_android_load(&mut ops, load.to_boot_buffer())?;
+                android_boot::efi_android_load(&mut ops, load.into())?;
             drop(disks);
             android_boot::efi_android_boot(entry, kernel, ramdisk, fdt, remains)?;
         }

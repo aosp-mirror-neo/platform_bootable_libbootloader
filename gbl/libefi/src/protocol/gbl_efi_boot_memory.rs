@@ -53,6 +53,16 @@ impl Default for Buffer<'_> {
     }
 }
 
+impl<'b> Buffer<'b> {
+    /// Leaks the wrapped buffer.
+    fn leak(self) -> &'b mut [u8] {
+        match self {
+            Self::Borrowed { buffer, .. } => buffer,
+            Self::Allocated { buffer, offset, size } => &mut (buffer.leak())[offset..][..size],
+        }
+    }
+}
+
 /// Buffer type returned by BufferPool.get().
 pub struct BufferGuard<'a, 'b>(MutexGuard<'a, Buffer<'b>>);
 
@@ -76,10 +86,18 @@ impl DerefMut for BufferGuard<'_, '_> {
     }
 }
 
-impl BufferGuard<'_, '_> {
+impl<'a, 'b> BufferGuard<'a, 'b> {
     /// Checks if a buffer contains preloaded data.
     pub fn is_preloaded(&self) -> bool {
         matches!(self.0.deref(), Buffer::Borrowed { buffer: _, is_preloaded_partition: true })
+    }
+
+    /// Leaks the underlying buffer.
+    ///
+    /// Note that the MutexGuard of the buffer would be consumed and permanently locked, so the
+    /// caller must not try to access the buffer from the BufferPool ever again.
+    pub fn leak(self) -> &'b mut [u8] {
+        take(MutexGuard::leak(self.0)).leak()
     }
 }
 

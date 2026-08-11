@@ -195,14 +195,14 @@ pub(crate) struct GblEfiBootBuffer {
     pvmfw_data: Option<GblVendorReservedMemory>,
 }
 
-impl GblEfiBootBuffer {
-    pub(crate) fn to_boot_buffer(&mut self) -> BootBuffer<'_> {
-        BootBuffer::new(
-            &mut self.general,
-            self.kernel.as_mut().map(|v| v as _),
-            self.ramdisk.as_mut().map(|v| v as _),
-            self.fdt.as_mut().map(|v| v as _),
-            self.pvmfw_data.as_mut().map(|v| v as _),
+impl<'b> From<GblEfiBootBuffer> for BootBuffer<'b> {
+    fn from(v: GblEfiBootBuffer) -> Self {
+        Self::new(
+            v.general.leak(),
+            v.kernel.map(GblVendorReservedMemory::leak),
+            v.ramdisk.map(GblVendorReservedMemory::leak),
+            v.fdt.map(GblVendorReservedMemory::leak),
+            v.pvmfw_data.map(GblVendorReservedMemory::leak),
         )
     }
 }

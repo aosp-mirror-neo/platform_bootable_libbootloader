@@ -525,6 +525,11 @@ pub mod gbl_efi_boot_memory {
         pub fn is_preloaded(&self) -> bool {
             unimplemented!()
         }
+
+        /// Mock leak
+        pub fn leak(self) -> &'static mut [u8] {
+            unimplemented!()
+        }
     }
 
     impl Deref for GblVendorReservedMemory {
