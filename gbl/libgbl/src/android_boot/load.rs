@@ -641,7 +641,7 @@ impl<'a> BootBufferLoader<'a> {
         ops: &mut impl GblOps<'b>,
         kernel: &[u8],
     ) -> Result<KernelAttributes, Error> {
-        let attrs = match self.bufs.kernel.as_mut() {
+        let (attrs, image_sz) = match self.bufs.kernel.as_mut() {
             // Designated buffer, decompresses directly into it.
             Some(v) => {
                 let sz = decompress_kernel(ops, kernel, v)?;
@@ -649,7 +649,7 @@ impl<'a> BootBufferLoader<'a> {
                 if attrs.reserved_size > v.len() {
                     return Err(Error::BufferTooSmall(Some(attrs.reserved_size)));
                 }
-                attrs
+                (attrs, sz)
             }
             // Use general buffer. Decompresses at the head and carves the kernel out of
             // `self.general` so subsequent loads see only the remaining space.
@@ -669,10 +669,14 @@ impl<'a> BootBufferLoader<'a> {
                     take(&mut self.general)[off..].split_at_mut(attrs.reserved_size);
                 self.general = general;
                 self.general_kernel = Some(kernel);
-                attrs
+                (attrs, sz)
             }
         };
-        self.kernel_sz = attrs.reserved_size;
+        // `reserved_size` is how much memory the kernel needs at runtime, which is what the
+        // buffer above is carved to. The slice handed on is the image itself, so it must stay
+        // at the decompressed length: anything past it was never written by
+        // `decompress_kernel` and is not part of the kernel.
+        self.kernel_sz = image_sz;
         Ok(attrs)
     }
 
