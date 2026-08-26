@@ -27,11 +27,13 @@ use crate::{
 use avb::{SlotVerifyData, VbmetaVerifyError};
 use bootparams::bootconfig::BootConfigBuilder;
 use core::ffi::CStr;
+use core::fmt::Write;
 use dttable::DtTableImage;
 use fdt::{fdt_encode_cell_sized_property, fdt_ensure_reserved_memory_initialized, std_props, Fdt};
 use fit::Fit;
 use liberror::{Error, Result};
 use libgblutils::ZeroizeGuard;
+use libutils::FormattedBytes;
 use opendice::{
     dice::{Config, DiceMode, InputValues, HASH_SIZE, HIDDEN_SIZE},
     dice_android_format_config_descriptor, dice_android_handover_main_flow, DiceAndroidConfig,
@@ -41,6 +43,22 @@ use pvmfwconfig::{
 };
 use safemath::SafeNum;
 use zerocopy::FromBytes;
+
+/// Length of a SHA-256 digest rendered as lowercase hex with a NUL terminator.
+const SHA256_HEX_CSTR_SIZE: usize = Sha256::DIGEST_SIZE * 2 + 1;
+
+/// Renders `digest` as a NUL-terminated lowercase hex string.
+///
+/// The consumers read these properties as strings rather than raw bytes:
+/// `try_getprop_str_as_bytes` in trusty/kernel/lib/shared/android_firmware, matching the
+/// reference device tree in trusty/device/arm/generic-arm64/project/avf/test_ref_dt.dts.
+fn sha256_to_hex_cstr(digest: &[u8; Sha256::DIGEST_SIZE]) -> [u8; SHA256_HEX_CSTR_SIZE] {
+    // Zero-initialized, so the final byte is the NUL terminator.
+    let mut encoded = [0u8; SHA256_HEX_CSTR_SIZE];
+    let mut writer = FormattedBytes::new(&mut encoded[..]);
+    digest.iter().for_each(|b| write!(writer, "{b:02x}").unwrap());
+    encoded
+}
 
 fn align_up(size: usize, alignment: usize) -> Result<usize> {
     SafeNum::from(size).round_up(alignment).try_into().map_err(Error::ArithmeticOverflow)
@@ -190,12 +208,13 @@ where
         target_dt.ensure_node(node_path)?;
         target_dt.set_property(node_path, std_props::COMPATIBLE, b"android,firmware\0")?;
         target_dt.set_property(node_path, DEVICE_STATE_PROP, self.device_state())?;
-        target_dt.set_property(node_path, VBMETA_PUBKEY_DIGEST_PROP, &self.pkey_digest()?)?;
-        target_dt.set_property(
-            node_path,
-            VBMETA_DIGEST_PROP,
-            &self.verify_data.vbmeta_digest_sha256(),
-        )?;
+        let pkey_digest = sha256_to_hex_cstr(&self.pkey_digest()?);
+        target_dt.set_property(node_path, VBMETA_PUBKEY_DIGEST_PROP, &pkey_digest)?;
+        // TODO(b/562426674): The vbmeta digest is hardcoded to SHA-256. A vbmeta image
+        // signed with SHA512_RSA is digested with SHA-512, so the pvmfw comparison
+        // fails there.
+        let vbmeta_digest = sha256_to_hex_cstr(&self.verify_data.vbmeta_digest_sha256());
+        target_dt.set_property(node_path, VBMETA_DIGEST_PROP, &vbmeta_digest)?;
         target_dt.set_property(node_path, VB_STATE_PROP, self.vb_state())?;
         Ok(())
     }
@@ -947,7 +966,7 @@ pub(crate) mod test {
         let sz = write_pvmfw_config(&mut ops, &mut buf, &mut scratch_buffer, &boot_info).unwrap();
         let header = PvmfwConfHeader::ref_from_prefix(&buf).unwrap().0;
 
-        let exp_refdt_size = 0x203u32;
+        let exp_refdt_size = 0x24bu32;
         let exp_handover_size = 0x256u32;
         let exp_refdt_offset = (PvmfwConfHeader::PADDED_SIZE
             + (exp_handover_size as usize).next_multiple_of(PvmfwConfEntry::ALIGNMENT))
@@ -1082,11 +1101,25 @@ pub(crate) mod test {
         assert_eq!(refdt.get_property(base_path, VB_STATE_PROP).unwrap(), boot_info.vb_state());
         assert_eq!(
             refdt.get_property(base_path, VBMETA_DIGEST_PROP).unwrap(),
-            boot_info.verify_data.vbmeta_digest_sha256(),
+            &sha256_to_hex_cstr(&boot_info.verify_data.vbmeta_digest_sha256())[..],
         );
         assert_eq!(
             refdt.get_property(base_path, VBMETA_PUBKEY_DIGEST_PROP).unwrap(),
-            boot_info.pkey_digest().unwrap(),
+            &sha256_to_hex_cstr(&boot_info.pkey_digest().unwrap())[..],
+        );
+    }
+
+    #[test]
+    fn test_sha256_to_hex_cstr() {
+        // Covers every nibble value in both the high and low position.
+        let digest = [
+            0x00, 0x01, 0x0a, 0x0f, 0x10, 0x7f, 0x80, 0xa0, 0xab, 0xcd, 0xef, 0xf0, 0xff, 0x12,
+            0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0x21, 0x43, 0x65, 0x87, 0xa9, 0xcb, 0xed, 0x0e,
+            0xd0, 0x99, 0x66, 0x33,
+        ];
+        assert_eq!(
+            &sha256_to_hex_cstr(&digest)[..],
+            b"00010a0f107f80a0abcdeff0ff123456789abcde21436587a9cbed0ed0996633\0"
         );
     }
 
