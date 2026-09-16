@@ -281,7 +281,9 @@ macro_rules! parsable_int(
     ($int_type:tt) => {
         impl FromHexStr for $int_type {
             fn try_from_hex_str(s: &str) -> Result<Self> {
-                $int_type::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
+                $int_type::from_str_radix(s.strip_prefix("0x")
+                                          .or_else(|| s.strip_prefix("0X"))
+                                          .unwrap_or(s), 16)
                     .map_err(Error::from)
             }
         }

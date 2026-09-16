@@ -1422,7 +1422,7 @@ pub struct StreamCommand<P: AsRef<str>> {
     pub partition: P,
     /// The offset from the start of the partition
     pub offset: u64,
-    /// The write operation, stream or flash
+    /// The write operation, fill or flash
     pub operation: StreamOperation,
 }
 
@@ -1445,7 +1445,7 @@ impl<'a, P: From<&'a str> + AsRef<str>> TryFrom<&'a str> for StreamCommand<P> {
     //
     // "stream-fill:<partition name>:<partition offset>:<size bytes>:<payload>"
     fn try_from(cmd_str: &'a str) -> Result<Self> {
-        let args = &mut cmd_str.split(':').peekable();
+        let args = &mut cmd_str.split(':');
         let command = next_arg(args).ok_or(Error::InvalidInput)?;
         let partition = next_arg(args).ok_or(Error::InvalidInput)?.into();
         let offset = FromHexStr::try_parse_next(args)?;
@@ -1473,7 +1473,7 @@ impl<'a, P: From<&'a str> + AsRef<str>> TryFrom<&'a str> for StreamCommand<P> {
             _ => Err(Error::InvalidInput)?,
         };
 
-        if args.peek().is_none() {
+        if args.next().is_none() {
             Ok(command)
         } else {
             Err(Error::InvalidInput)
@@ -1532,8 +1532,7 @@ pub async fn process_next_command(
         "erase" => erase(cmd_str, transport, fb_impl).await,
         "fetch" => fetch(cmd_str, args, transport, fb_impl).await,
         "flash" => flash(cmd_str, transport, fb_impl).await,
-        "stream-flash" => handle_stream_command(cmd_str, transport, fb_impl).await,
-        "stream-fill" => handle_stream_command(cmd_str, transport, fb_impl).await,
+        "stream-flash" | "stream-fill" => handle_stream_command(cmd_str, transport, fb_impl).await,
         "getvar" => get_var(&mut packet[..], transport, fb_impl).await,
         "reboot" => reboot(RebootMode::Normal, transport, fb_impl).await?,
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await?,

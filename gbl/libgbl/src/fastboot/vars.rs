@@ -492,15 +492,16 @@ where
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
         let id: usize = FromHexStr::try_parse_next(&mut args)
-            .map_err(|_| CommandError::from("Missing block device ID"))?;
+            .map_err(|_| CommandError::from("Missing or invalid block device ID"))?;
         let val_type = next_arg(&mut args).ok_or("Missing value type")?;
-        let blk = &self.disks[id];
+        let blk = &self.disks.get(id).ok_or("Invalid block device ID")?;
         let info = blk.block_info();
-        Ok(match val_type {
-            TOTAL_BLOCKS => snprintf!(out, "{:#x}", info.num_blocks),
-            BLOCK_SIZE => snprintf!(out, "{:#x}", info.block_size),
+        let val = match val_type {
+            TOTAL_BLOCKS => info.num_blocks,
+            BLOCK_SIZE => info.block_size,
             _ => return Err("Invalid type".into()),
-        })
+        };
+        Ok(snprintf!(out, "{:#x}", val))
     }
 
     /// Gets all "block-device" variables.
@@ -545,10 +546,10 @@ where
         let segment_size_bytes = self
             .disks
             .iter()
-            .map(|d| d.block_info().block_size * d.block_info().erase_blocks_num)
-            .chain([DEFAULT_SEGMENT_SIZE].into_iter())
+            .map(|d| d.block_info().erase_block_size().unwrap_or_default())
             .max()
-            .unwrap_or(DEFAULT_SEGMENT_SIZE);
+            .unwrap_or_default();
+        let segment_size_bytes = core::cmp::max(segment_size_bytes, DEFAULT_SEGMENT_SIZE);
 
         Ok(snprintf!(out, "{:#x}", segment_size_bytes))
     }

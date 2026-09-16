@@ -66,6 +66,7 @@ use gbl_storage::{BlockIo, Disk, Gpt, GptSyncResult};
 use liberror::Error;
 use libutils::{
     buffer_pool::{BufferPool, ScopedBuffer},
+    constants::KiB,
     next_arg,
     shared::Shared,
     FormattedBytes, FromHexStr,
@@ -74,6 +75,7 @@ use safemath::SafeNum;
 use trace::{gbl_trace_get_enable, TraceGuard};
 #[cfg(feature = "fuchsia")]
 use zbi::{ZbiContainer, ZbiType};
+use zerocopy::IntoBytes;
 
 pub(crate) mod vars;
 
@@ -119,36 +121,26 @@ impl<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> TaskWorkload<'a, 'b, B, 
             Self::Fill(io, buffer, payload) => {
                 let io_size = io.size_bytes();
 
-                let buffer_start = buffer.as_ref().as_ptr().addr();
-                // New scope to drop &[u32] view of buffer after filling and aligning it.
-                let (buf_start, buf_end) = {
-                    // SAFETY:
-                    //
-                    // * Fill buffer is dropped after scope ends.
-                    // * All bit values are valid for u32.
-                    let (_, fill_buffer, _) = unsafe { buffer.as_mut().align_to_mut::<u32>() };
-                    // Don't fill more than necessary if the write is smaller than the buffer.
-                    let fill_buffer_len = fill_buffer.len();
-                    let fill_buffer = &mut fill_buffer
-                        [0..min(fill_buffer_len, (io_size as usize) / size_of::<u32>())];
+                // SAFETY: All bit values are valid for u32.
+                let (_, fill_buffer, _) = unsafe { buffer.as_mut().align_to_mut::<u32>() };
+                let max_words = usize::try_from(io_size / (size_of::<u32>() as u64))?;
+                let fill_buffer_len = min(fill_buffer.len(), max_words);
+                let fill_buffer = &mut fill_buffer[..fill_buffer_len];
 
-                    fill_buffer.fill(*payload);
-
-                    // This cannot overflow because the start of fill_buffer
-                    // will always be at least as large the start of buffer.
-                    (
-                        fill_buffer.as_ptr().addr() - buffer_start,
-                        fill_buffer.len() * size_of::<u32>(),
-                    )
-                };
+                fill_buffer.fill(*payload);
 
                 // Download buffer is now aligned on u32 and filled with the payload.
-                let buffer = &mut buffer[buf_start..buf_end];
+                let buffer = fill_buffer.as_mut_bytes();
+                // Unlikely, but prevents a panic below in `step_by(buffer.len())`
+                if buffer.is_empty() {
+                    return Err(Error::BadBufferSize);
+                }
 
                 for off in (0..io_size).step_by(buffer.len()) {
                     // io_size is always larger than or equal to off,
                     // so the subtraction never overflows.
-                    let write_len = min(buffer.len(), usize::try_from(io_size - off)?);
+                    let rem = usize::try_from(io_size - off)?;
+                    let write_len = min(buffer.len(), rem);
                     io.write(off, &mut buffer[..write_len]).await?;
                 }
                 Ok(())
@@ -171,14 +163,16 @@ struct Task<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> {
 }
 
 impl<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> Task<'a, 'b, B, P2, P> {
-    /// Creates a new instance with the given workload.
-    fn new(workload: TaskWorkload<'a, 'b, B, P2, P>) -> Self {
-        Self { workload, context: [0u8; MAX_COMMAND_SIZE] }
-    }
-
-    /// Sets the context string.
-    fn set_context(&mut self, mut f: impl FnMut(&mut dyn Write) -> Result<(), core::fmt::Error>) {
-        let _ = f(&mut FormattedBytes::new(&mut self.context[..]));
+    /// Creates a new instance with the given workload and context description callback.
+    /// The context description is defined as a callback to support string formatting
+    /// on a provided buffer.
+    fn new(
+        workload: TaskWorkload<'a, 'b, B, P2, P>,
+        mut f: impl FnMut(&mut dyn Write) -> Result<(), core::fmt::Error>,
+    ) -> Self {
+        let mut s = Self { workload, context: [0u8; MAX_COMMAND_SIZE] };
+        let _ = f(&mut FormattedBytes::new(&mut s.context[..]));
+        s
     }
 
     /// Runs the task and returns the result.
@@ -210,7 +204,7 @@ impl<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> Default for Task<'a, 'b,
     fn default() -> Self {
         // Creates a noop task. This is mainly used for type inference for inline declaration of
         // pre-allocated task pool.
-        Self::new(TaskWorkload::None)
+        Self::new(TaskWorkload::None, |_| Ok(()))
     }
 }
 
@@ -873,9 +867,10 @@ where
                     yield_now().await;
                     self.tasks.borrow_mut().add_with(|| (self.task_mapper)(take(task)));
                 }
+
                 self.tasks.borrow_mut().poll_all();
                 let info = "Launched async task. Run \"oem gbl-sync-tasks\" to sync.";
-                responder.send_info(info).await?
+                responder.send_info(info).await?;
             }
             _ => task.run_checked().await?,
         })
@@ -1342,11 +1337,10 @@ where
                     continue;
                 }
             };
-            let mut task = Task::new(TaskWorkload::Erase(
-                part_io,
-                self.take_or_allocate_download_buffer().await,
-            ));
-            task.set_context(|f| write!(f, "erase:{basename}"));
+            let mut task = Task::new(
+                TaskWorkload::Erase(part_io, self.take_or_allocate_download_buffer().await),
+                |f| write!(f, "erase:{basename}"),
+            );
 
             if let Err(e) = self.schedule_task(&mut task, responder).await {
                 gbl_println!(
@@ -1404,11 +1398,13 @@ where
 
         let (part_io, fdr) = self.parse_and_get_partition_io::<ReadWrite>(part).await?;
         let (data, sz) = self.take_download().ok_or("No download")?;
-        let mut task = Task::new(match is_sparse_image(&data) {
-            Ok(v) => TaskWorkload::FlashSparse(part_io.sub(0, v.data_size())?, data),
-            _ => TaskWorkload::Flash(part_io.sub(0, sz.try_into().unwrap())?, data, sz),
-        });
-        task.set_context(|f| write!(f, "flash:{part}"));
+        let mut task = Task::new(
+            match is_sparse_image(&data) {
+                Ok(v) => TaskWorkload::FlashSparse(part_io.sub(0, v.data_size())?, data),
+                _ => TaskWorkload::Flash(part_io.sub(0, sz.try_into().unwrap())?, data, sz),
+            },
+            |f| write!(f, "flash:{part}"),
+        );
         self.schedule_task(&mut task, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
@@ -1431,9 +1427,10 @@ where
         }
 
         let (part_io, fdr) = self.parse_and_get_partition_io::<ReadWrite>(part).await?;
-        let mut task =
-            Task::new(TaskWorkload::Erase(part_io, self.take_or_allocate_download_buffer().await));
-        task.set_context(|f| write!(f, "erase:{part}"));
+        let mut task = Task::new(
+            TaskWorkload::Erase(part_io, self.take_or_allocate_download_buffer().await),
+            |f| write!(f, "erase:{part}"),
+        );
         self.schedule_task(&mut task, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
@@ -1709,20 +1706,21 @@ where
             self.parse_and_get_partition_io::<ReadWrite>(command.partition.as_ref()).await?;
         let mut task = match command.operation {
             StreamOperation::Fill { size, payload } => {
+                let io = part_io.sub(command.offset, size)?;
                 let buffer = self.take_or_allocate_download_buffer().await;
-                Task::new(TaskWorkload::Fill(
-                    part_io.sub(
-                        command.offset,
-                        size.try_into().map_err(|_| CommandError::from("Integer overflow"))?,
-                    )?,
-                    buffer,
-                    payload,
-                ))
+                Task::new(TaskWorkload::Fill(io, buffer, payload), |f| {
+                    write!(f, "stream-fill:{}:{:#x}:{:#x}", command.partition, command.offset, size)
+                })
             }
             StreamOperation::Flash { checksum } => {
                 let (download, size) = self.take_download().ok_or("No downloaded data")?;
-                // TODO(b/479909443): yield while calculating incrementally.
-                let actual = crc32fast::hash(&download[..size]);
+                let io = part_io.sub(command.offset, size.try_into()?)?;
+                let mut hasher = crc32fast::Hasher::new();
+                for v in download[..size].chunks(KiB!(4)) {
+                    hasher.update(v);
+                    yield_now().await;
+                }
+                let actual = hasher.finalize();
                 if actual != checksum {
                     return Err(format_args!(
                         "Checksum mismatch: expected {:#x}, got {:#x}",
@@ -1730,18 +1728,16 @@ where
                     )
                     .into());
                 }
-                Task::new(TaskWorkload::Flash(
-                    part_io.sub(
-                        command.offset,
-                        size.try_into().map_err(|_| CommandError::from("Integer overflow"))?,
-                    )?,
-                    download,
-                    size,
-                ))
+                Task::new(TaskWorkload::Flash(io, download, size), |f| {
+                    write!(
+                        f,
+                        "stream-flash:{}:{:#x}:{:#x}",
+                        command.partition, command.offset, size
+                    )
+                })
             }
         };
 
-        task.set_context(|f| write!(f, "flash:{0}:{1}", command.partition, command.offset));
         self.schedule_task(&mut task, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
@@ -2152,7 +2148,6 @@ pub(crate) mod test {
         ffi::CString,
         io::Read,
     };
-    use zerocopy::IntoBytes;
 
     /// A test implementation of [InfoSender] and [OkaySender].
     #[derive(Default)]
