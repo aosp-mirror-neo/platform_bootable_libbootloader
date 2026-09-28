@@ -32,7 +32,6 @@ use crate::{
 };
 use arrayvec::ArrayVec;
 use bootparams::{bootconfig::BootConfigBuilder, entry::CommandlineParser};
-use cfg_if::cfg_if;
 use core::{ffi::CStr, fmt::Write, mem::take, ops::Range};
 use fdt::Fdt;
 use gbl_async::block_on;
@@ -244,10 +243,6 @@ pub fn android_load_verify_fixup<'a, 'b>(
 
     let bootconfig_sz = bootconfig_builder.config_bytes().len();
     loader.set_bootconfig_size(bootconfig_sz);
-    // Notes: We keep bootconfig in the ramdisk regardless of whether it is supported for simplicity
-    // and in case device is using boot v3+vendor_boot v4 combination where Android 11 and
-    // Android 12+ are indistinguishable.
-    let bootconfig_supported = images.bootconfig_supported();
 
     // Fixes up FDT.
 
@@ -318,10 +313,10 @@ pub fn android_load_verify_fixup<'a, 'b>(
     loader.set_bootconfig_size(bootconfig_sz);
     let ramdisk_len = ramdisk_len + bootconfig_sz;
 
-    // Finalizes FDT with ramdisk address and adds bootconfig as bootarg if it is not supported.
+    // Finalizes FDT with ramdisk address.
     loader.expand_fdt()?;
     let [ramdisk, fdt, _, _] = loader.splits();
-    let fdt_sz = finalize_dt(ops, fdt, &ramdisk[..ramdisk_len], !bootconfig_supported)?;
+    let fdt_sz = finalize_dt(ops, fdt, &ramdisk[..ramdisk_len])?;
     let fdt_range = fdt[..fdt_sz].as_ptr_range();
     loader.set_fdt_range(fdt_range);
     let [ramdisk, fdt, kernel, unused] = loader.into_splits();
@@ -395,20 +390,14 @@ fn vbmeta_cmdline_to_bootconfig<'a>(
     Ok(())
 }
 
-/// Sets `linux,initrd-start/end` and optionally appending bootconfig as bootarg in FDT.
+/// Sets `linux,initrd-start/end` in FDT.
 ///
 /// # Args
 ///
 /// * `ops`: An implementation of GblOps.
 /// * `fdt`: Target FDT to fixup.
 /// * `ramdisk`: Target ramdisk for setting `linux,initrd-start/end`
-/// * `append_bootconfig`: Set to true to append bootconfig from ramdisk as bootarg on dev builds.
-fn finalize_dt<'b>(
-    ops: &mut impl GblOps<'b>,
-    fdt: &mut [u8],
-    ramdisk: &[u8],
-    append_bootconfig: bool,
-) -> Result<usize> {
+fn finalize_dt<'b>(ops: &mut impl GblOps<'b>, fdt: &mut [u8], ramdisk: &[u8]) -> Result<usize> {
     let mut fdt = Fdt::new_mut(fdt)?;
     let Range { start, end } = ramdisk.as_ptr_range();
     let ramdisk_addr = u64::try_from(start as usize)?;
@@ -417,25 +406,6 @@ fn finalize_dt<'b>(
     fdt.set_property("chosen", c"linux,initrd-end", &ramdisk_end.to_be_bytes())?;
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
-    if append_bootconfig {
-        gbl_println!(ops, "WARNING: Boot image predates bootconfig support.");
-        cfg_if! {
-            if #[cfg(feature = "gbl_dev")] {
-                use bootparams::bootconfig::extract_bootconfig;
-                use device_tree::fdt_append_bootargs;
-
-                gbl_println!(ops, "Converting bootconfig into the kernel commandline.");
-                fdt_append_bootargs(ops, &mut fdt, extract_bootconfig(ramdisk)?.split('\n'))?;
-            } else {
-                let _ = ramdisk;
-                gbl_println!(
-                    ops,
-                    "OS may ignore AVB and other important configuration, and potentially fail to \
-                    boot."
-                );
-            }
-        }
-    }
     // Print the final commandline. If the bootargs were changed by the firmware during fdt fixup,
     // then the firmware must ensure the bootargs end with '\0'.
     let final_command_line = CStr::from_bytes_until_nul(fdt.get_property("chosen", PROP_BOOTARGS)?)
@@ -1249,12 +1219,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Converts bootconfig to bootargs
-    fn bootconfig_to_bootarg(bootconfig: &[u8]) -> String {
-        let s = bootconfig.split_last_chunk::<BOOTCONFIG_TRAILER_SIZE>().unwrap().0;
-        from_utf8(s).unwrap().split('\n').filter(|v| !v.is_empty()).collect::<Vec<_>>().join(" ")
-    }
-
     /// Tests `android_load_verify_fixup` succeeds with the given setup.
     ///
     /// # Args
@@ -1443,7 +1407,6 @@ pub(crate) mod tests {
         expected_vendor_bootconfig: &str,
         expected_bootargs: &str,
         expected_fdt_property: &[(&str, &CStr, Option<&[u8]>)],
-        bootconfig_supported: bool,
     ) {
         let test_common = |unlock, color, rollback_idx, vbmeta: Option<&str>| {
             let mut partitions = partitions.to_vec();
@@ -1470,11 +1433,6 @@ pub(crate) mod tests {
             }
             // Appended via fixup.
             expected_bootargs.push_str(" fixup");
-            // Converted items if bootconfig isn't supported.
-            if !bootconfig_supported && cfg!(feature = "gbl_dev") {
-                write!(expected_bootargs, " {}", &bootconfig_to_bootarg(&expected_bootconfig))
-                    .unwrap();
-            }
 
             test_android_load_verify_fixup(
                 slot(slot_name),
@@ -1560,7 +1518,6 @@ pub(crate) mod tests {
             "",
             EXPECTED_V2_CMDLINE,
             additional_expected_fdt_properties,
-            false,
         )
     }
 
@@ -1661,7 +1618,6 @@ pub(crate) mod tests {
         vbmeta_file: &str,
         expected_vendor_bootconfig: &str,
         additional_expected_fdt_properties: &[(&str, &CStr, Option<&[u8]>)],
-        bootconfig_supported: bool,
     ) {
         test_android_load_verify_fixup_success(
             slot,
@@ -1672,7 +1628,6 @@ pub(crate) mod tests {
             expected_vendor_bootconfig,
             EXPECTED_V3_V4_CMDLINE,
             additional_expected_fdt_properties,
-            bootconfig_supported,
         )
     }
 
@@ -1700,7 +1655,6 @@ pub(crate) mod tests {
             &vbmeta,
             expected_vendor_bootconfig,
             additional_expected_fdt_properties,
-            boot_ver > 3 || vendor_ver > 3,
         );
     }
 
@@ -1883,7 +1837,6 @@ pub(crate) mod tests {
             &vbmeta,
             expected_vendor_bootconfig,
             additional_expected_fdt_properties,
-            true,
         );
     }
 
@@ -1924,7 +1877,6 @@ pub(crate) mod tests {
             &vbmeta,
             expected_vendor_bootconfig,
             additional_expected_fdt_properties,
-            true, // init_boot implies Android 13+.
         );
     }
 
@@ -2162,7 +2114,6 @@ pub(crate) mod tests {
             TEST_VENDOR_BOOTCONFIG,
             EXPECTED_V3_V4_CMDLINE,
             &[("/chosen", c"vendor_kernel", Some(b"1\0"))],
-            true,
         );
     }
 
