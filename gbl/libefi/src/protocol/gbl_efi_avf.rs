@@ -57,7 +57,7 @@ impl Protocol<'_, GblAvfProtocol> {
                 self.interface().read_vendor_dice_handover,
                 self.interface_ptr(),
                 &mut used_size,
-                handover_buffer.as_ptr() as _,
+                handover_buffer.as_mut_ptr() as _,
             )?;
         }
 
@@ -81,7 +81,7 @@ impl Protocol<'_, GblAvfProtocol> {
                 self.interface().read_secretkeeper_public_key,
                 self.interface_ptr(),
                 &mut used_size,
-                key_buffer.as_ptr() as _,
+                key_buffer.as_mut_ptr() as _,
             )?;
         }
 
