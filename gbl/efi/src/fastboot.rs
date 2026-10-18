@@ -150,6 +150,7 @@ mod network_fastboot {
 #[cfg(not(feature = "gbl_dev"))]
 mod network_fastboot {
     use super::*;
+    use fastboot::FastbootImplementation;
 
     pub(super) enum NoOpTcp {}
 
@@ -159,6 +160,15 @@ mod network_fastboot {
         }
 
         async fn write_exact(&mut self, _data: &[u8]) -> fastboot::Result<()> {
+            match *self {}
+        }
+
+        // Overridden so that the TCP fastboot command processor is not instantiated for this
+        // placeholder type.
+        async fn run_session(
+            &mut self,
+            _: &mut impl FastbootImplementation,
+        ) -> fastboot::Result<()> {
             match *self {}
         }
     }

@@ -197,8 +197,8 @@ fn is_protected_command<'a>(mut args: impl Iterator<Item = &'a CStr> + Clone) ->
 
 /// A trait representing a TCP stream reader/writer. Fastboot over TCP has additional handshake
 /// process and uses a length-prefixed wire message format. It is recommended that caller
-/// implements this trait instead of `Transport`, and uses the API `Fastboot::run_tcp_session()`
-/// to perform fastboot over TCP. It internally handles handshake and wire message parsing.
+/// implements this trait instead of `Transport`, and calls [TcpStream::run_session] to perform
+/// fastboot over TCP. It internally handles handshake and wire message parsing.
 pub trait TcpStream {
     /// Read data from the TCP connection.
     ///
@@ -216,6 +216,18 @@ pub trait TcpStream {
 
     /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
     async fn write_exact(&mut self, data: &[u8]) -> Result<()>;
+
+    /// Runs a fastboot over TCP session.
+    ///
+    /// Performs the fastboot over TCP handshake and then processes commands with [run].
+    ///
+    /// Returns Ok(()) if "fastboot continue" is received.
+    async fn run_session(&mut self, fb_impl: &mut impl FastbootImplementation) -> Result<()>
+    where
+        Self: Sized,
+    {
+        run(&mut TcpTransport::new_and_handshake(self).await?, fb_impl).await
+    }
 }
 
 /// Implements [Transport] on a [TcpStream].
@@ -509,8 +521,8 @@ pub trait FastbootImplementation {
 
     /// Method for handling `fastboot continue` clean up.
     ///
-    /// `run()` and `run_tcp_session()` exit after receiving `fastboot continue.` The method is for
-    /// implementation to perform necessary clean up.
+    /// `run()` and `TcpStream::run_session()` exit after receiving `fastboot continue.` The method
+    /// is for implementation to perform necessary clean up.
     ///
     /// # Args
     ///
@@ -1545,18 +1557,6 @@ pub async fn run(
     Ok(())
 }
 
-/// Runs a fastboot over TCP session.
-///
-/// The method performs fastboot over TCP handshake and then call `run(...)`.
-///
-/// Returns Ok(()) if "fastboot continue" is received.
-pub async fn run_tcp_session(
-    tcp_stream: &mut impl TcpStream,
-    fb_impl: &mut impl FastbootImplementation,
-) -> Result<()> {
-    run(&mut TcpTransport::new_and_handshake(tcp_stream).await?, fb_impl).await
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2378,7 +2378,7 @@ mod test {
             format!("download:{:#x}", download_content.len()).as_bytes(),
         );
         tcp_stream.add_length_prefixed_input(&download_content[..]);
-        let _ = block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl));
+        let _ = block_on(tcp_stream.run_session(&mut fastboot_impl));
         let expected: &[&[u8]] = &[
             b"FB01",
             b"\x00\x00\x00\x00\x00\x00\x00\x09OKAY0x400",
@@ -2395,7 +2395,7 @@ mod test {
         let mut tcp_stream: TestTcpStream = Default::default();
         tcp_stream.add_input(b"ABCD");
         assert_eq!(
-            block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap_err(),
+            block_on(tcp_stream.run_session(&mut fastboot_impl)).unwrap_err(),
             Error::InvalidHandshake
         );
     }
@@ -2408,7 +2408,7 @@ mod test {
         tcp_stream.add_input(&(MAX_COMMAND_SIZE + 1).to_be_bytes());
         tcp_stream.add_input(&vec![0u8; MAX_COMMAND_SIZE + 1]);
         assert_eq!(
-            block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap_err(),
+            block_on(tcp_stream.run_session(&mut fastboot_impl)).unwrap_err(),
             Error::BufferTooSmall(Some(4097))
         );
     }
@@ -2496,7 +2496,7 @@ mod test {
         let mut tcp_stream: TestTcpStream = Default::default();
         tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
         tcp_stream.add_length_prefixed_input(b"continue");
-        block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap();
+        block_on(tcp_stream.run_session(&mut fastboot_impl)).unwrap();
     }
 
     #[test]

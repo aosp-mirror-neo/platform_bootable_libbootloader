@@ -54,9 +54,9 @@ use core::{
     str::from_utf8,
 };
 use fastboot::{
-    process_next_command, run_tcp_session, DownloadBuilder, Downloader, FailSender,
-    FastbootImplementation, InfoSender, LockState, LockType, OkaySender, RebootMode, StreamCommand,
-    StreamOperation, Unlockability, UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
+    process_next_command, DownloadBuilder, Downloader, FailSender, FastbootImplementation,
+    InfoSender, LockState, LockType, OkaySender, RebootMode, StreamCommand, StreamOperation,
+    Unlockability, UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
 };
 
 const ERR_DEVICE_LOCKED: &str = "Device is locked";
@@ -497,7 +497,7 @@ where
                 {
                     // Enable trace when actually doing useful work.
                     let _guard = TraceGuard::new(trace_config_orig);
-                    match run_tcp_session(v, self).await {
+                    match v.run_session(self).await {
                         Ok(()) => break 'outer,
                         Err(e) if e != fastboot::Error::Disconnected => {
                             gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {e}");
