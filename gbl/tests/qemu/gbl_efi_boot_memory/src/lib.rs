@@ -19,6 +19,7 @@
 use efi_types::{
     defs::{
         GblEfiBootBufferType, GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD,
+        GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK,
         GBL_EFI_BOOT_MEMORY_PROTOCOL_REVISION,
     },
     protocol::gbl_efi_boot_memory::{BootBuffer, GblEfiBootMemorySafe},
@@ -49,12 +50,12 @@ impl GblEfiBootMemorySafe for GblEfiBootMemoryImpl {
 
     fn take_boot_buffer(&self, buffer_type: GblEfiBootBufferType) -> EfiResult<BootBuffer> {
         match buffer_type {
-            GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD => {
-                // GBL by default allocates 256mb of general load buffer, which is too much for
-                // test. Instruct GBL to use smaller size using this protocol.
-                // TODO(b/499359597): Make the size configurable.
-                Ok(BootBuffer::ToAllocate(16 * 1024 * 1024))
-            }
+            // GBL by default allocates large general load and image buffers, which is too much for
+            // test. Instruct GBL to use smaller sizes using this protocol.
+            // TODO(b/499359597): Make the size configurable.
+            GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD
+            | GBL_EFI_BOOT_BUFFER_TYPE_KERNEL
+            | GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK => Ok(BootBuffer::ToAllocate(1024 * 1024)),
             _ => Err(EfiError::NotFound),
         }
     }

@@ -314,9 +314,9 @@ fn boot_buf_info(buf_type: GblEfiBootBufferType) -> (&'static str, usize) {
     match buf_type {
         GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD => ("general_load", 1),
         GBL_EFI_BOOT_BUFFER_TYPE_KERNEL => ("kernel", 2 * 1024 * 1024),
-        GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK => ("ramdisk", 1),
+        GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK => ("ramdisk", 4 * 1024), // Page-aligned for x86 Linux.
         GBL_EFI_BOOT_BUFFER_TYPE_FDT => ("fdt", 8),
-        GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA => ("pvmfw", 4 * 1024),
+        GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA => ("pvmfw", 64 * 1024), // Largest kernel page size.
         GBL_EFI_BOOT_BUFFER_TYPE_FASTBOOT_DOWNLOAD => ("fastboot", 1),
         _ => unreachable!(),
     }
@@ -370,30 +370,33 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
             // Pattern matching must use constant variable, otherwise the compiler treats it as
             // binding.
             const NULL_PTR: *mut core::ffi::c_void = core::ptr::null_mut();
-            *add.0 = match (res.map(|_| (addr, sz)), default_alloc) {
-                // `addr` == 0 or buffer is not found and caller specifies default allocation size.
-                (Ok((NULL_PTR, size)), _) | (Err(Error::NotFound), size) if size > 0 => {
+            // Uses the default size if firmware neither provides a buffer nor suggests a size.
+            let (addr, sz) = match res.map(|_| (addr, sz)) {
+                Ok((NULL_PTR, 0)) | Err(Error::NotFound) => (NULL_PTR, default_alloc),
+                v => v?,
+            };
+            *add.0 = match (addr, sz) {
+                (NULL_PTR, 0) => return Err(Error::NotFound),
+                (NULL_PTR, size) => {
                     let buffer = vec![0u8; size + align - 1];
                     let offset = buffer.as_ptr().align_offset(align);
                     efi_println!(entry, "Allocated {size:#x} bytes for {name:?} buffer.");
                     Buffer::Allocated { buffer, offset, size }
                 }
-                // No buffer from firmware and no default size, so there is nothing to borrow.
-                (Ok((NULL_PTR, _)), _) => return Err(Error::NotFound),
-                (Ok((addr, sz)), _) => {
+                (addr, sz) => {
                     efi_println!(entry, "Found {name:?} buffer: addr {addr:?}, sz: {sz:#x}.");
-                    // SAFETY:
-                    // * Protocol spec requires that the returned buffer must be valid for
-                    //   read/write, have static lifetime and be exclusively accessed by GBL.
-                    // * Protocol spec requires that the memory is unique for each `buf_type` id.
-                    //   `PARTITION_BUFFER_POOL.get(part, true)?;` checks that we have not acquired
-                    //   the same buffer before.
                     Buffer::Borrowed {
+                        // SAFETY:
+                        // * `addr` is not NULL. NULL is handled by the arms above.
+                        // * Protocol spec requires that the returned buffer must be valid for
+                        //   read/write, have static lifetime and be exclusively accessed by GBL.
+                        // * Protocol spec requires that the memory is unique for each `buf_type`
+                        //   id. `BOOT_BUFFER_POOL.get(name, true)?;` checks that we have not
+                        //   acquired the same buffer before.
                         buffer: unsafe { from_raw_parts_mut(addr as _, sz) },
                         is_preloaded_partition: false,
                     }
                 }
-                (Err(e), _) => return Err(e),
             };
             Ok(Some(add))
         }
