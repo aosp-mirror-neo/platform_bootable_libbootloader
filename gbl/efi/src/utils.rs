@@ -184,48 +184,16 @@ pub(crate) fn get_efi_mem_attr(entry: &EfiEntry) -> Option<EfiMemoryAttributesTa
 
 pub(crate) const SZ_MB: usize = 1024 * 1024;
 
-/// Intermediate strucutre that can generate a `BootBuffer` instance.
-pub(crate) struct GblEfiBootBuffer {
-    general: GblVendorReservedMemory,
-    kernel: Option<GblVendorReservedMemory>,
-    ramdisk: Option<GblVendorReservedMemory>,
-    fdt: Option<GblVendorReservedMemory>,
-    pvmfw_data: Option<GblVendorReservedMemory>,
-}
-
-impl<'b> From<GblEfiBootBuffer> for BootBuffer<'b> {
-    fn from(v: GblEfiBootBuffer) -> Self {
-        Self::new(
-            v.general.leak(),
-            v.kernel.map(GblVendorReservedMemory::leak),
-            v.ramdisk.map(GblVendorReservedMemory::leak),
-            v.fdt.map(GblVendorReservedMemory::leak),
-            v.pvmfw_data.map(GblVendorReservedMemory::leak),
-        )
-    }
-}
-
 /// Helper for getting boot buffer.
-pub(crate) fn get_boot_buffer(entry: &EfiEntry, default: usize) -> Result<GblEfiBootBuffer> {
-    let [kernel, ramdisk, fdt, pvmfw_data] = [
-        GBL_EFI_BOOT_BUFFER_TYPE_KERNEL,
-        GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK,
-        GBL_EFI_BOOT_BUFFER_TYPE_FDT,
-        GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA,
-    ]
-    .map(|v| match gbl_get_boot_buffer(entry, v, 0) {
-        Err(Error::NotFound) => Ok(None),
-        v => v.map(Some),
-    });
-
-    let general = gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD, default)?;
-    Ok(GblEfiBootBuffer {
-        general,
-        kernel: kernel?,
-        ramdisk: ramdisk?,
-        fdt: fdt?,
-        pvmfw_data: pvmfw_data?,
-    })
+// TODO(b/576841274): Request image buffers when they are needed.
+pub(crate) fn get_boot_buffer(entry: &EfiEntry) -> Result<BootBuffer<'static>> {
+    Ok(BootBuffer::new(
+        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD, 16 * SZ_MB)?.leak(),
+        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, 128 * SZ_MB)?.leak(),
+        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK, 96 * SZ_MB)?.leak(),
+        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_FDT, 4 * SZ_MB)?.leak(),
+        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA, 16 * SZ_MB)?.leak(),
+    ))
 }
 
 /// Represents a fastboot buffer

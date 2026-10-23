@@ -289,7 +289,8 @@ If no memory is provided, GBL determines where to find the required memory.
 In some cases, the firmware may choose not to reserve memory but instead
 recommend that GBL allocate it at runtime. In this case, `Addr` should be set to
 `NULL` and `Size` to the recommended allocation size. This is useful for buffers
-like the Fastboot download buffer, which is only needed on demand.
+like the Fastboot download buffer, which is only needed on demand. If `Addr` is
+`NULL` and `Size` is 0, GBL handles it like `EFI_NOT_FOUND`.
 
 ### Related Definitions
 
@@ -310,9 +311,11 @@ typedef UINT32 GBL_EFI_BOOT_BUFFER_TYPE;
 
 ##### GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD
 
-General-purpose load buffer. Typically used when the firmware provides a single
-memory region for GBL to load kernel, ramdisk, and FDT without concern for their
-individual placement.
+General-purpose load buffer. Used for scratch data, for example:
+
+- Passing fastboot boot items (command line and bootconfig additions).
+- Reading and updating the bootloader message (BCB) in the `misc` partition.
+- Relocating DT components that are not 8-byte aligned.
 
 ##### GBL_EFI_BOOT_BUFFER_TYPE_KERNEL
 

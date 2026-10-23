@@ -23,9 +23,7 @@ use crate::{
     },
 };
 use crate::{
-    android_boot::{
-        android_load_verify_fixup, get_boot_slot, load::sub_slice_range, BootBuffer, LoadedImages,
-    },
+    android_boot::{android_load_verify_fixup, get_boot_slot, BootBuffer, LoadedImages},
     gbl_avb::{ops::GblAvbOps, Critical, Fdr},
     gbl_println,
     misc::{read_bootloader_message_to, write_bootloader_message, AndroidBootMode},
@@ -39,6 +37,8 @@ use crate::{
 };
 pub use abr::{mark_slot_active, set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
 use arrayvec::ArrayVec;
+#[cfg(feature = "fuchsia")]
+use core::ops::Range;
 use core::{
     array::from_fn,
     cell::RefCell,
@@ -49,7 +49,7 @@ use core::{
     future::Future,
     marker::PhantomData,
     mem::{size_of, take},
-    ops::{DerefMut, Range},
+    ops::DerefMut,
     pin::{pin, Pin},
     str::from_utf8,
 };
@@ -217,14 +217,14 @@ pub enum LoadedImageInfo {
     /// None
     #[default]
     None,
-    /// Android loaded images.
+    /// Android loaded images. Images start at offset 0 of their `BootBuffer` buffers.
     Android {
-        /// Address range of ramdisk.
-        ramdisk: Range<*const u8>,
-        /// Address range of fdt.
-        fdt: Range<*const u8>,
-        /// Address range of kernel.
-        kernel: Range<*const u8>,
+        /// Size of ramdisk.
+        ramdisk: usize,
+        /// Size of fdt.
+        fdt: usize,
+        /// Size of kernel.
+        kernel: usize,
     },
     /// Fuchsia loaded images.
     #[cfg(feature = "fuchsia")]
@@ -238,39 +238,22 @@ pub enum LoadedImageInfo {
     },
 }
 
-/// Helper function for splitting loaded android images from a boot buffer.
+/// Helper function for splitting loaded android images from a boot buffer. Images are sliced from
+/// offset 0 of their `boot_buffer` buffers.
 pub fn split_loaded_android<'a>(
     info: LoadedImageInfo,
     mut boot_buffer: BootBuffer<'a>,
 ) -> Option<(&'a [u8], &'a [u8], &'a [u8], &'a mut [u8])> {
-    let LoadedImageInfo::Android { ramdisk, fdt, kernel } = &info else {
+    let LoadedImageInfo::Android { ramdisk, fdt, kernel } = info else {
         return None;
     };
-
-    // Computes the size of each image component.
-    let [ramdisk_sz, fdt_sz, kernel_sz] = [&ramdisk, &fdt, &kernel].map(|v| ptr_range_len(v));
-
-    // Partitions the general load buffer. Physical order: kernel, (pvmfw,) ramdisk, fdt, unused.
-    let general_buf = boot_buffer.take_boot_items().split_unused();
-    let general = &general_buf.as_ptr_range();
-    let kernel = sub_slice_range(general, kernel).unwrap_or(0..0);
-    let ramdisk = sub_slice_range(general, ramdisk).unwrap_or(kernel.end..kernel.end);
-    let fdt = sub_slice_range(general, fdt).unwrap_or(ramdisk.end..ramdisk.end);
-    assert!(
-        ramdisk.start >= kernel.end && fdt.start >= ramdisk.end,
-        "Kernel, ramdisk and FDT are out of order in the general load buffer"
-    );
-    let (rem, unused) = general_buf.split_at_mut(fdt.end);
-    let (rem, general_fdt) = rem.split_at_mut(fdt.start);
-    let (rem, general_ramdisk) = rem.split_at_mut(ramdisk.start);
-    let (_, rem) = rem.split_at_mut(kernel.start);
-    let (general_kernel, _) = rem.split_at_mut(kernel.end - kernel.start);
-
-    // Chooses between designated or partitioned general buffer.
-    let ramdisk = &mut boot_buffer.ramdisk.unwrap_or(general_ramdisk)[..ramdisk_sz];
-    let fdt = &mut boot_buffer.fdt.unwrap_or(general_fdt)[..fdt_sz];
-    let kernel = &mut boot_buffer.kernel.unwrap_or(general_kernel)[..kernel_sz];
-    Some((ramdisk, fdt, kernel, unused))
+    let unused = boot_buffer.boot_items().split_unused();
+    Some((
+        &boot_buffer.ramdisk[..ramdisk],
+        &boot_buffer.fdt[..fdt],
+        &boot_buffer.kernel[..kernel],
+        unused,
+    ))
 }
 
 /// Contains result data returned by GBL Fastboot.
@@ -304,9 +287,14 @@ impl GblFastbootResult {
     }
 }
 
-/// Helper for computing the length of a pointer range.
-fn ptr_range_len(range: &Range<*const u8>) -> usize {
-    (range.end as usize).checked_sub(range.start as _).unwrap()
+/// Computes the index range of `sub` in the parent slice `buf`.
+///
+/// Returns None if the `sub` is not a subslice of `buf`
+#[cfg(feature = "fuchsia")]
+fn sub_slice_range(buf: &Range<*const u8>, sub: &Range<*const u8>) -> Option<Range<usize>> {
+    let start = (sub.start as usize).checked_sub(buf.start as _)?;
+    let end = (sub.end as usize).checked_sub(buf.start as _)?;
+    (sub.end <= buf.end).then_some(start..end)
 }
 
 // Represents GBL specific stage data type
@@ -1083,12 +1071,12 @@ where
         let mut ramboot_ops =
             RambootOps { ops: self.gbl_ops, ram_partitions: &[(boot_part.as_str(), img)] };
         let boot_buffer = self.data.boot_buffer.as_borrowed();
-        let (ramdisk, fdt, kernel, _) =
+        let (ramdisk, fdt, kernel) =
             android_load_verify_fixup(&mut ramboot_ops, slot, false, boot_buffer)?;
         self.result.loaded_image_info = LoadedImageInfo::Android {
-            ramdisk: ramdisk.as_ptr_range(),
-            fdt: fdt.as_ptr_range(),
-            kernel: kernel.as_ptr_range(),
+            ramdisk: ramdisk.len(),
+            fdt: fdt.len(),
+            kernel: kernel.len(),
         };
         resp.send_formatted_info(|f| match slot {
             Some(s) => write!(f, "Boot image as Android slot {}", s.suffix.as_char()).unwrap(),
@@ -1763,6 +1751,10 @@ where
     }
 
     async fn boot(&mut self, resp: impl InfoSender + OkaySender) -> CommandResult<()> {
+        // Post-load fastboot continues with the images loaded before it.
+        if self.data.load_result.is_some() {
+            return Err("Not supported after images are loaded".into());
+        }
         self.check_unlocked()?;
         let (img, sz) = self.take_download().ok_or("No boot image staged")?;
         // Re-sync preloaded partitions. Device state or disk content might have changed due to
@@ -2146,7 +2138,7 @@ pub(crate) mod test {
     use crate::{
         android_boot::tests::{
             checks_loaded_v2_slot_a_unlocked_mode, checks_loaded_v2_slot_b_unlocked_mode,
-            default_test_gbl_ops,
+            default_test_gbl_ops, TestBootBuffer,
         },
         constants::{KiB, MiB, KERNEL_ALIGNMENT},
         gbl_avb::{AvbDeviceStatus, LoadPartition, PartitionName, SpecializedPartition},
@@ -5739,7 +5731,7 @@ pub(crate) mod test {
     fn test_fastboot_boot_slot(
         idx: u8,
         suffix: char,
-        load_buffer: &mut [u8],
+        boot_buffer: &mut TestBootBuffer,
     ) -> (&[u8], &[u8], &[u8], &mut [u8]) {
         let mut storage = FakeGblOpsStorage::default();
         let vbmeta = CString::new(format!("vbmeta_{suffix}")).unwrap();
@@ -5763,7 +5755,7 @@ pub(crate) mod test {
             buffers,
             transports,
             Some(tcp),
-            GblFbData { boot_buffer: (&mut load_buffer[..]).into(), ..Default::default() },
+            GblFbData { boot_buffer: boot_buffer.get(), ..Default::default() },
         ));
 
         assert_eq!(
@@ -5778,20 +5770,20 @@ pub(crate) mod test {
             listener.dump_transport_out_queue()
         );
 
-        split_loaded_android(res.loaded_image_info, (&mut load_buffer[..]).into()).unwrap()
+        split_loaded_android(res.loaded_image_info, boot_buffer.get()).unwrap()
     }
 
     #[test]
     fn test_fastboot_boot_slot_a() {
-        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
-        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot(0, 'a', &mut load_buffer);
+        let mut boot_buffer = TestBootBuffer::new();
+        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot(0, 'a', &mut boot_buffer);
         checks_loaded_v2_slot_a_unlocked_mode(ramdisk, kernel);
     }
 
     #[test]
     fn test_fastboot_boot_slot_b() {
-        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
-        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot(1, 'b', &mut load_buffer);
+        let mut boot_buffer = TestBootBuffer::new();
+        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot(1, 'b', &mut boot_buffer);
         checks_loaded_v2_slot_b_unlocked_mode(ramdisk, kernel);
     }
 
@@ -5839,13 +5831,13 @@ pub(crate) mod test {
         listener.add_transport_input(b"boot");
         listener.add_transport_input(b"continue");
 
-        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let mut boot_buffer = TestBootBuffer::new();
         let res = block_on(run_gbl_fastboot_stack::<2>(
             &mut gbl_ops,
             buffers,
             transports,
             Some(tcp),
-            GblFbData { boot_buffer: (&mut load_buffer[..]).into(), ..Default::default() },
+            GblFbData { boot_buffer: boot_buffer.get(), ..Default::default() },
         ));
 
         assert_eq!(
@@ -5864,7 +5856,7 @@ pub(crate) mod test {
         );
 
         let (ramdisk, _, kernel, _) =
-            split_loaded_android(res.loaded_image_info, (&mut load_buffer[..]).into()).unwrap();
+            split_loaded_android(res.loaded_image_info, boot_buffer.get()).unwrap();
         assert_eq!(kernel, read_test_data("android/kernel_a.img"));
         assert!(ramdisk.starts_with(
             &[

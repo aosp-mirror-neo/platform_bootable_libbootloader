@@ -121,12 +121,6 @@ impl<'a> BootItemContainer<'a> {
         Ok(())
     }
 
-    /// Gets the raw buffer.
-    #[cfg(test)]
-    pub(crate) fn raw_buffer(&mut self) -> &mut [u8] {
-        &mut self.0[..]
-    }
-
     /// Appends using the given construction closure.
     pub(crate) fn append_with(
         &mut self,

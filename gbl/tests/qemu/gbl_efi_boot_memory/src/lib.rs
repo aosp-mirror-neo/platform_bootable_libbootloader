@@ -89,11 +89,9 @@ impl GblEfiBootMemorySafe for GblEfiBootMemoryImpl {
 
     fn take_boot_buffer(&self, buffer_type: GblEfiBootBufferType) -> EfiResult<BootBuffer> {
         let (env_name, default_size) = match buffer_type {
-            GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD => {
-                ("GBL_GENERAL_LOAD_SIZE", Some(16 * 1024 * 1024))
-            }
-            GBL_EFI_BOOT_BUFFER_TYPE_KERNEL => ("GBL_KERNEL_SIZE", None),
-            GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK => ("GBL_RAMDISK_SIZE", None),
+            GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD => ("GBL_GENERAL_LOAD_SIZE", Some(1024 * 1024)),
+            GBL_EFI_BOOT_BUFFER_TYPE_KERNEL => ("GBL_KERNEL_SIZE", Some(1024 * 1024)),
+            GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK => ("GBL_RAMDISK_SIZE", Some(1024 * 1024)),
             GBL_EFI_BOOT_BUFFER_TYPE_FDT => ("GBL_FDT_SIZE", None),
             GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA => ("GBL_PVMFW_DATA_SIZE", None),
             GBL_EFI_BOOT_BUFFER_TYPE_FASTBOOT_DOWNLOAD => {
