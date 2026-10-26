@@ -41,6 +41,8 @@ use libgblutils::{aligned_subslice, buffer_pool::BufferPool, shared::Shared};
 use misc::AndroidBootMode;
 
 mod avf;
+#[cfg(test)]
+pub(crate) use avf::test::DUMMY_VENDOR_HANDOVER;
 use avf::{avf_fixup_host_dt, avf_update_bootconfig, inject_vmdtbo, BootInfo};
 
 pub(crate) mod hasher;

@@ -592,11 +592,7 @@ pub trait GblOps<'a> {
     fn get_one_shot_boot_mode(&mut self) -> Result<Option<OneShotBootMode>, Error>;
 
     /// Returns whether GBL should pause after loading images and before booting OS .
-    fn one_shot_pause_fastboot_after_load(&mut self) -> bool {
-        // TODO(b/468009593): Removes and implements in all existing backends once breaking changes
-        // are in.
-        false
-    }
+    fn one_shot_pause_fastboot_after_load(&mut self) -> bool;
 
     /// Handles a loaded OS before booting.
     ///
@@ -1438,8 +1434,8 @@ pub(crate) mod test {
         pub const GBL_TEST_FDT_FIXUP: &'static [u8] = &[1];
         pub const TEST_FDT_FIXUP_PADDING: usize = 4096;
         pub const GBL_TEST_RANDOM_DATA: &'static [u8] = &[b'7'; RNG_SEED_SIZE_BYTES];
-        /// TODO(b/391191885): Generate real dice handover or use prebuilt
-        pub const GBL_TEST_AVF_VENDOR_DICE_HANDOVER: &'static [u8] = b"fake_handover_always_fail";
+        pub const GBL_TEST_AVF_VENDOR_DICE_HANDOVER: &'static [u8] =
+            &crate::android_boot::DUMMY_VENDOR_HANDOVER;
         pub const GBL_TEST_AVF_SECRET_KEEPER_PUBLIC_KEY: &'static [u8] =
             b"secret_keeper_public_key";
         pub const GBL_OEM_CMD_INFO_MSG: &'static str = "oem-info";
@@ -1954,6 +1950,10 @@ pub(crate) mod test {
             Ok(self.one_shot_boot_mode.take())
         }
 
+        fn one_shot_pause_fastboot_after_load(&mut self) -> bool {
+            false
+        }
+
         fn handle_loaded_os(
             &mut self,
             kernel: &[u8],
@@ -2210,6 +2210,10 @@ pub(crate) mod test {
 
         fn get_one_shot_boot_mode(&mut self) -> Result<Option<OneShotBootMode>, Error> {
             Err(Error::Unsupported)
+        }
+
+        fn one_shot_pause_fastboot_after_load(&mut self) -> bool {
+            false
         }
 
         fn handle_loaded_os(&mut self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), Error> {
