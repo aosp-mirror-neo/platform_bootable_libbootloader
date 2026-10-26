@@ -20,6 +20,7 @@ use crate::{
         AvbDeviceStatus, AvbPartition, AvbProperty,
     },
     metrics::GblTime,
+    ops::RngAlgorithm,
     partition::split_partition_suffix,
     GblOps,
 };
@@ -519,8 +520,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
         _public_key: &[u8],
         _public_key_metadata: Option<&[u8]>,
     ) -> IoResult<PublicKeyForPartitionInfo> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unreachable!();
+        Err(IoError::NotImplemented)
     }
 
     fn cert_ops(&mut self) -> Option<&mut dyn CertOps> {
@@ -564,9 +564,8 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, '_, '_, T> {
         }
     }
 
-    fn get_random(&mut self, _: &mut [u8]) -> IoResult<()> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unimplemented!()
+    fn get_random(&mut self, bytes: &mut [u8]) -> IoResult<()> {
+        self.gbl_ops.get_random_bytes(RngAlgorithm::Default, bytes).map_err(|_| IoError::Io)
     }
 }
 
