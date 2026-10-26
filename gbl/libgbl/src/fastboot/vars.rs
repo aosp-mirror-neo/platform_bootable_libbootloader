@@ -197,6 +197,28 @@ fn yes_no_str(value: bool) -> &'static str {
     }
 }
 
+/// Formats `slot-count` into `out`.
+fn format_slot_count(slot_count: u8, out: &mut [u8]) -> &str {
+    snprintf!(out, "{slot_count}")
+}
+
+/// Formats `current-slot` into `out`.
+fn format_current_slot(slot: Slot, out: &mut [u8]) -> &str {
+    snprintf!(out, "{}", slot.suffix.as_char())
+}
+
+/// Formats `unlocked` or `unlocked-critical` from `AvbDeviceStatus`.
+fn format_unlocked(
+    status: &crate::gbl_avb::AvbDeviceStatus,
+    lock_type: fastboot::LockType,
+) -> &'static str {
+    let unlocked = match lock_type {
+        fastboot::LockType::Device => status.is_unlocked,
+        fastboot::LockType::Critical => status.is_unlocked_critical,
+    };
+    yes_no_str(unlocked)
+}
+
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
 impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, P2, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, P2, T, P, C, F>
 where
@@ -208,6 +230,35 @@ where
     C: PinFutContainerTyped<'c, F>,
     F: Future<Output = ()> + 'c,
 {
+    /// Formats a built-in scalar variable that takes no arguments and is shared between
+    /// `getvar` and `getvar all`.
+    async fn get_builtin_var<'s>(
+        &mut self,
+        name: &str,
+        out: &'s mut [u8],
+    ) -> CommandResult<Option<&'s str>> {
+        Ok(Some(match name {
+            MAX_DOWNLOAD_SIZE => snprintf!(out, "{:#x}", self.max_download_size().await),
+            IS_USERSPACE => snprintf!(out, "no"),
+            VERSION_BOOTLOADER => snprintf!(out, "gbl.{}", BUILD_NUMBER),
+            MAX_FETCH_SIZE => snprintf!(out, "{}", MAX_FETCH_SIZE_VAL),
+            DEFAULT_BLOCK => self.get_var_default_block(out)?,
+            STREAM_SEGMENT_SIZE => self.get_var_stream_segment_size(out)?,
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Sends a built-in scalar variable to `send` using [`Self::get_builtin_var`].
+    async fn send_builtin_var(
+        &mut self,
+        name: &str,
+        buf: &mut [u8],
+        send: &mut impl VarInfoSender,
+    ) -> CommandResult<()> {
+        let val = self.get_builtin_var(name, buf).await?.ok_or(Error::InvalidInput)?;
+        Ok(send.send_var_info(name, [], val).await?)
+    }
+
     /// Entry point for "fastboot getvar <variable>..."
     pub(crate) async fn get_var_internal<'s, 't>(
         &mut self,
@@ -219,12 +270,14 @@ where
         // Checks that all arguments are valid str first.
         args_str.clone().find(|v| v.is_err()).unwrap_or(Ok(""))?;
         let args_str = args_str.map(|v| v.unwrap());
-        Ok(match name.to_str()? {
-            MAX_DOWNLOAD_SIZE => snprintf!(out, "{:#x}", self.max_download_size().await),
-            IS_USERSPACE => snprintf!(out, "no"),
-            VERSION_BOOTLOADER => snprintf!(out, "gbl.{}", BUILD_NUMBER),
-            SLOT_COUNT => snprintf!(out, "{}", self.gbl_ops.get_slot_count()?),
-            CURRENT_SLOT => snprintf!(out, "{}", self.gbl_ops.get_current_slot()?.suffix.as_char()),
+        let name_str = name.to_str()?;
+        Ok(match name_str {
+            MAX_DOWNLOAD_SIZE | IS_USERSPACE | VERSION_BOOTLOADER | MAX_FETCH_SIZE
+            | DEFAULT_BLOCK | STREAM_SEGMENT_SIZE => {
+                self.get_builtin_var(name_str, out).await?.ok_or(Error::InvalidInput)?
+            }
+            SLOT_COUNT => format_slot_count(self.gbl_ops.get_slot_count()?, out),
+            CURRENT_SLOT => format_current_slot(self.gbl_ops.get_current_slot()?, out),
             SLOT_SUCCESSFUL => {
                 snprintf!(out, "{}", self.get_fastboot_slot_info(args_str)?.successful)
             }
@@ -236,14 +289,11 @@ where
             }
             HAS_SLOT => self.get_var_has_slot(args_str, out).await?,
             FINGERPRINT => self.get_var_fingerprint(args_str, out)?,
-            MAX_FETCH_SIZE => snprintf!(out, "{}", MAX_FETCH_SIZE_VAL),
             PARTITION_START => self.get_var_partition_start(args_str, out)?,
             PARTITION_SIZE => self.get_var_partition_size(args_str, out)?,
             PARTITION_TYPE => self.get_var_partition_type(args_str, out)?,
             PARTITION_GUID => self.get_var_partition_guid(args_str, out)?,
-            STREAM_SEGMENT_SIZE => self.get_var_stream_segment_size(out)?,
             BLOCK_DEVICE => self.get_var_block_device(args_str, out)?,
-            DEFAULT_BLOCK => self.get_var_default_block(out)?,
             UNLOCKED => self.get_var_unlocked(fastboot::LockType::Device, out)?,
             UNLOCKED_CRITICAL => self.get_var_unlocked(fastboot::LockType::Critical, out)?,
             _ => {
@@ -261,17 +311,19 @@ where
         send: &mut impl VarInfoSender,
     ) -> CommandResult<()> {
         let mut buf = [0u8; GETVAR_RESPONSE_MAX_SIZE];
-        let dl_sz = snprintf!(buf, "{:#x}", self.max_download_size().await);
-        send.send_var_info(MAX_DOWNLOAD_SIZE, [], dl_sz).await?;
-        send.send_var_info(IS_USERSPACE, [], "no").await?;
-        send.send_var_info(VERSION_BOOTLOADER, [], snprintf!(buf, "gbl.{BUILD_NUMBER}")).await?;
+        self.send_builtin_var(MAX_DOWNLOAD_SIZE, &mut buf, send).await?;
+        self.send_builtin_var(IS_USERSPACE, &mut buf, send).await?;
+        self.send_builtin_var(VERSION_BOOTLOADER, &mut buf, send).await?;
         match self.gbl_ops.get_slot_count() {
             Ok(slot_count) => {
-                send.send_var_info(SLOT_COUNT, [], snprintf!(buf, "{slot_count}")).await?;
+                send.send_var_info(SLOT_COUNT, [], format_slot_count(slot_count, &mut buf)).await?;
 
                 // Variable may be optional. Continues instead of erroring out.
-                match self.gbl_ops.get_current_slot().map(|v| v.suffix.as_char()) {
-                    Ok(v) => send.send_var_info(CURRENT_SLOT, [], snprintf!(buf, "{v}")).await?,
+                match self.gbl_ops.get_current_slot() {
+                    Ok(slot) => {
+                        send.send_var_info(CURRENT_SLOT, [], format_current_slot(slot, &mut buf))
+                            .await?
+                    }
                     Err(e) => gbl_println!(self.gbl_ops, "Failed to get current_slot {e}"),
                 };
 
@@ -314,21 +366,25 @@ where
                 fastboot variables cannot be provided."
             ),
         }
-        send.send_var_info(MAX_FETCH_SIZE, [], MAX_FETCH_SIZE_VAL).await?;
+        self.send_builtin_var(MAX_FETCH_SIZE, &mut buf, send).await?;
         self.get_all_block_device(send).await?;
-        send.send_var_info(DEFAULT_BLOCK, [], self.get_var_default_block(&mut buf)?).await?;
+        self.send_builtin_var(DEFAULT_BLOCK, &mut buf, send).await?;
         self.get_all_partition_vars(send).await?;
 
-        send.send_var_info(STREAM_SEGMENT_SIZE, [], self.get_var_stream_segment_size(&mut buf)?)
-            .await?;
+        self.send_builtin_var(STREAM_SEGMENT_SIZE, &mut buf, send).await?;
 
         match self.gbl_ops.avb_read_device_status() {
             Ok(device_status) => {
-                send.send_var_info(UNLOCKED, [], yes_no_str(device_status.is_unlocked)).await?;
+                send.send_var_info(
+                    UNLOCKED,
+                    [],
+                    format_unlocked(&device_status, fastboot::LockType::Device),
+                )
+                .await?;
                 send.send_var_info(
                     UNLOCKED_CRITICAL,
                     [],
-                    yes_no_str(device_status.is_unlocked_critical),
+                    format_unlocked(&device_status, fastboot::LockType::Critical),
                 )
                 .await?;
             }
@@ -581,11 +637,7 @@ where
     ) -> CommandResult<&'s str> {
         let status =
             self.gbl_ops.avb_read_device_status().map_err(|_| "failed to read lock state")?;
-        let unlocked = match lock_type {
-            fastboot::LockType::Device => status.is_unlocked,
-            fastboot::LockType::Critical => status.is_unlocked_critical,
-        };
-        Ok(snprintf!(out, "{}", yes_no_str(unlocked)))
+        Ok(snprintf!(out, "{}", format_unlocked(&status, lock_type)))
     }
 
     /// "fastboot getvar slot-successful:<slot-suffix>"
