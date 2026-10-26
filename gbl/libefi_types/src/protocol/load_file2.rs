@@ -27,8 +27,10 @@ use crate::{
 use core::{mem::MaybeUninit, ops::Not};
 
 impl Identified for EfiLoadFile2Protocol {
-    const GUID: EfiGuid =
-        EfiGuid::new(0x4006c0c1, 0xfcb3, 0x403e, [0x99, 0x6d, 0x4a, 0x6c, 0x87, 0x24, 0xe0, 0x6d]);
+    const GUID: EfiGuid = EfiGuid::from_u64s(
+        crate::defs::EFI_LOAD_FILE2_PROTOCOL_GUID_U64_0,
+        crate::defs::EFI_LOAD_FILE2_PROTOCOL_GUID_U64_1,
+    );
 }
 
 /// Protocol Rust API for `EFI_LOAD_FILE2_PROTOCOL`.

@@ -14,7 +14,7 @@
 
 //! This file provides some utilities built on EFI APIs.
 
-use crate::{EfiEntry, Event, EventType};
+use crate::{EfiEntry, Event, EventType, EFI_ACPI_TABLE_GUID, EFI_DTB_TABLE_GUID};
 use core::{str::from_utf8, time::Duration};
 use efi_types::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use fdt::FdtHeader;
@@ -72,12 +72,6 @@ pub fn find_configuration_table(entry: &EfiEntry, guid: EfiGuid) -> Option<*cons
         .and_then(|v| v.iter().find(|v| v.vendor_guid == guid))
         .map(|v| v.vendor_table as *const u8)
 }
-
-// TODO(b/486979232): Find better places for these GUID constants.
-pub(crate) const EFI_DTB_TABLE_GUID: EfiGuid =
-    EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
-pub(crate) const EFI_ACPI_TABLE_GUID: EfiGuid =
-    EfiGuid::new(0x8868e871, 0xe4f1, 0x11d3, [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81]);
 
 /// Find FDT from EFI configuration table.
 pub fn find_fdt_configuration_table(entry: &EfiEntry) -> Option<(&FdtHeader, &[u8])> {
