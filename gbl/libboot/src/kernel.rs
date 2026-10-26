@@ -92,10 +92,10 @@ mod aarch64 {
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", test))]
 pub use riscv64::{parse_riscv64, Riscv64Attributes};
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", test))]
 mod riscv64 {
     use core::mem::size_of;
     use liberror::{Error, Result};
@@ -200,5 +200,34 @@ mod tests {
         let attrs = parse_aarch64(&buf).unwrap();
         assert_eq!(attrs.page_size, None);
         assert!(attrs.image_size.is_some());
+    }
+
+    #[test]
+    fn riscv64_valid_header() {
+        let mut buf = [0u8; 64];
+        buf[0x10..0x18].copy_from_slice(&0x0020_0000u64.to_le_bytes());
+        buf[0x38..0x3c].copy_from_slice(b"RSC\x05");
+        let attrs = parse_riscv64(&buf).unwrap();
+        assert_eq!(attrs, Riscv64Attributes { image_size: Some(0x0020_0000) });
+    }
+
+    #[test]
+    fn riscv64_invalid_magic_returns_bad_magic() {
+        let buf = [0u8; 64];
+        assert!(matches!(parse_riscv64(&buf), Err(liberror::Error::BadMagic)));
+    }
+
+    #[test]
+    fn riscv64_short_buffer_returns_err() {
+        let buf = [0u8; 32];
+        assert!(matches!(parse_riscv64(&buf), Err(liberror::Error::BufferTooSmall(Some(64)))));
+    }
+
+    #[test]
+    fn riscv64_image_size_zero_returns_none() {
+        let mut buf = [0u8; 64];
+        buf[0x38..0x3c].copy_from_slice(b"RSC\x05");
+        let attrs = parse_riscv64(&buf).unwrap();
+        assert_eq!(attrs, Riscv64Attributes { image_size: None });
     }
 }

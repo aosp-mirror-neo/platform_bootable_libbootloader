@@ -723,7 +723,6 @@ where
     /// Reads the super partition and extracts dynamic partition names from LP metadata.
     ///
     /// Returns an empty list if super partition doesn't exist or metadata parsing fails.
-    /// TODO(b/502083075) Add unit tests to check dynamic partitions names in super.
     async fn get_dynamic_partition_names(
         &mut self,
     ) -> Result<arrayvec::ArrayVec<RawName, 32>, Error> {

@@ -2498,6 +2498,43 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_fastboot_getvar_dynamic_partitions_has_slot() {
+        let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
+        let mut load_buffer = AlignedBuffer::new(MiB!(8), KERNEL_ALIGNMENT);
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        storage.add_raw_device(c"super", *include_bytes!("../../../liblp/testdata/super.bin"));
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(
+            &mut gbl_ops,
+            parts,
+            Task::run,
+            &tasks,
+            &dl_buffers,
+            GblFbData { boot_buffer: load_buffer.as_mut().into(), ..Default::default() },
+        );
+
+        // Static GPT partition + super partition + dynamic partitions from super.bin
+        check_var(&mut gbl_fb, "has-slot", "boot", "yes");
+        check_var(&mut gbl_fb, "has-slot", "super", "no");
+        check_var(&mut gbl_fb, "has-slot", "system", "yes");
+        check_var(&mut gbl_fb, "has-slot", "system_dlkm", "yes");
+        check_var(&mut gbl_fb, "has-slot", "system_ext", "yes");
+        check_var(&mut gbl_fb, "has-slot", "product", "yes");
+        check_var(&mut gbl_fb, "has-slot", "vendor", "yes");
+        check_var(&mut gbl_fb, "has-slot", "vendor_dlkm", "yes");
+        check_var_failure(&mut gbl_fb, "has-slot", "system_a");
+
+        let mut logger = TestVarSender(vec![]);
+        block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
+        assert!(logger.0.contains(&"has-slot:system: yes".to_string()));
+        assert!(logger.0.contains(&"has-slot:vendor: yes".to_string()));
+        assert!(logger.0.contains(&"has-slot:product: yes".to_string()));
+    }
+
+    #[test]
     fn test_stream_vars() {
         let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
         let mut load_buffer = AlignedBuffer::new(MiB!(8), KERNEL_ALIGNMENT);
@@ -6365,8 +6402,6 @@ pub(crate) mod test {
         assert_eq!(download_trace, vec![vec![]]);
     }
 
-    // TODO(b/505924108): Add a test that the command exec override can allow commands
-    // that would normally be blocked by the lock state.
     #[test]
     fn test_fastboot_command_exec() {
         let mut storage = FakeGblOpsStorage::default();
@@ -6418,6 +6453,55 @@ pub(crate) mod test {
         assert_eq!(
             download_trace,
             vec![(expected_download_data_buffer.to_vec(), download_data.len()), (vec![], 0)]
+        );
+    }
+
+    #[test]
+    fn test_fastboot_command_exec_locked() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", [0u8; KiB!(4)]);
+        const BUFFER_SIZE: usize = KiB!(2);
+        let buffers = vec![Some(vec![0u8; BUFFER_SIZE]); 1];
+        let mut handler = |cmd: Vec<String>, _download: &mut [u8], _download_used: usize| match cmd
+            .join(":")
+            .as_str()
+        {
+            "flash:allowed_when_locked" => Ok(CommandExecType::CustomImpl),
+            _ => Ok(CommandExecType::DefaultImpl),
+        };
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = false;
+        gbl_ops.command_exec_send_messages =
+            vec![vec![], vec![SenderMessage::Okay("".to_string())]].into();
+        gbl_ops.fastboot_command_exec_handler = Some(&mut handler);
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        let download_data = &[0xaau8; 0x400];
+        listener.add_transport_input(format!("download:{:#x}", download_data.len()).as_bytes());
+        listener.add_transport_input(download_data);
+        // DefaultImpl falls through to standard flash handler, which is blocked when locked.
+        listener.add_transport_input(b"flash:boot_a");
+        // CustomImpl override succeeds even when device is locked.
+        listener.add_transport_input(b"flash:allowed_when_locked");
+        listener.add_transport_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"DATA00000400",
+                b"OKAY",
+                b"FAILDevice is locked",
+                b"OKAY",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
         );
     }
 

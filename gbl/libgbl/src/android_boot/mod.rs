@@ -1781,7 +1781,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(
             3,
             3,
-            'a',
+            'b',
             "",
             &[],
             EXPECTED_FDT_PROPS,
@@ -1819,7 +1819,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(
             4,
             3,
-            'a',
+            'b',
             "",
             &[],
             EXPECTED_FDT_PROPS,
@@ -1860,7 +1860,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(
             3,
             4,
-            'a',
+            'b',
             config,
             &[],
             EXPECTED_FDT_PROPS,
@@ -1902,7 +1902,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(
             4,
             4,
-            'a',
+            'b',
             config,
             &[],
             EXPECTED_FDT_PROPS,
@@ -2025,7 +2025,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_init_boot_slot_b() {
-        test_android_load_verify_fixup_v3_or_v4_init_boot(3, 3, 'a', "", &[], EXPECTED_FDT_PROPS);
+        test_android_load_verify_fixup_v3_or_v4_init_boot(3, 3, 'b', "", &[], EXPECTED_FDT_PROPS);
     }
 
     #[test]
@@ -2049,7 +2049,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_init_boot_slot_b() {
-        test_android_load_verify_fixup_v3_or_v4_init_boot(4, 3, 'a', "", &[], EXPECTED_FDT_PROPS);
+        test_android_load_verify_fixup_v3_or_v4_init_boot(4, 3, 'b', "", &[], EXPECTED_FDT_PROPS);
     }
 
     #[test]
@@ -2086,7 +2086,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_init_boot(
             3,
             4,
-            'a',
+            'b',
             config,
             &[],
             EXPECTED_FDT_PROPS,
@@ -2128,7 +2128,7 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_init_boot(
             4,
             4,
-            'a',
+            'b',
             config,
             &[],
             EXPECTED_FDT_PROPS,

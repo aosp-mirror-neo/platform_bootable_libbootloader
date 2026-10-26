@@ -18,7 +18,7 @@
 //! to either one using the same path.
 
 use crate::{DeviceHandle, MOCK_EFI};
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use arrayvec::ArrayVec;
 use core::{
     ffi::{c_void, CStr},
@@ -335,6 +335,9 @@ pub mod gbl_efi_avb {
         pub write_persistent_value_result: Option<Result<()>>,
         /// Expected return value from `handle_verification_result`.
         pub handle_verification_result_result: Option<Result<()>>,
+        /// Optional callback handler for `handle_verification_result`.
+        pub handle_verification_result_handler:
+            Option<Arc<dyn Fn(&GblEfiAvbVerificationResult) -> Result<()> + Send + Sync>>,
         /// Expected return value from `write_lock_state`.
         pub write_lock_state_result: Option<Result<()>>,
         /// Expected return value from `factory_data_reset`.
@@ -394,9 +397,13 @@ pub mod gbl_efi_avb {
         /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
         pub fn handle_verification_result(
             &self,
-            _verification_result: &GblEfiAvbVerificationResult,
+            verification_result: &GblEfiAvbVerificationResult,
         ) -> Result<()> {
-            self.handle_verification_result_result.unwrap()
+            if let Some(handler) = &self.handle_verification_result_handler {
+                handler(verification_result)
+            } else {
+                self.handle_verification_result_result.unwrap()
+            }
         }
 
         /// Wraps `GBL_EFI_AVB_PROTOCOL.write_lock_state()`.

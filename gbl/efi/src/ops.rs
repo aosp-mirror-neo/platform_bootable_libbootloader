@@ -111,6 +111,10 @@ const_assert_eq!(PARTITION_NAME_LEN_U16 as usize, IMAGE_NAME_MAX_LEN);
 // fastboot protocol.
 const_assert!(FASTBOOT_PARTITION_TYPE_LEN >= GBL_EFI_FASTBOOT_PARTITION_TYPE_BUF_LEN);
 
+// The maximum number of AVB properties that can be provided to the AVB protocol.
+// If more properties are detected across vbmeta, GBL rejects to boot.
+const AVB_PROPERTIES_MAX_NUM: usize = 128;
+
 fn dt_component_to_efi_dt(component: &DtComponent) -> GblEfiVerifiedDeviceTree {
     let (id, rev, custom_size, custom) = match component.selection_metadata.as_ref() {
         Some(m) => {
@@ -639,11 +643,6 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         properties: Option<impl Iterator<Item = AvbProperty<'c>>>,
         partitions: Option<impl Iterator<Item = AvbPartition<'c>>>,
     ) -> AvbIoResult<()> {
-        // TODO(b/337846185): Cover `avb_handle_verification_result` with unittests.
-
-        // The maximum number of AVB properties that can be provided to the AVB protocol.
-        // If more properties are detected across vbmeta, GBL rejects to boot.
-        const AVB_PROPERTIES_MAX_NUM: usize = 128;
         struct AvbPropertiesStorage(ArrayVec<GblEfiAvbProperty, AVB_PROPERTIES_MAX_NUM>);
 
         // SAFETY: `GblEfiAvbProperty` raw pointers are re-initialized from the const-borrowed
@@ -1198,6 +1197,7 @@ fn avb_error_to_efi_error(error: AvbIoError) -> Error {
 mod test {
     use super::*;
     use ::efi::protocol::Revision;
+    use core::iter::Empty;
     use efi_mocks::{protocol::gbl_efi_avb::GblAvbProtocol, MockEfi};
     use libgbl::{
         device_tree::{
@@ -1206,7 +1206,13 @@ mod test {
         gbl_avb::{Critical, Fdr, PartitionName, Verification},
     };
     use mockall::predicate::eq;
-    use std::slice;
+    use std::{
+        slice,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
     /// Builds a `MockEfi` whose `find_first_and_open::<P>()` returns a default mock with
     /// `Versioned::revision` overridden to `revision`. The con_out passthrough lets the
@@ -1849,6 +1855,172 @@ mod test {
                 value_size: value_with_nul.len() - 1,
                 value: value_with_nul.as_ptr(),
             }
+        );
+    }
+
+    #[test]
+    fn ops_avb_handle_verification_result_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = calls.clone();
+        avb.handle_verification_result_handler = Some(Arc::new(move |res| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                res.color_flags,
+                efi_types::GBL_EFI_AVB_BOOT_COLOR_YELLOW
+                    | efi_types::GBL_EFI_AVB_BOOT_COLOR_RED_EIO
+            );
+            // SAFETY: `res.digest` is a valid C string passed by the test.
+            assert_eq!(unsafe { CStr::from_ptr(res.digest as _) }, c"0123456789abcdef");
+            assert_eq!(res.num_partitions, 1);
+            // SAFETY: `res.partitions` points to `res.num_partitions` elements.
+            let part = unsafe { &*res.partitions };
+            // SAFETY: `part.base_name` is a valid C string passed by the test.
+            assert_eq!(unsafe { CStr::from_ptr(part.base_name as _) }, c"boot");
+            assert_eq!(part.data_size, 4);
+            // SAFETY: `part.data` points to `part.data_size` bytes.
+            assert_eq!(unsafe { slice::from_raw_parts(part.data, part.data_size) }, b"data");
+
+            assert_eq!(res.num_properties, 1);
+            // SAFETY: `res.properties` points to `res.num_properties` elements.
+            let prop = unsafe { &*res.properties };
+            // SAFETY: `prop.base_partition_name` is a valid C string passed by the test.
+            assert_eq!(unsafe { CStr::from_ptr(prop.base_partition_name as _) }, c"boot");
+            // SAFETY: `prop.key` is a valid C string passed by the test.
+            assert_eq!(unsafe { CStr::from_ptr(prop.key as _) }, c"prop_key");
+            assert_eq!(prop.value_size, 8);
+            // SAFETY: `prop.value` points to `prop.value_size` bytes.
+            assert_eq!(unsafe { slice::from_raw_parts(prop.value, prop.value_size) }, b"prop_val");
+            Ok(())
+        }));
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .return_once(move || Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+        let props =
+            [AvbProperty { partition: c"boot", key: c"prop_key", value_with_nul: b"prop_val\0" }];
+        let parts = [AvbPartition { name: c"boot", data: b"data" }];
+        assert_eq!(
+            ops.avb_handle_verification_result(
+                VerificationStatus { color: BootStateColor::Yellow, is_eio: true },
+                Some(c"0123456789abcdef"),
+                Some(props.into_iter()),
+                Some(parts.into_iter()),
+            ),
+            Ok(())
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ops_avb_handle_verification_result_none_args() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = calls.clone();
+        avb.handle_verification_result_handler = Some(Arc::new(move |res| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(res.color_flags, efi_types::GBL_EFI_AVB_BOOT_COLOR_GREEN);
+            assert!(res.digest.is_null());
+            assert_eq!(res.num_partitions, 0);
+            assert!(res.partitions.is_null());
+            assert_eq!(res.num_properties, 0);
+            assert!(res.properties.is_null());
+            Ok(())
+        }));
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .return_once(move || Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+        assert_eq!(
+            ops.avb_handle_verification_result(
+                VerificationStatus { color: BootStateColor::Green, is_eio: false },
+                None,
+                None::<Empty<_>>,
+                None::<Empty<_>>,
+            ),
+            Ok(())
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ops_avb_handle_verification_result_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .return_once(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+        assert_eq!(
+            ops.avb_handle_verification_result(
+                VerificationStatus { color: BootStateColor::Green, is_eio: false },
+                None,
+                None::<Empty<_>>,
+                None::<Empty<_>>,
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ops_avb_handle_verification_result_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.handle_verification_result_result = Some(Err(Error::DeviceError));
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .return_once(move || Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+        assert_eq!(
+            ops.avb_handle_verification_result(
+                VerificationStatus { color: BootStateColor::Red, is_eio: false },
+                None,
+                None::<Empty<_>>,
+                None::<Empty<_>>,
+            ),
+            Err(AvbIoError::Io)
+        );
+    }
+
+    #[test]
+    fn ops_avb_handle_verification_result_too_many_properties() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi.con_out.expect_write_str().return_const(Ok(()));
+        let avb = GblAvbProtocol::default();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .return_once(move || Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+        let props = core::iter::repeat_with(|| AvbProperty {
+            partition: c"boot",
+            key: c"k",
+            value_with_nul: b"v\0",
+        })
+        .take(AVB_PROPERTIES_MAX_NUM + 1);
+        assert_eq!(
+            ops.avb_handle_verification_result(
+                VerificationStatus { color: BootStateColor::Green, is_eio: false },
+                None,
+                Some(props),
+                None::<Empty<_>>,
+            ),
+            Err(AvbIoError::Io)
         );
     }
 
