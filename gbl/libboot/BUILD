@@ -81,7 +81,7 @@ rust_library(
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_aarch64": [
-            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
+            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_lib",
         ],
         "@gbl//toolchain:gbl_rust_uefi_x86_64": [":x86_bootparam_defs"],
         "@gbl//toolchain:gbl_rust_uefi_x86_64_debug": [":x86_bootparam_defs"],

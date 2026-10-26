@@ -14,21 +14,4 @@
 
 //! AArch64 cache utilities.
 
-use core::arch::asm;
-
-extern "C" {
-    /// Clean and invalidate data cache by address range. The function is from ATF library.
-    fn flush_dcache_range(addr: usize, len: usize);
-}
-
-// TODO(b/336318818): Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libgblutils.
-/// Flush all data cache for the given buffer.
-#[inline]
-pub fn flush_dcache_buffer(buf: &[u8]) {
-    // SAFETY: Safe because the cache is invalidated for a valid, read/write memory range
-    // from a single allocation, with no concurrent access and no MMIO/device memory involved.
-    // This preserves memory safety guarantees and does not affect Rust.
-    unsafe { flush_dcache_range(buf.as_ptr() as usize, buf.len()) }
-    // SAFETY: Assembly code for instruction synchronization, does not affect Rust.
-    unsafe { asm!("isb") };
-}
+pub use aarch64_cache_helper::flush_dcache_buffer;

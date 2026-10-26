@@ -51,22 +51,11 @@ pub fn current_el() -> ExceptionLevel {
 }
 
 extern "C" {
-    /// Clean and invalidate data cache by address range. The function is from ATF library.
-    fn flush_dcache_range(addr: usize, len: usize);
-
     /// Performs cache operations by set/way.
     fn dcsw_op_all(op: usize);
 }
 
-// TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
-/// Flush all data cache for the given buffer.
-pub fn flush_dcache_buffer(buf: &[u8]) {
-    // SAFETY: `flush_dcache_range()` only performs cache maintenance on the given range, which is
-    // a valid buffer borrowed for the duration of the call.
-    unsafe { flush_dcache_range(buf.as_ptr() as usize, buf.len()) }
-    // SAFETY: Assembly code for instruction synchronization.
-    unsafe { asm!("isb") };
-}
+pub use aarch64_cache_helper::flush_dcache_buffer;
 
 /// Flush all data cache by set/way.
 fn flush_cache_by_set_way() {

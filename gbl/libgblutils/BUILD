@@ -32,7 +32,7 @@ rust_library(
         "@zeroize",
     ] + select({
         "@gbl//toolchain:gbl_rust_aarch64": [
-            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
+            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_lib",
         ],
         "@platforms//cpu:x86_64": [
             "@x86_64",

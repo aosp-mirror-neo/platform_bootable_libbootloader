@@ -14,6 +14,7 @@
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 package(
     default_applicable_licenses = ["@gbl//licensing:gbl_license"],
@@ -45,4 +46,12 @@ cc_library(
 link_static_cc_library(
     name = "aarch64_cache_helper_staticlib",
     cc_library = ":aarch64_cache_helper",
+)
+
+rust_library(
+    name = "aarch64_cache_helper_lib",
+    srcs = ["src/lib.rs"],
+    crate_name = "aarch64_cache_helper",
+    edition = "2021",
+    deps = [":aarch64_cache_helper_staticlib"],
 )

@@ -17,28 +17,6 @@
 use core::{ffi::c_void, mem::MaybeUninit};
 use zeroize::Zeroize;
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64 {
-    use core::arch::asm;
-
-    extern "C" {
-        /// Clean and invalidate data cache by address range. The function is from ATF library.
-        fn flush_dcache_range(addr: usize, len: usize);
-    }
-
-    // TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
-    /// Flush all data cache for the given buffer.
-    #[inline]
-    pub fn flush_dcache_buffer(buf: &[u8]) {
-        // SAFETY: Safe because the cache is invalidated for a valid, read/write memory range
-        // from a single allocation, with no concurrent access and no MMIO/device memory involved.
-        // This preserves memory safety guarantees and does not affect Rust.
-        unsafe { flush_dcache_range(buf.as_ptr() as usize, buf.len()) }
-        // SAFETY: Assembly code for instruction synchronization, does not affect Rust.
-        unsafe { asm!("isb") };
-    }
-}
-
 /// Zeroes data over the provided address range & flushes data caches.
 ///
 /// # Safety
@@ -62,5 +40,5 @@ unsafe extern "C" fn DiceClearMemory(_ctx: *mut c_void, size: usize, addr: *mut 
     #[cfg(target_arch = "aarch64")]
     // SAFETY: All `size` bytes at `ptr` have just been initialized to zero, and the mutable `buf`
     // borrow ended with its scope above, so this shared slice doesn't overlap it.
-    aarch64::flush_dcache_buffer(unsafe { core::slice::from_raw_parts(ptr, size) });
+    aarch64_cache_helper::flush_dcache_buffer(unsafe { core::slice::from_raw_parts(ptr, size) });
 }
