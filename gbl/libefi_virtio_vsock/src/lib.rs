@@ -119,8 +119,8 @@ fn get_ecam_from_dt(entry: &EfiEntry) -> Option<(u64, u64)> {
     // Virtio is almost exclusively used for qemu, which hardcodes pcie@10000000 as the base
     // address for pcie devices. Revisit if we ever use this for non-qemu platforms.
     let pcie_prop = fdt.get_property("pcie@10000000", c"reg").ok()?;
-    let pcie_base = u64::from_be_bytes(pcie_prop[..8].try_into().unwrap());
-    let pci_size = u64::from_be_bytes(pcie_prop[8..][..8].try_into().unwrap());
+    let pcie_base = u64::from_be_bytes(pcie_prop.get(..8)?.try_into().ok()?);
+    let pci_size = u64::from_be_bytes(pcie_prop.get(8..16)?.try_into().ok()?);
     Some((pcie_base, pci_size))
 }
 

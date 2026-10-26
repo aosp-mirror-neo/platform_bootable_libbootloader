@@ -148,21 +148,21 @@ mod network_fastboot {
 mod network_fastboot {
     use super::*;
 
-    pub(super) struct NoOpTcp {}
+    pub(super) enum NoOpTcp {}
 
     impl TcpStream for NoOpTcp {
         async fn read(&mut self, _out: &mut [u8]) -> fastboot::Result<usize> {
-            unimplemented!();
+            match *self {}
         }
 
         async fn write_exact(&mut self, _data: &[u8]) -> fastboot::Result<()> {
-            unimplemented!();
+            match *self {}
         }
     }
 
     impl GblTcpStream for NoOpTcp {
         fn accept_new(&mut self) -> bool {
-            unimplemented!();
+            match *self {}
         }
     }
 }

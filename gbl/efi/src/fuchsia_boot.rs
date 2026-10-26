@@ -115,7 +115,8 @@ pub fn efi_fuchsia_boot(
 
     #[cfg(target_arch = "riscv64")]
     {
-        unimplemented!();
+        let _ = (efi_entry, kernel, zbi_items);
+        Err(Error::Unsupported.into())
     }
 }
 

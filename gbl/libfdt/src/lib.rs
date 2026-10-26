@@ -258,9 +258,8 @@ impl FdtHeader {
 
     /// Return the minimal size of the FDT. Disregard trailing free space.
     pub fn actual_size(&self) -> usize {
-        u32::from_be(self.0.off_dt_strings)
-            .checked_add(u32::from_be(self.0.size_dt_strings))
-            .unwrap() as usize
+        u32::from_be(self.0.off_dt_strings).saturating_add(u32::from_be(self.0.size_dt_strings))
+            as usize
     }
 
     /// Update the totalsize field.
@@ -479,7 +478,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// big.
     pub fn shrink_to_fit(&mut self) -> Result<()> {
         let actual = self.header_ref()?.actual_size();
-        self.header_mut()?.set_totalsize(actual.try_into().unwrap());
+        self.header_mut()?.set_totalsize(actual.try_into().map_err(|_| Error::InvalidInput)?);
         Ok(())
     }
 
@@ -489,7 +488,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// previously shrunk. After modifications are complete, consider calling `shrink_to_fit`
     /// to reduce the size before passing to the kernel.
     pub fn expand_to_buffer(&mut self) -> Result<()> {
-        let buffer_size = self.0.as_ref().len().try_into().unwrap();
+        let buffer_size = self.0.as_ref().len().try_into().map_err(|_| Error::InvalidInput)?;
         self.header_mut()?.set_totalsize(buffer_size);
         Ok(())
     }
