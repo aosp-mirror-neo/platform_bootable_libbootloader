@@ -44,9 +44,7 @@
 //! See https://www.kernel.org/doc/html/v5.11/x86/boot.html#the-linux-x86-boot-protocol for more
 //! detail.
 
-use core::arch::asm;
-use core::mem::size_of;
-use core::slice::from_raw_parts_mut;
+use core::{arch::asm, convert::Infallible, mem::size_of, slice::from_raw_parts_mut};
 use liberror::{Error, Result};
 #[cfg(feature = "fuchsia")]
 use zbi::ZbiContainer;
@@ -293,7 +291,7 @@ pub unsafe fn boot_linux_bzimage<F>(
     cmdline: &[u8],
     mmap_cb: F,
     low_mem_addr: usize,
-) -> Result<!>
+) -> Result<Infallible>
 where
     F: FnOnce(&mut [e820entry], &mut efi_info) -> Result<u8>,
 {

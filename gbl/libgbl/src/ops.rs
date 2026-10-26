@@ -32,6 +32,7 @@ pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, Ops as AbrOps, Slo
 use arrayvec::ArrayVec;
 use bytes::buf::UninitSlice;
 use core::{
+    convert::Infallible,
     ffi::CStr,
     fmt::{Display, Write},
     ops::{Deref, DerefMut},
@@ -162,7 +163,7 @@ pub trait GblOps<'a> {
     /// If successful this method will not return.
     /// If an error is generated instead, the caller is expected to log the error
     /// and bring the system to a halt, usually by entering an infinite loop.
-    fn reboot(&mut self) -> Result<!, Error>;
+    fn reboot(&mut self) -> Result<Infallible, Error>;
 
     /// Returns the list of disk devices on this platform.
     ///
@@ -736,7 +737,7 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         self.ops.console_out()
     }
 
-    fn reboot(&mut self) -> Result<!, Error> {
+    fn reboot(&mut self) -> Result<Infallible, Error> {
         self.ops.reboot()
     }
 
@@ -1507,7 +1508,7 @@ pub(crate) mod test {
             Some(self)
         }
 
-        fn reboot(&mut self) -> Result<!, Error> {
+        fn reboot(&mut self) -> Result<Infallible, Error> {
             self.rebooted = true;
             Err(Error::Aborted)
         }
@@ -2022,7 +2023,7 @@ pub(crate) mod test {
             Some(&mut self.0)
         }
 
-        fn reboot(&mut self) -> Result<!, Error> {
+        fn reboot(&mut self) -> Result<Infallible, Error> {
             Err(Error::Unsupported)
         }
 

@@ -17,7 +17,6 @@
 //! This module aliases mock objects to their standard names, so that code can just unconditionally
 //! use e.g. `EfiEntry` and in test code it will switch to `MockEfiEntry`.
 
-#![feature(never_type)]
 #![feature(negative_impls)]
 
 extern crate alloc;
@@ -26,7 +25,7 @@ pub mod profiling;
 pub mod protocol;
 pub mod utils;
 
-use core::time::Duration;
+use core::{convert::Infallible, time::Duration};
 use efi_types::{EfiConfigurationTable, EfiGuid, EfiTimerDelay};
 use liberror::Result;
 use mockall::mock;
@@ -369,7 +368,7 @@ mock! {
     /// Mock [efi::RuntimeServices].
     pub RuntimeServices {
         /// Performs a cold reset.
-        pub fn cold_reset(&self) -> Result<!>;
+        pub fn cold_reset(&self) -> Result<Infallible>;
 
         /// Gets EFI variable.
         pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> Result<usize>;
