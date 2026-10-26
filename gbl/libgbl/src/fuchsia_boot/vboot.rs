@@ -18,6 +18,7 @@ use crate::{
     gbl_println, GblOps, Result as GblResult,
 };
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
+use liberror::Error;
 use zbi::{merge_within, ZbiContainer};
 use zerocopy::SplitByteSliceMut;
 
@@ -109,12 +110,12 @@ fn zircon_verify_kernel_internal<'a, 'b, B: SplitByteSliceMut + PartialEq>(
         }
     };
 
-    let top_level_vbmeta = verify_data.vbmeta_data().first().unwrap();
-    assert!(
-        top_level_vbmeta.partition_name() == c"vbmeta",
-        "GBL requires the vbmeta partition as the top-level verification structure. Please \
-        contact the GBL team if you encounter this error."
-    );
+    let top_level_vbmeta =
+        verify_data.vbmeta_data().first().filter(|v| v.partition_name() == c"vbmeta").ok_or(
+            Error::Other(Some(
+                "GBL requires the vbmeta partition as the top-level verification structure",
+            )),
+        )?;
 
     // Collects ZBI items from top-level vbmetadata and appends to the `zbi_items`.
     //
@@ -124,7 +125,8 @@ fn zircon_verify_kernel_internal<'a, 'b, B: SplitByteSliceMut + PartialEq>(
         Descriptor::Property(p) if p.key.starts_with("zbi") => Some(p),
         _ => None,
     }) {
-        zbi_items.extend_unaligned(prop.value_with_nul.split_last().unwrap().1)?;
+        let (_, val) = prop.value_with_nul.split_last().ok_or(Error::InvalidInput)?;
+        zbi_items.extend_unaligned(val)?;
     }
 
     // Update rollback indices if the slot has successfully booted following:

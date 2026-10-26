@@ -207,11 +207,12 @@ pub fn avb_verify_slot<'a, 'b: 'c, 'c>(
     let mut digest = None;
     let mut is_eio = false;
     if let Some(verify_data) = verify_data {
-        assert!(
-            verify_data.vbmeta_data().first().unwrap().partition_name() == c"vbmeta",
-            "GBL requires the vbmeta partition as the top-level verification structure. Please \
-            contact the GBL team if you encounter this error."
-        );
+        if verify_data.vbmeta_data().first().map(|d| d.partition_name()) != Some(c"vbmeta") {
+            return Err(Error::Other(Some(
+                "GBL requires the vbmeta partition as the top-level verification structure",
+            ))
+            .into());
+        }
 
         is_eio = verify_data.resolved_hashtree_error_mode()
             == HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO;
@@ -221,7 +222,11 @@ pub fn avb_verify_slot<'a, 'b: 'c, 'c>(
         // is compromised, an attacker could create a vbmeta which injects a fake digest as a
         // commandline property descriptor. libavb puts all descriptors first in the commandline
         // then appends its own calculated values last, so always use the last one.
-        digest = CommandlineParser::new(verify_data.cmdline().to_str().unwrap())
+        let cmdline = verify_data
+            .cmdline()
+            .to_str()
+            .map_err(|_| Error::Other(Some("Invalid UTF-8 in AVB commandline")))?;
+        digest = CommandlineParser::new(cmdline)
             .filter_map(|v| v.ok().filter(|v| v.key == AVB_DIGEST_KEY))
             .last()
             .and_then(|v| v.value)
