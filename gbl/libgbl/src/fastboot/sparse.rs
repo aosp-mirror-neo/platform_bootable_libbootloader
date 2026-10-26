@@ -166,7 +166,9 @@ pub async fn write_sparse_image(
                 writer.write(write_offset, get_mut(payload, 0, to_usize(payload_sz)?)?).await?;
             }
             CHUNK_TYPE_FILL if header.chunk_sz != 0 => {
-                let fill_val = u32::from_le_bytes(get_mut(payload, 0, 4)?.try_into().unwrap());
+                let fill_bytes: [u8; 4] =
+                    get_mut(payload, 0, 4)?.try_into().map_err(|_| ERR_IMAGE_SIZE)?;
+                let fill_val = u32::from_le_bytes(fill_bytes);
                 fill = FillInfo::new_fill(header.chunk_sz, fill_val);
             }
             CHUNK_TYPE_DONT_CARE | CHUNK_TYPE_CRC32 => {}
@@ -186,7 +188,9 @@ pub async fn write_sparse_image(
     // Use all reamining buffer as fill buffer.
     let (fill_infos, fill_buffer) = sparse_img.split_at_mut(fill_off);
     let mut fill_buffer = FillBuffer { curr_val: None, curr_size: 0, buffer: fill_buffer };
-    let fill_infos = Ref::<_, [FillInfo]>::new_slice(fill_infos).unwrap().into_slice();
+    let fill_infos = Ref::<_, [FillInfo]>::new_slice(fill_infos)
+        .ok_or("Invalid sparse buffer alignment")?
+        .into_slice();
     write_offset = 0;
     for ele in fill_infos {
         match ele.get_blocks_and_value() {
@@ -200,7 +204,7 @@ pub async fn write_sparse_image(
                 let end = u64_add(write_offset, sz)?;
                 while write_offset < end {
                     let to_write = min(buffer_len, end - write_offset);
-                    writer.write(write_offset, &mut buffer[..to_usize(to_write).unwrap()]).await?;
+                    writer.write(write_offset, &mut buffer[..to_usize(to_write)?]).await?;
                     write_offset += to_write;
                 }
             }
@@ -226,14 +230,17 @@ impl FillBuffer<'_> {
     /// Get a buffer up to `size` number of bytes filled with `val`.
     fn get(&mut self, val: u32, size: u64) -> Result<&mut [u8], Error> {
         let aligned_len = self.buffer.len() - (self.buffer.len() % size_of::<u32>());
-        let size: usize = min(to_u64(aligned_len)?, size).try_into().unwrap();
+        let size: usize = to_usize(min(to_u64(aligned_len)?, size))?;
         if Some(val) != self.curr_val {
             self.curr_size = 0;
             self.curr_val = Some(val);
         }
         let gap = max(self.curr_size, size) - self.curr_size;
         let to_fill = &mut self.buffer[self.curr_size..][..gap];
-        Ref::<_, [FillUnit]>::new_slice(to_fill).unwrap().into_mut_slice().fill(FillUnit(val));
+        Ref::<_, [FillUnit]>::new_slice(to_fill)
+            .ok_or("Invalid fill buffer alignment")?
+            .into_mut_slice()
+            .fill(FillUnit(val));
         self.curr_size += gap;
         Ok(&mut self.buffer[..size])
     }

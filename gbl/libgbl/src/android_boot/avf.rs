@@ -343,19 +343,27 @@ pub(crate) fn inject_vmdtbo(
         (new_config_size + pvmfw_binary_size).try_into().map_err(Error::ArithmeticOverflow)?;
 
     // Shift subsequent entries right and insert vmdtbo entry
-    let vmdtbo_offset: usize = conf_header.entries[VMDTBO_ENTRY_IDX].offset.try_into().unwrap();
-    if TryInto::<usize>::try_into(new_config_size - PvmfwConfHeader::PADDED_SIZE).unwrap()
-        > conf_entries_buf.len()
-    {
+    let vmdtbo_offset: usize = conf_header.entries[VMDTBO_ENTRY_IDX].offset.try_into()?;
+    let new_entries_size: usize = (new_config_size - PvmfwConfHeader::PADDED_SIZE)
+        .try_into()
+        .map_err(Error::ArithmeticOverflow)?;
+    if new_entries_size > conf_entries_buf.len() {
         return Err(Error::BufferTooSmall(Some(new_pvmfw_data_size)));
     }
+    let next_entries_offset: usize = (SafeNum::from(vmdtbo_offset) - PvmfwConfHeader::PADDED_SIZE)
+        .try_into()
+        .map_err(Error::ArithmeticOverflow)?;
     let (_, next_entries) =
-        conf_entries_buf.split_at_mut(vmdtbo_offset - PvmfwConfHeader::PADDED_SIZE);
-    let entries_end = (conf_header.total_size as usize) - vmdtbo_offset;
+        conf_entries_buf.split_at_mut_checked(next_entries_offset).ok_or(Error::BadBufferSize)?;
+    let entries_end: usize = (SafeNum::from(conf_header.total_size) - vmdtbo_offset)
+        .try_into()
+        .map_err(Error::ArithmeticOverflow)?;
     // Move entries and make space for VMDTBO
     next_entries.copy_within(0..entries_end, vmdtbo_entry_sz_padded);
-    let (vmdtbo_entry, _) = next_entries.split_at_mut(vmdtbo_entry_sz_padded);
-    let (vmdtbo_buf, vmdtbo_pad) = vmdtbo_entry.split_at_mut(vmdtbo_entry_sz);
+    let (vmdtbo_entry, _) =
+        next_entries.split_at_mut_checked(vmdtbo_entry_sz_padded).ok_or(Error::BadBufferSize)?;
+    let (vmdtbo_buf, vmdtbo_pad) =
+        vmdtbo_entry.split_at_mut_checked(vmdtbo_entry_sz).ok_or(Error::BadBufferSize)?;
     vmdtbo_buf.copy_from_slice(vmdtbo);
     vmdtbo_pad.fill(0u8);
 
