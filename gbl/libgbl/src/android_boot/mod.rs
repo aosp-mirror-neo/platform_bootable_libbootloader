@@ -228,7 +228,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
     // them all together, so we treat this whole commandline input as less-trusted.
     vbmeta_cmdline_to_bootconfig(
         ops,
-        verify_data.cmdline().to_str().unwrap(),
+        verify_data.cmdline().to_str().map_err(|_| Error::InvalidInput)?,
         &mut bootconfig_builder,
     )?;
 
@@ -414,7 +414,7 @@ fn finalize_dt<'b>(ops: &mut impl GblOps<'b>, fdt: &mut [u8], ramdisk: &[u8]) ->
     // then the firmware must ensure the bootargs end with '\0'.
     let final_command_line = CStr::from_bytes_until_nul(fdt.get_property("chosen", PROP_BOOTARGS)?)
         .map_err(Error::from)?;
-    gbl_println!(ops, "final cmdline: \"{}\"", final_command_line.to_str().unwrap());
+    gbl_println!(ops, "final cmdline: {:?}", final_command_line);
 
     Ok(fdt.size()?)
 }
