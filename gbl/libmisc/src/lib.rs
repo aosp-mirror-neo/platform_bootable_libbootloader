@@ -19,10 +19,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::{ffi::CStr, mem::size_of};
+use core::{ffi::CStr, fmt, mem::size_of};
 use liberror::{Error, Result};
 use static_assertions::const_assert;
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
+use zerocopy::{error::SizeError, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 /// Android boot modes type
 /// Usually obtained from BCB block of misc partition
@@ -138,6 +138,158 @@ impl BootloaderMessage {
 
 const_assert!(BootloaderMessage::SIZE_BYTES == size_of::<BootloaderMessage>());
 
+/// Offset in `misc` partition where system space starts (`misc_virtual_ab_message` resides at the
+/// beginning of system space).
+///
+/// Reference code:
+/// https://cs.android.com/search?q=symbol:SYSTEM_SPACE_OFFSET_IN_MISC&ss=android%2Fplatform%2Fsuperproject%2Fmain
+pub const SYSTEM_SPACE_OFFSET_IN_MISC: usize = 32 * 1024;
+
+/// Version of `MiscVirtualAbMessage`.
+pub const MISC_VIRTUAL_AB_MESSAGE_VERSION: u8 = 2;
+
+/// Magic header for `MiscVirtualAbMessage`.
+pub const MISC_VIRTUAL_AB_MAGIC_HEADER: u32 = 0x56740AB0;
+
+/// Virtual A/B snapshot merge status stored in `MiscVirtualAbMessage`.
+///
+/// Reference:
+/// https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/boot/aidl/android/hardware/boot/MergeStatus.aidl
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum MergeStatus {
+    /// No snapshot or merge is in progress.
+    #[default]
+    None = 0,
+    /// Merge status could not be determined.
+    Unknown = 1,
+    /// Partitions are snapshotted, but no merge has been started.
+    Snapshotted = 2,
+    /// At least one partition has merge in progress.
+    Merging = 3,
+    /// A merge was in progress, but it was canceled by the bootloader.
+    Cancelled = 4,
+}
+
+impl From<u8> for MergeStatus {
+    fn from(val: u8) -> Self {
+        match val {
+            0 => Self::None,
+            1 => Self::Unknown,
+            2 => Self::Snapshotted,
+            3 => Self::Merging,
+            4 => Self::Cancelled,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<MergeStatus> for u8 {
+    fn from(status: MergeStatus) -> Self {
+        status as u8
+    }
+}
+
+impl From<MergeStatus> for &'static str {
+    /// Returns the fastboot string representation of the merge status.
+    ///
+    /// Matches AOSP `SnapshotUpdateMergeStatus`: only `Snapshotted` and `Merging` report their
+    /// active state; `None`, `Unknown`, and `Cancelled` all report `"none"`.
+    fn from(status: MergeStatus) -> Self {
+        match status {
+            MergeStatus::Snapshotted => "snapshotted",
+            MergeStatus::Merging => "merging",
+            MergeStatus::None | MergeStatus::Unknown | MergeStatus::Cancelled => "none",
+        }
+    }
+}
+
+impl fmt::Display for MergeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str((*self).into())
+    }
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Debug, PartialEq, Eq, Immutable, FromBytes, IntoBytes, KnownLayout, Unaligned)]
+struct RawMiscVirtualAbMessage {
+    version: u8,
+    magic: u32,
+    merge_status: u8,
+    source_slot: u8,
+    reserved: [u8; 57],
+}
+
+/// Holds Virtual A/B message in the `misc` partition.
+///
+/// Instances of `MiscVirtualAbMessage` are guaranteed to carry a valid version and magic header.
+///
+/// Reference code:
+/// https://cs.android.com/search?q=symbol:misc_virtual_ab_message&ss=android%2Fplatform%2Fsuperproject%2Fmain
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, KnownLayout, Unaligned)]
+pub struct MiscVirtualAbMessage(RawMiscVirtualAbMessage);
+
+impl Default for MiscVirtualAbMessage {
+    fn default() -> Self {
+        Self(RawMiscVirtualAbMessage {
+            version: MISC_VIRTUAL_AB_MESSAGE_VERSION,
+            magic: MISC_VIRTUAL_AB_MAGIC_HEADER,
+            merge_status: MergeStatus::None.into(),
+            source_slot: 0,
+            reserved: [0; 57],
+        })
+    }
+}
+
+impl From<MiscVirtualAbMessage> for [u8; MiscVirtualAbMessage::SIZE_BYTES] {
+    fn from(msg: MiscVirtualAbMessage) -> Self {
+        zerocopy::transmute!(msg)
+    }
+}
+
+impl TryFrom<RawMiscVirtualAbMessage> for MiscVirtualAbMessage {
+    type Error = Error;
+
+    fn try_from(raw: RawMiscVirtualAbMessage) -> Result<Self> {
+        let magic = raw.magic;
+        if raw.version != MISC_VIRTUAL_AB_MESSAGE_VERSION || magic != MISC_VIRTUAL_AB_MAGIC_HEADER {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self(raw))
+    }
+}
+
+impl TryFrom<&[u8]> for MiscVirtualAbMessage {
+    type Error = Error;
+
+    fn try_from(bytes: &[u8]) -> Result<Self> {
+        let (raw, _) = RawMiscVirtualAbMessage::read_from_prefix(bytes).map_err(|e| {
+            // Destructuring `SizeError` statically ensures that no other error is possible.
+            let SizeError { .. } = e;
+            Error::BufferTooSmall(Some(Self::SIZE_BYTES))
+        })?;
+        Self::try_from(raw)
+    }
+}
+
+impl MiscVirtualAbMessage {
+    /// Size of `MiscVirtualAbMessage` in bytes.
+    pub const SIZE_BYTES: usize = 64;
+
+    /// Returns the `MergeStatus` represented by this message.
+    pub fn merge_status(&self) -> MergeStatus {
+        MergeStatus::from(self.0.merge_status)
+    }
+
+    /// Updates the `MergeStatus` in this message.
+    pub fn set_merge_status(&mut self, status: MergeStatus) {
+        self.0.merge_status = status.into();
+    }
+}
+
+const_assert!(MiscVirtualAbMessage::SIZE_BYTES == size_of::<MiscVirtualAbMessage>());
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -209,5 +361,88 @@ mod test {
         assert_android_boot_mode!(AndroidBootMode::Recovery);
         assert_android_boot_mode!(AndroidBootMode::Fastboot);
         assert_android_boot_mode!(AndroidBootMode::Normal);
+    }
+
+    #[test]
+    fn test_virtual_ab_message_try_from_buffer_too_small() {
+        let buf = [0u8; MiscVirtualAbMessage::SIZE_BYTES - 1];
+        assert_eq!(
+            MiscVirtualAbMessage::try_from(&buf[..]),
+            Err(Error::BufferTooSmall(Some(MiscVirtualAbMessage::SIZE_BYTES)))
+        );
+    }
+
+    #[test]
+    fn test_virtual_ab_message_try_from_uninitialized_fails() {
+        let buf = [0u8; MiscVirtualAbMessage::SIZE_BYTES];
+        assert_eq!(MiscVirtualAbMessage::try_from(&buf[..]), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn test_virtual_ab_message_default_is_valid() {
+        let msg = MiscVirtualAbMessage::default();
+        assert_eq!(MiscVirtualAbMessage::try_from(msg.as_bytes()), Ok(msg.clone()));
+        assert_eq!(msg.merge_status(), MergeStatus::None);
+        assert_eq!(<&str>::from(msg.merge_status()), "none");
+        assert_eq!(format!("{}", msg.merge_status()), "none");
+        let bytes: [u8; MiscVirtualAbMessage::SIZE_BYTES] = msg.clone().into();
+        assert_eq!(MiscVirtualAbMessage::try_from(&bytes[..]), Ok(msg));
+    }
+
+    #[test]
+    fn test_virtual_ab_message_invalid_magic_or_version_fails() {
+        let mut msg = MiscVirtualAbMessage::default();
+        msg.set_merge_status(MergeStatus::Snapshotted);
+        assert_eq!(MiscVirtualAbMessage::try_from(msg.as_bytes()), Ok(msg.clone()));
+        assert_eq!(MiscVirtualAbMessage::try_from(msg.0.clone()), Ok(msg.clone()));
+
+        let mut bad_version = msg.0.clone();
+        bad_version.version = 1;
+        assert_eq!(
+            MiscVirtualAbMessage::try_from(bad_version.as_bytes()),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(MiscVirtualAbMessage::try_from(bad_version), Err(Error::InvalidInput));
+
+        let mut bad_magic = msg.0;
+        bad_magic.magic = 0x12345678;
+        assert_eq!(MiscVirtualAbMessage::try_from(bad_magic.as_bytes()), Err(Error::InvalidInput));
+        assert_eq!(MiscVirtualAbMessage::try_from(bad_magic), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn test_virtual_ab_message_set_and_get_merge_status() {
+        let mut msg = MiscVirtualAbMessage::default();
+        for (status, expected_str) in [
+            (MergeStatus::None, "none"),
+            (MergeStatus::Unknown, "none"),
+            (MergeStatus::Snapshotted, "snapshotted"),
+            (MergeStatus::Merging, "merging"),
+            (MergeStatus::Cancelled, "none"),
+        ] {
+            msg.set_merge_status(status);
+            let parsed = MiscVirtualAbMessage::try_from(msg.as_bytes()).unwrap();
+            assert_eq!(parsed.merge_status(), status);
+            assert_eq!(<&str>::from(parsed.merge_status()), expected_str);
+            assert_eq!(format!("{}", parsed.merge_status()), expected_str);
+        }
+    }
+
+    #[test]
+    fn test_virtual_ab_message_preserves_source_slot_and_prefix_read() {
+        let mut raw_msg = MiscVirtualAbMessage::default().0;
+        raw_msg.merge_status = MergeStatus::Merging.into();
+        raw_msg.source_slot = 1;
+        raw_msg.reserved[0] = 0x5a;
+
+        let mut buf = [0u8; MiscVirtualAbMessage::SIZE_BYTES + 16];
+        buf[..MiscVirtualAbMessage::SIZE_BYTES].copy_from_slice(raw_msg.as_bytes());
+
+        let mut msg = MiscVirtualAbMessage::try_from(&buf[..]).unwrap();
+        assert_eq!(msg.merge_status(), MergeStatus::Merging);
+        msg.set_merge_status(MergeStatus::Cancelled);
+        assert_eq!(msg.merge_status(), MergeStatus::Cancelled);
+        assert_eq!(msg.0.source_slot, 1);
+        assert_eq!(msg.0.reserved[0], 0x5a);
     }
 }
