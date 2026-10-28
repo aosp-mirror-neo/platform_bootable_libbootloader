@@ -468,9 +468,9 @@ pub trait FastbootImplementation {
     ///
     /// * `command`: The write or stream command.
     /// * `responder`: An instance of `InfoSender`.
-    async fn stream<'a>(
+    async fn stream(
         &mut self,
-        command: StreamCommand<&'a str>,
+        command: StreamCommand<&str>,
         responder: impl InfoSender,
     ) -> CommandResult<()>;
 
@@ -1163,8 +1163,8 @@ async fn flash(
 }
 
 /// Helper for handling "fastboot:stream-flash:..." and "fastboot:stream-fill:...".
-async fn handle_stream_command<'a>(
-    cmd: &'a str,
+async fn handle_stream_command(
+    cmd: &str,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
@@ -1780,9 +1780,9 @@ mod test {
             res.take().unwrap_or(Ok(()))
         }
 
-        async fn stream<'b>(
+        async fn stream(
             &mut self,
-            command: StreamCommand<&'b str>,
+            command: StreamCommand<&str>,
             _responder: impl InfoSender,
         ) -> CommandResult<()> {
             self.stream_command = Some(command.into());

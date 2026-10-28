@@ -111,11 +111,11 @@ impl<'a> EfiNetworkDevice<'a> {
         efi_entry: &'a EfiEntry,
     ) -> Self {
         let mut ret = Self {
-            protocol: protocol,
+            protocol,
             rx_frame: Box::new([0u8; ETHERNET_FRAME_SIZE]),
             tx_frames: vec![core::ptr::null_mut(); extra_tx_frames + 1],
             tx_frame_curr: 0,
-            efi_entry: efi_entry,
+            efi_entry,
         };
         ret.tx_frames
             .iter_mut()

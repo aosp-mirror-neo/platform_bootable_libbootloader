@@ -467,7 +467,7 @@ fn test_dt_fixup(entry: &EfiEntry) -> Result<()> {
 }
 
 fn test_hash2(entry: &EfiEntry) -> Result<()> {
-    const TEST_STRING: &'static str = "Sphinx of black quartz, judge my vow!";
+    const TEST_STRING: &str = "Sphinx of black quartz, judge my vow!";
     let mut res = Ok(());
 
     fn hasher_helper<Algo: HashAlgorithm>(

@@ -42,7 +42,7 @@ impl<'a> BootConfigBuilder<'a> {
         if buffer.len() < BOOTCONFIG_TRAILER_SIZE {
             return Err(Error::BufferTooSmall(Some(BOOTCONFIG_TRAILER_SIZE)));
         }
-        let mut ret = Self { current_size: 0, buffer: buffer };
+        let mut ret = Self { current_size: 0, buffer };
         ret.update_trailer()?;
         Ok(ret)
     }

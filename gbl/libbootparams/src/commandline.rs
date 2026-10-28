@@ -36,7 +36,7 @@ impl<'a> CommandlineBuilder<'a> {
         if buffer.len() < COMMANDLINE_TRAILING_SIZE {
             return Err(BufferTooSmall(Some(COMMANDLINE_TRAILING_SIZE)));
         }
-        let mut ret = Self { current_size: 0, buffer: buffer };
+        let mut ret = Self { current_size: 0, buffer };
         ret.update_null_terminator();
         Ok(ret)
     }
@@ -44,7 +44,7 @@ impl<'a> CommandlineBuilder<'a> {
     /// Initialize with a provided buffer that already contains a command line.
     pub fn from_prefix(buffer: &'a mut [u8]) -> Result<Self> {
         let prefix = CStr::from_bytes_until_nul(buffer).map_err(Error::from)?;
-        Ok(Self { current_size: prefix.to_bytes().len(), buffer: buffer })
+        Ok(Self { current_size: prefix.to_bytes().len(), buffer })
     }
 
     /// Initialize with a provided buffer and the size of the existing prefix.
@@ -59,7 +59,7 @@ impl<'a> CommandlineBuilder<'a> {
                 )
                 .map_err(Error::from)?;
 
-                Ok(Self { current_size: prefix.to_bytes().len(), buffer: buffer })
+                Ok(Self { current_size: prefix.to_bytes().len(), buffer })
             }
         }
     }

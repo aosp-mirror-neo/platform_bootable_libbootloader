@@ -123,10 +123,7 @@ async fn read_aligned_buffer<'a>(
 
 // Partition a scratch into two aligned parts: [u8; alignment()-1] and [u8; block_size())]
 // for handling block and buffer misalignment respecitvely.
-fn split_scratch<'a>(
-    info: BlockInfo,
-    scratch: &'a mut [u8],
-) -> Result<(&'a mut [u8], &'a mut [u8])> {
+fn split_scratch(info: BlockInfo, scratch: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
     let (buffer_alignment, block_alignment) = aligned_subslice(scratch, info.alignment)?
         .split_at_mut((SafeNum::from(info.alignment) - 1).try_into()?);
     let block_alignment = aligned_subslice(block_alignment, info.alignment)?;

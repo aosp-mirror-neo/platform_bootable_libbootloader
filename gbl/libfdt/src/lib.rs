@@ -316,7 +316,7 @@ impl FdtHeader {
 pub struct Fdt<T>(T);
 
 /// Read only APIs.
-impl<'a, T: AsRef<[u8]> + 'a> Fdt<T> {
+impl<T: AsRef<[u8]>> Fdt<T> {
     /// Creates a new [Fdt] wrapping the contents of `init`.
     pub fn new(init: T) -> Result<Self> {
         fdt_check_buffer(init.as_ref())?;

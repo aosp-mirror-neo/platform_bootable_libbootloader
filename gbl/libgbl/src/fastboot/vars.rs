@@ -36,43 +36,43 @@ use liblp::LpMetadataPartition;
 use libutils::{next_arg, snprintf, FromHexStr};
 use zerocopy::{error::SizeError, FromBytes, IntoBytes, Unaligned};
 
-const MAX_DOWNLOAD_SIZE: &'static str = "max-download-size";
+const MAX_DOWNLOAD_SIZE: &str = "max-download-size";
 
-const IS_USERSPACE: &'static str = "is-userspace";
-const VERSION_BOOTLOADER: &'static str = "version-bootloader";
+const IS_USERSPACE: &str = "is-userspace";
+const VERSION_BOOTLOADER: &str = "version-bootloader";
 
-const SLOT_COUNT: &'static str = "slot-count";
-const CURRENT_SLOT: &'static str = "current-slot";
-const SLOT_SUCCESSFUL: &'static str = "slot-successful";
-const SLOT_UNBOOTABLE: &'static str = "slot-unbootable";
-const SLOT_RETRY_COUNT: &'static str = "slot-retry-count";
-const HAS_SLOT: &'static str = "has-slot";
+const SLOT_COUNT: &str = "slot-count";
+const CURRENT_SLOT: &str = "current-slot";
+const SLOT_SUCCESSFUL: &str = "slot-successful";
+const SLOT_UNBOOTABLE: &str = "slot-unbootable";
+const SLOT_RETRY_COUNT: &str = "slot-retry-count";
+const HAS_SLOT: &str = "has-slot";
 
-const MAX_FETCH_SIZE: &'static str = "max-fetch-size";
+const MAX_FETCH_SIZE: &str = "max-fetch-size";
 // Limited by DATA message which only allows 8 hex digits.
 // Additionally fastboot upstream parses this value as int, so we only have 31 bits.
 // Defensively capped to 512 MiB (block-aligned) to avoid scratch buffer copying
 // in libstorage, provide regular progress reporting during `fastboot fetch`, and
 // guard against buggy firmware that misreports IoAlign.
-const MAX_FETCH_SIZE_VAL: &'static str = "0x20000000";
+const MAX_FETCH_SIZE_VAL: &str = "0x20000000";
 
-const PARTITION_SIZE: &'static str = "partition-size";
-const PARTITION_TYPE: &'static str = "partition-type";
-const PARTITION_GUID: &'static str = "partition-guid";
-const PARTITION_START: &'static str = "partition-start";
+const PARTITION_SIZE: &str = "partition-size";
+const PARTITION_TYPE: &str = "partition-type";
+const PARTITION_GUID: &str = "partition-guid";
+const PARTITION_START: &str = "partition-start";
 
-const BLOCK_DEVICE: &'static str = "block-device";
-const TOTAL_BLOCKS: &'static str = "total-blocks";
-const BLOCK_SIZE: &'static str = "block-size";
+const BLOCK_DEVICE: &str = "block-device";
+const TOTAL_BLOCKS: &str = "total-blocks";
+const BLOCK_SIZE: &str = "block-size";
 
-const DEFAULT_BLOCK: &'static str = "gbl-default-block";
+const DEFAULT_BLOCK: &str = "gbl-default-block";
 
-const UNLOCKED: &'static str = "unlocked";
-const UNLOCKED_CRITICAL: &'static str = "unlocked-critical";
+const UNLOCKED: &str = "unlocked";
+const UNLOCKED_CRITICAL: &str = "unlocked-critical";
 
-const STREAM_SEGMENT_SIZE: &'static str = "stream-segment-size";
+const STREAM_SEGMENT_SIZE: &str = "stream-segment-size";
 
-pub(crate) const GETVAR_ALL_FILTER: &'static [&'static str] = &[
+pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
     IS_USERSPACE,
     VERSION_BOOTLOADER,
     SLOT_COUNT,
@@ -352,7 +352,7 @@ where
     }
 
     /// Parses and finds the size of the given partition.
-    pub(crate) fn partition_size<'s>(&mut self, part: &'s str) -> CommandResult<u64> {
+    pub(crate) fn partition_size(&mut self, part: &str) -> CommandResult<u64> {
         let (part, blk_id, off, sz) = self.parse_partition_arg(part)?;
         // If the user just gives the partition base name, resolve to the current slot.
         let (_, parts) = self.resolve_slotted_partitions(part, blk_id, ResolveMode::CurrentSlot)?;

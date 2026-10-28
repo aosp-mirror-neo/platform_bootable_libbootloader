@@ -378,9 +378,9 @@ pub(super) fn android_load_verified<'a, 'b>(
 ///
 /// * Both kernel and ramdisk come from the boot image.
 /// * vendor_boot, init_boot are irrelevant.
-fn load_v2_or_lower_verified<'a, 'b, 'c>(
-    boot: &'c [u8],
-    images: &mut LoadedImages<'c>,
+fn load_v2_or_lower_verified<'a>(
+    boot: &'a [u8],
+    images: &mut LoadedImages<'a>,
 ) -> Result<(), Error> {
     let info = BootImageV2Info::new(boot).unwrap();
     images.boot_cmdline = info.cmdline;

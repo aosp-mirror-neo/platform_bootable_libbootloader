@@ -1399,7 +1399,7 @@ impl<'a> LocatedHandles<'a> {
             // * It is the caller's responsibility to guarantee that no other code
             //   can access `handles` after the call.
             handles: unsafe { from_raw_parts(handles.as_ptr() as *const DeviceHandle, len) },
-            efi_entry: efi_entry,
+            efi_entry,
         }
     }
 
@@ -2051,7 +2051,7 @@ mod test {
     /// A test wrapper that sets up a system table, image handle and runs a test function like it
     /// is an EFI application.
     /// TODO(b/578052958): Investigate using procedural macro to generate test that auto calls this.
-    pub fn run_test(func: impl FnOnce(EfiHandle, *mut EfiSystemTable) -> ()) {
+    pub fn run_test(func: impl FnOnce(EfiHandle, *mut EfiSystemTable)) {
         // Reset all traces
         EFI_CALL_TRACES.with(|trace| {
             *trace.borrow_mut() = Default::default();
