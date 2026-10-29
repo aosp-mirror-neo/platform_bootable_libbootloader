@@ -163,7 +163,7 @@ pub fn method_basename(method_str: &str) -> &str {
 ///
 /// args: A string iterator.
 pub fn next_arg<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> Option<&'a str> {
-    args.next().filter(|v| *v != "")
+    args.next().filter(|v| !v.is_empty())
 }
 
 /// Helper trait for parsing integers from hex strings.

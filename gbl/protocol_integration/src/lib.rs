@@ -161,7 +161,7 @@ fn test_block_io(entry: &EfiEntry) -> Result<()> {
         // but for some reason bindgen turns function pointers into Options.
         // BlockIO `media` is one of the few non-function pointers, so just special case
         // it instead of complicating the `field_check!` macro.
-        if block_io.interface().media == core::ptr::null_mut() {
+        if block_io.interface().media.is_null() {
             efi_println!(entry, "field is null: media");
             res = Err(Error::InvalidInput);
         }
@@ -306,7 +306,7 @@ fn test_block_io2(entry: &EfiEntry) -> Result<()> {
             res = Err(e);
         }
 
-        if block_io2.interface().media == core::ptr::null_mut() {
+        if block_io2.interface().media.is_null() {
             efi_println!(entry, "field is null: media");
             res = Err(Error::InvalidInput);
         }

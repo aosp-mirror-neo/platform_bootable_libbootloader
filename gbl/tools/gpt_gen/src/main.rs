@@ -74,7 +74,7 @@ fn main() {
     let args = Args::parse();
 
     let size = parse_size_str(&args.disk_size).unwrap();
-    assert!(size % 512 == 0, "Disk size must be a multiple of 512");
+    assert!(size.is_multiple_of(512), "Disk size must be a multiple of 512");
 
     println!("Creating file {} of size {}", args.out, size);
     let io = FileBlockIo::new_create(&args.out, size)

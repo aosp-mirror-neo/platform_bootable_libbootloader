@@ -34,7 +34,7 @@ use zerocopy::IntoBytes;
 /// * `dest` must be aligned to `ZIRCON_KERNEL_ALIGNMENT`.
 /// * `dest` will be a ZBI container containing only the kernel item.
 fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
-    if (dest.as_ptr() as usize % ZIRCON_KERNEL_ALIGNMENT) != 0 {
+    if !(dest.as_ptr() as usize).is_multiple_of(ZIRCON_KERNEL_ALIGNMENT) {
         return Err(Error::InvalidAlignment.into());
     }
 

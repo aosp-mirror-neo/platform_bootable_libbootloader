@@ -224,7 +224,7 @@ impl TxToken<'_, '_> {
             _ if *self.curr < self.tx_frames.len() => {
                 // If we can't recycle a buffer, see if we can take one from the pool.
                 let res = *self.curr;
-                *self.curr = *self.curr + 1;
+                *self.curr += 1;
                 Some(self.tx_frames[res])
             }
             _ => None,

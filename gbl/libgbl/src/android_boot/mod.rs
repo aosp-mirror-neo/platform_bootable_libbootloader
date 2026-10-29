@@ -1452,7 +1452,7 @@ pub(crate) mod tests {
         let general = &mut AlignedBuffer::new(64 * 1024 * 1024, KERNEL_ALIGNMENT);
         let mut kernel = AlignedBuffer::<u8>::new(64 * 1024 * 1024, KERNEL_ALIGNMENT);
         let mut ramdisk = AlignedBuffer::<u8>::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
-        let mut fdt = AlignedBuffer::<u8>::new(1 * 1024 * 1024, FDT_ALIGNMENT);
+        let mut fdt = AlignedBuffer::<u8>::new(1024 * 1024, FDT_ALIGNMENT);
         // Tests all possible combinations of available/unavailable designated buffer for
         // kernel/ramdisk/fdt.
         for flag in 0..0x8 {
@@ -2143,9 +2143,9 @@ pub(crate) mod tests {
     fn test_android_load_verify_boot_v4_compression_slot(compression: &str) {
         let vbmeta = format!("android/vbmeta_v4_{compression}_a.img");
         let parts = vec![
-            (format!("boot_a"), format!("android/boot_v4_{compression}_a.img")),
-            (format!("vendor_boot_a"), format!("android/vendor_boot_v4_a.img")),
-            (format!("vbmeta_a"), vbmeta.clone()),
+            ("boot_a".to_string(), format!("android/boot_v4_{compression}_a.img")),
+            ("vendor_boot_a".to_string(), "android/vendor_boot_v4_a.img".to_string()),
+            ("vbmeta_a".to_string(), vbmeta.clone()),
         ];
         test_android_load_verify_fixup(
             slot('a'),
@@ -2799,7 +2799,7 @@ pub(crate) mod tests {
         let mut load_buffer = vec![0u8; 8 * 1024 * 1024];
         let load_buffer = (&mut load_buffer[..]).into();
         let (ramdisk, _, kernel, _) = android_main(&mut ops, load_buffer, |fb| {
-            let data = read_test_data(format!("android/boot_v2_a.img"));
+            let data = read_test_data("android/boot_v2_a.img");
             listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
             listener.add_transport_input(&data);
             listener.add_transport_input(b"boot");
@@ -2837,13 +2837,13 @@ pub(crate) mod tests {
         let kernel_addr = kernel.as_ptr();
         let mut ramdisk = AlignedBuffer::<u8>::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
         let ramdisk_addr = ramdisk.as_ptr();
-        let mut fdt = AlignedBuffer::<u8>::new(1 * 1024 * 1024, FDT_ALIGNMENT);
+        let mut fdt = AlignedBuffer::<u8>::new(1024 * 1024, FDT_ALIGNMENT);
         let fdt_addr = fdt.as_ptr();
         let buffers =
             BootBuffer::new(general, Some(&mut kernel), Some(&mut ramdisk), Some(&mut fdt), None);
         let listener: SharedTestListener = Default::default();
         let (ramdisk, fdt, kernel, _) = android_main(&mut ops, buffers, |fb| {
-            let data = read_test_data(format!("android/boot_v2_a.img"));
+            let data = read_test_data("android/boot_v2_a.img");
             listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
             listener.add_transport_input(&data);
             listener.add_transport_input(b"boot");
@@ -2989,7 +2989,7 @@ pub(crate) mod tests {
         let mut load_buffer = vec![0u8; 8 * 1024 * 1024];
         let load_buffer = (&mut load_buffer[..]).into();
         let (ramdisk, _, kernel, _) = android_main(&mut ops, load_buffer, |fb| {
-            let data = read_test_data(format!("android/boot_v2_a.img"));
+            let data = read_test_data("android/boot_v2_a.img");
             listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
             listener.add_transport_input(&data);
             listener.add_transport_input(b"boot");

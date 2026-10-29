@@ -43,7 +43,7 @@ pub(crate) fn fdt_select<'b, 'a: 'b, 'c: 'b>(
     // TODO(b/385690995): Track FIT usage in metrics.
 
     // Detect FIT in DTBO partition
-    if images.dtbo.len() > 0
+    if !images.dtbo.is_empty()
         && let Ok(fit) = Fit::from_bytes(images.dtbo)
     {
         gbl_println!(ops, "FIT image detected in DTBO partition");
@@ -100,7 +100,7 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
 ) -> Result<(Option<SelectedDtComponents<'b>>, &'c mut [u8])> {
     let mut components = DtComponentsRegistry::new();
 
-    let mut remains = match images.dtbo.len() > 0 {
+    let mut remains = match !images.dtbo.is_empty() {
         // TODO(b/374336105): Investigate if we can avoid additional copy.
         true => {
             gbl_println!(ops, "Handling overlays from dtbo");
@@ -112,7 +112,7 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
         }
         _ => buffer,
     };
-    if images.dtb.len() > 0 {
+    if !images.dtb.is_empty() {
         let source = images.dtb_source.unwrap();
         gbl_println!(ops, "Handling device tree from {source}");
         remains = if FdtHeader::from_bytes_ref(images.dtb).is_ok() {
@@ -127,7 +127,7 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
             )));
         }
     }
-    if images.dtb_part.len() > 0 {
+    if !images.dtb_part.is_empty() {
         gbl_println!(ops, "Handling device trees from dtb");
         let dttable = DtTableImage::from_bytes(images.dtb_part)?;
         remains = components.append_from_dttable(DtComponentSource::Dtb, &dttable, remains)?;

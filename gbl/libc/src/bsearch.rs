@@ -130,6 +130,6 @@ mod tests {
         let res = test_bsearch(&arr, 2);
         assert!(res.is_some());
         let idx = res.unwrap();
-        assert!(idx >= 1 && idx <= 3);
+        assert!((1..=3).contains(&idx));
     }
 }

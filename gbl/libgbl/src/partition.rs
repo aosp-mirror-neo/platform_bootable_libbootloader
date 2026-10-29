@@ -605,7 +605,7 @@ pub async fn sync_gpt(
 /// Returns `None` if partition did not have slot suffix.
 pub fn split_partition_suffix(part: &str) -> Option<(&str, char)> {
     let (name, suffix) = part.rsplit_once('_')?;
-    if name.len() > 0 && suffix.len() == 1 && suffix.chars().next()?.is_ascii_lowercase() {
+    if !name.is_empty() && suffix.len() == 1 && suffix.chars().next()?.is_ascii_lowercase() {
         Some((name, suffix.chars().next()?))
     } else {
         None
@@ -897,7 +897,7 @@ pub(crate) mod test {
         devs.add_raw_device(c"raw_1", [0x55u8; 3 * 1024]);
 
         let parts = &["boot_a", "boot_b"];
-        assert!(BOOT_A_SZ <= BOOT_B_SZ);
+        const { assert!(BOOT_A_SZ <= BOOT_B_SZ) };
         assert!(find_multi_partition_io::<_, _, _, ReadWrite>(&devs, parts)
             .unwrap()
             .sub(0, BOOT_A_SZ + 1)

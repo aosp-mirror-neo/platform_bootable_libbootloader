@@ -1249,7 +1249,7 @@ mod test {
 
         let mut ops = Ops::new(installed.entry(), &[], None, 0);
 
-        assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
+        assert!(write!(&mut ops, "foo bar").is_ok());
     }
 
     /// Helper for testing `avb_read_partition_attributes_raw`.

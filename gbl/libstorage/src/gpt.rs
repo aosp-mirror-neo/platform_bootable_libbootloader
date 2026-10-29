@@ -223,7 +223,7 @@ fn check_header(io: &impl BlockIo, header: &GptHeader, is_primary: bool) -> Resu
     // But a lot of devices have custom entries count. So there is no point in verify against 128.
 
     // Minimum space needed: 2 * (header + 0 * entries) + MBR.
-    let min_disk_blks: u64 = 2 * 1 + 1;
+    let min_disk_blks: u64 = 2 + 1;
     if min_disk_blks > u64::try_from(num_blks).unwrap() {
         return Err(Error::GptError(GptError::DiskTooSmall));
     }

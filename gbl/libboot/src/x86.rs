@@ -215,7 +215,7 @@ unsafe fn setup_bzimage_boot_params<'a>(
     bootparam.check()?;
 
     // low memory address must be non-null, aligned for `BootParams`, and <= 0x9_0000.
-    assert!(low_mem_addr != 0 && low_mem_addr % core::mem::align_of::<BootParams>() == 0);
+    assert!(low_mem_addr != 0 && low_mem_addr.is_multiple_of(core::mem::align_of::<BootParams>()));
     assert!(low_mem_addr <= 0x9_0000);
     // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
     // memory.

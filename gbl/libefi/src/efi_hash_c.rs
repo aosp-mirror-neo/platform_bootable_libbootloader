@@ -256,7 +256,7 @@ mod test {
             // * It is the caller's responsibility to match the correct
             //   HashAlgorithm type, and init, update, and final values.
             unsafe {
-                (test_struct.update)(hasher, DATA.as_bytes().as_ptr(), DATA.as_bytes().len());
+                (test_struct.update)(hasher, DATA.as_bytes().as_ptr(), DATA.len());
                 (test_struct.r#final)(
                     std::ptr::from_mut(&mut hasher),
                     digest.as_mut_bytes().as_mut_ptr(),

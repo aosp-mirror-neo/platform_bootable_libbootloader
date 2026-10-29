@@ -2593,7 +2593,7 @@ mod test {
         match (expected, fastboot_impl.stream_command) {
             (None, None) => {}
             (Some(expected), Some(actual)) => assert_eq!(expected, actual),
-            _ => assert!(false, "stream command mismatch"),
+            _ => panic!("stream command mismatch"),
         }
     }
 

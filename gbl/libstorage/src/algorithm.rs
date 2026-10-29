@@ -205,7 +205,7 @@ async fn write_aligned_offset_and_buffer(
         write_aligned_all(io, offset, &mut data[..aligned_write]).await?;
     }
     let unaligned = &data[aligned_write..];
-    if unaligned.len() == 0 {
+    if unaligned.is_empty() {
         return Ok(());
     }
 

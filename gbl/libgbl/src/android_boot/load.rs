@@ -487,7 +487,7 @@ fn load_v3_and_v4_verified<'a, 'b>(
         true,
         verify_data,
     )?;
-    if vendor_kernel_boot.len() > 0 {
+    if !vendor_kernel_boot.is_empty() {
         let info = VendorBootImageInfo::new(vendor_kernel_boot)?;
         // DTB should be provided by vendor_kerenl_boot if it exists.
         images.dtb = get_range(vendor_kernel_boot, &info.dtb_range)?;
@@ -774,7 +774,7 @@ impl<'a> BootBufferLoader<'a> {
     fn check_general_fdt_range(&self) {
         // Either empty or a valid range between bootconfig and the end of `self.general`.
         assert!(
-            self.general_fdt.len() == 0
+            self.general_fdt.is_empty()
                 || self.general_fdt.start >= self.general_bootconfig_end().unwrap()
                     && self.general_fdt.end <= self.general.len()
         );

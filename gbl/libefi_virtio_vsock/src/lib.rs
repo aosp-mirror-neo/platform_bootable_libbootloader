@@ -378,7 +378,7 @@ impl GblVsockConnectionManager {
                 let remote = v.remote.ok_or(Error::InvalidState)?;
                 match self.connection_manager.send(remote, v.port, buffer) {
                     Ok(_) => {
-                        if buffer.len() > 0 {
+                        if !buffer.is_empty() {
                             v.last_event_ts = timestamp();
                         }
                         return Ok(());

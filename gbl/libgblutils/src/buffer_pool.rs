@@ -15,7 +15,7 @@
 use crate::shared::Shared;
 use core::{
     cell::RefMut,
-    mem::{swap, take},
+    mem::take,
     ops::{Deref, DerefMut},
 };
 use gbl_async::yield_now;
@@ -63,7 +63,7 @@ where
     }
 
     fn deallocate(&mut self, buf: B) {
-        swap(&mut Some(buf), self.iter_mut().find(|v| v.is_none()).unwrap());
+        *self.iter_mut().find(|v| v.is_none()).unwrap() = Some(buf);
     }
 
     fn check_buffer_sizes(&self, size: usize) -> bool {

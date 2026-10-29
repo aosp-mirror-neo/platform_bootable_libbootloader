@@ -424,7 +424,7 @@ androidboot.verifiedbootstate=orange
         let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
         for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
-            write!(builder, "{}\n", ele).unwrap();
+            writeln!(builder, "{}", ele).unwrap();
         }
         assert_eq!(
             builder.config_bytes().to_vec(),
@@ -442,14 +442,14 @@ androidboot.verifiedbootstate=orange
     fn test_add_buffer_too_small() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        assert!(write!(builder, "a\n").is_err());
+        assert!(writeln!(builder, "a").is_err());
     }
 
     #[test]
     fn test_add_empty_string() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        write!(builder, "{}", "").unwrap();
+        write!(builder, "").unwrap();
     }
 
     #[test]

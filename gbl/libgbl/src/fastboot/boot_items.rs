@@ -171,7 +171,7 @@ impl<'a> BootItemContainer<'a> {
     pub(crate) fn utf8_items(&self, item_type: BootItem) -> impl Iterator<Item = &str> + Clone {
         self.item_iter(item_type)
             .map(|v| core::str::from_utf8(v).unwrap_or(""))
-            .filter(|v| *v != "")
+            .filter(|v| !v.is_empty())
     }
 
     /// Gets the unused buffer.

@@ -1789,7 +1789,7 @@ mod test {
         assert_eq!(search_type, EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL);
         assert_eq!(search_key, null_mut());
         EFI_CALL_TRACES.with(|traces| {
-            if buf == null_mut() {
+            if buf.is_null() {
                 return EFI_STATUS_INVALID_PARAMETER;
             }
             let trace = &mut traces.borrow_mut().locate_handle_trace;
@@ -2384,7 +2384,7 @@ mod test {
             EFI_CALL_TRACES.with(|traces| {
                 // Output only the first EfiMemoryDescriptor.
                 traces.borrow_mut().get_memory_map_trace.outputs =
-                    VecDeque::from([(map_key, 1 * size_of::<EfiMemoryDescriptor>())]);
+                    VecDeque::from([(map_key, size_of::<EfiMemoryDescriptor>())]);
             });
 
             // SAFETY: Buffer is guaranteed valid.

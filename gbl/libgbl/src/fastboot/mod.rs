@@ -2085,7 +2085,7 @@ pub fn fuchsia_fastboot_mdns_packet(node_name: &str, ipv6_addr: &[u8]) -> Result
     // Offset to the IPv6 address field.
     const IP6_ADDR_OFFSET: usize = 124;
 
-    if node_name.as_bytes().len() != 22 {
+    if node_name.len() != 22 {
         return Err(Error::InvalidInput);
     }
 
@@ -3079,7 +3079,7 @@ pub(crate) mod test {
     /// Runs `fastboot flashing unlock_critical` and returns the response.
     fn fb_unlock_critical(fb: &mut impl FastbootImplementation) -> Vec<u8> {
         let listener: SharedTestListener = Default::default();
-        listener.add_transport_input(format!("flashing unlock_critical").as_bytes());
+        listener.add_transport_input(b"flashing unlock_critical");
         block_on(fastboot::process_next_command(&mut &listener, fb)).unwrap();
         listener.transport_out_queue()[0].clone()
     }
@@ -5548,7 +5548,7 @@ pub(crate) mod test {
     fn test_fastboot_boot_reentrant() {
         // Tests that "fastboot boot" is reentrant valid.
         let mut storage = FakeGblOpsStorage::default();
-        let vbmeta = CString::new(format!("vbmeta_a")).unwrap();
+        let vbmeta = CString::new("vbmeta_a").unwrap();
         let vbmeta_img = read_test_data("android/vbmeta_v4_v4_init_boot_a.img");
         storage.add_raw_device(&vbmeta, vbmeta_img);
 
@@ -5950,7 +5950,7 @@ pub(crate) mod test {
         );
         assert!(gbl_ops.write_lock_state_traces.is_empty());
         assert_eq!(fdr_counter.count(), 0);
-        assert_eq!(gbl_ops.avb_device_status.is_unlocked, false);
+        assert!(!gbl_ops.avb_device_status.is_unlocked);
     }
 
     #[test]
@@ -6063,7 +6063,7 @@ pub(crate) mod test {
             &ERASED_CONTENTS
         );
         assert_eq!(fdr_counter.count(), 1);
-        assert_eq!(gbl_fb.gbl_ops.avb_device_status.is_unlocked, true);
+        assert!(gbl_fb.gbl_ops.avb_device_status.is_unlocked);
 
         // Re-lock the device.
         block_on(gbl_fb.flashing_write_lock_state(LockType::Device, LockState::Locked, &resp))
@@ -6083,7 +6083,7 @@ pub(crate) mod test {
             &INITIAL_CONTENTS
         );
         assert_eq!(fdr_counter.count(), 2);
-        assert_eq!(gbl_fb.gbl_ops.avb_device_status.is_unlocked, false);
+        assert!(!gbl_fb.gbl_ops.avb_device_status.is_unlocked);
     }
 
     #[test]

@@ -422,7 +422,7 @@ mod test {
         let installed = mock_efi.install();
         let efi_entry = installed.entry();
 
-        assert!(write!(efi_entry.system_table().con_out().unwrap(), "{} {}", "foo", 123).is_ok());
+        assert!(write!(efi_entry.system_table().con_out().unwrap(), "foo {}", 123).is_ok());
     }
 
     #[test]
@@ -435,8 +435,8 @@ mod test {
         let efi_entry = installed.entry();
 
         let mut con_out = efi_entry.system_table().con_out().unwrap();
-        assert!(write!(con_out, "{} {}", "foo", 123).is_ok());
-        assert!(write!(con_out, "{} {}", "bar", 456).is_ok());
+        assert!(write!(con_out, "foo {}", 123).is_ok());
+        assert!(write!(con_out, "bar {}", 456).is_ok());
     }
 
     #[test]
@@ -452,7 +452,7 @@ mod test {
         // the "real" global mock.
         //
         // A common instance of this is `efi_print!` which fetches a new `con_out` on every call.
-        assert!(write!(efi_entry.system_table().con_out().unwrap(), "{} {}", "foo", 123).is_ok());
-        assert!(write!(efi_entry.system_table().con_out().unwrap(), "{} {}", "bar", 456).is_ok());
+        assert!(write!(efi_entry.system_table().con_out().unwrap(), "foo {}", 123).is_ok());
+        assert!(write!(efi_entry.system_table().con_out().unwrap(), "bar {}", 456).is_ok());
     }
 }

@@ -180,7 +180,7 @@ pub fn fdt_encode_cell_sized_property(
     mut out_buffer: &mut [u8],
 ) -> Result<usize> {
     const FDT_CELL_SIZE: usize = 4; // 4 bytes per cell
-    if tuple_cells.is_empty() || values.len() % tuple_cells.len() != 0 {
+    if tuple_cells.is_empty() || !values.len().is_multiple_of(tuple_cells.len()) {
         return Err(Error::InvalidInput);
     }
     let total_size: usize = (SafeNum::from(FDT_CELL_SIZE) * values.len() / tuple_cells.len()
@@ -390,7 +390,7 @@ impl<T: AsRef<[u8]>> Fdt<T> {
     fn find_node_offset_ffi(&self, path: &str) -> Result<c_int> {
         let mut curr: c_int = 0;
         for name in path.split('/') {
-            if name.len() == 0 {
+            if name.is_empty() {
                 continue;
             }
             curr = fdt_subnode_offset(self.0.as_ref(), curr, name)?;
@@ -452,7 +452,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Creates a new empty [Fdt] in `init`.
     pub fn new_empty(mut init: T) -> Result<Self> {
         let buffer = init.as_mut();
-        if (buffer.as_ptr() as usize) % core::mem::align_of::<u64>() != 0 {
+        if !(buffer.as_ptr() as usize).is_multiple_of(core::mem::align_of::<u64>()) {
             return Err(Error::InvalidAlignment);
         }
         // SAFETY:
@@ -696,7 +696,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     fn find_or_add_node(&mut self, path: &str) -> Result<c_int> {
         let mut curr: c_int = 0;
         for name in path.split('/') {
-            if name.len() == 0 {
+            if name.is_empty() {
                 continue;
             }
             curr = match fdt_subnode_offset(self.0.as_ref(), curr, name) {
