@@ -149,7 +149,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
         let partitions = slot_verify.map(|slot_verify| {
             slot_verify
                 .partition_data()
-                .into_iter()
+                .iter()
                 .map(|p| AvbPartition { name: p.partition_name(), data: p.data() })
         });
 
@@ -166,7 +166,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
             .filter_map(|(location, &idx)| (idx > 0).then_some((location, idx)));
 
         // Saved key version rollback indexes
-        let key_version_indexes = self.key_versions.into_iter().filter_map(|opt| opt);
+        let key_version_indexes = self.key_versions.into_iter().flatten();
 
         slot_indexes.chain(key_version_indexes).try_for_each(|(loc, idx)| {
             let stored = self.read_rollback_index(loc)?;
@@ -721,8 +721,8 @@ mod test {
     // Returns test data consisting of `size` incrementing bytes (0-255 repeating).
     fn test_data(size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
-        for index in 0..data.len() {
-            data[index] = index as u8;
+        for (index, v) in data.iter_mut().enumerate() {
+            *v = index as u8;
         }
         data
     }

@@ -99,10 +99,10 @@ impl MockEfi {
     /// Once the mocks are ready, call [install] to install the thread-local state.
     pub fn new() -> Self {
         let mut entry = MockEfiEntry::default();
-        entry.expect_system_table().returning(|| passthrough_system_table());
+        entry.expect_system_table().returning(passthrough_system_table);
 
         let mut system_table = MockSystemTable::default();
-        system_table.expect_boot_services().returning(|| passthrough_boot_services());
+        system_table.expect_boot_services().returning(passthrough_boot_services);
         system_table.expect_con_out().returning(|| Ok(passthrough_con_out()));
 
         let boot_services = MockBootServices::default();

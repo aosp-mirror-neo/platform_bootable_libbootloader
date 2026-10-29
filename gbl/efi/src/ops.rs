@@ -1260,7 +1260,7 @@ mod test {
 
         let mut avb = GblAvbProtocol::default();
         avb.read_partition_attributes_result = match call_status {
-            ProtocolCallStatus::Success(data) => Some(Ok(data.iter().cloned().collect())),
+            ProtocolCallStatus::Success(data) => Some(Ok(data.to_vec())),
             ProtocolCallStatus::ProtocolCallError(err) => Some(Err(err)),
             _ => None,
         };

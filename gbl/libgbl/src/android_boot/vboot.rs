@@ -426,7 +426,7 @@ mod test {
         if let Some(expected_reported_partitions) = expected_reported_partitions {
             assert_eq!(
                 out_partitions,
-                expected_reported_partitions.into_iter().map(|p| p.to_string()).collect()
+                expected_reported_partitions.iter().map(|p| p.to_string()).collect()
             );
         }
         assert_eq!(

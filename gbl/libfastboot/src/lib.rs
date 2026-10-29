@@ -1529,7 +1529,7 @@ pub async fn process_next_command(
             .map(|_| false);
     };
     match cmd {
-        "boot" => return boot(transport, fb_impl).await.map(|v| v),
+        "boot" => return boot(transport, fb_impl).await,
         "continue" => {
             r#continue(transport, fb_impl).await?;
             return Ok(true);
@@ -2277,7 +2277,7 @@ mod test {
         transport.add_input(b"fetch:boot_a:0:::200:400");
         fastboot_impl
             .fetch_data
-            .insert("boot_a:0::", (0x400, vec![vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
+            .insert("boot_a:0::", (0x400, [vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
         assert_eq!(
             transport.out_queue,
@@ -2296,7 +2296,7 @@ mod test {
         transport.add_input(b"fetch:boot_a:0:::200:400");
         fastboot_impl
             .fetch_data
-            .insert("boot_a:0::", (0x400 - 1, vec![vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
+            .insert("boot_a:0::", (0x400 - 1, [vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
         assert!(block_on(process_next_command(&mut transport, &mut fastboot_impl)).is_err());
     }
 
@@ -2307,7 +2307,7 @@ mod test {
         transport.add_input(b"fetch:boot_a:0:::200:400");
         fastboot_impl
             .fetch_data
-            .insert("boot_a:0::", (0x400 + 1, vec![vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
+            .insert("boot_a:0::", (0x400 + 1, [vec![0u8; 0x200], vec![1u8; 0x400]].concat()));
         assert!(block_on(process_next_command(&mut transport, &mut fastboot_impl)).is_err());
     }
 

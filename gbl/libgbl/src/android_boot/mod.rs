@@ -106,7 +106,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
     for partition in STANDARD_PARTITIONS
         .iter()
         .copied()
-        .chain(requested_partitions.iter().map(|p| LoadPartition::PlatformSpecific(p)))
+        .chain(requested_partitions.iter().map(LoadPartition::PlatformSpecific))
     {
         let b = match ops.get_partition_buffer(partition) {
             Ok(b) => {
@@ -674,7 +674,7 @@ where
         }
         // Splits into N download buffers.
         let pool: ArrayVec<_, N> =
-            ArrayVec::from_iter(download.chunks_exact_mut(download.len() / N).map(|b| Some(b)));
+            ArrayVec::from_iter(download.chunks_exact_mut(download.len() / N).map(Some));
         let data = GblFbData { boot_buffer: self.boot_buffer, load_result: self.load_result };
         *self.result = block_on(run_gbl_fastboot_stack::<N>(self.ops, pool, transports, tcp, data));
         self.ops
@@ -2329,7 +2329,7 @@ pub(crate) mod tests {
                 .unwrap();
 
         let expected_bootconfig = make_expected_bootconfig(
-            &vec![
+            &[
                 ("boot_a".into(), "android/boot_no_ramdisk_v4_a.img".into()),
                 ("vendor_kernel_boot_a".into(), "android/vendor_kernel_boot_a.img".into()),
                 ("vendor_boot_a".into(), "android/vendor_boot_v4_a.img".into()),

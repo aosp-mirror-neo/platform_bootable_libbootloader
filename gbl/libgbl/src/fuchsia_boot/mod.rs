@@ -146,8 +146,7 @@ pub(crate) fn fixup_zbi_items<'a>(
     ops.zircon_add_device_zbi_items(zbi_items)?;
     // Appends staged bootloader file if present.
     if GblAvbOps::new(ops, None, &mut [], false).avb_read_device_status()?.is_unlocked
-        && let Some(Ok(v)) =
-            ops.get_zbi_bootloader_files_buffer_aligned().map(|v| ZbiContainer::parse(v))
+        && let Some(Ok(v)) = ops.get_zbi_bootloader_files_buffer_aligned().map(ZbiContainer::parse)
     {
         zbi_items.extend(&v)?;
     }

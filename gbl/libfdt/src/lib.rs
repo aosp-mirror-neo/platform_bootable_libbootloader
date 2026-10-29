@@ -188,7 +188,7 @@ pub fn fdt_encode_cell_sized_property(
     .try_into()?;
 
     // Encode values
-    for (value, cells) in values.into_iter().zip(tuple_cells.iter().cycle()) {
+    for (value, cells) in values.iter().zip(tuple_cells.iter().cycle()) {
         let encoding_bytes = (SafeNum::from(*cells) * FDT_CELL_SIZE).try_into()?;
         let (encoding_buffer, rest) = out_buffer
             .split_at_mut_checked(encoding_bytes)
@@ -980,7 +980,7 @@ mod test {
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
         // First set a property with some data.
-        let data = vec![0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8];
+        let data = [0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8];
         let payload = fdt.set_property_placeholder("/new-node", c"custom", data.len()).unwrap();
         payload.clone_from_slice(&data[..]);
 
@@ -998,7 +998,7 @@ mod test {
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
         // First set a property with some data.
-        let data = vec![0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8];
+        let data = [0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8];
         let payload = fdt.set_property_placeholder("/new-node", c"custom", data.len()).unwrap();
         payload.clone_from_slice(&data[..]);
 

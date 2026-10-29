@@ -72,7 +72,7 @@ pub(crate) trait PinFutContainerTyped<'a, F: Future + 'a> {
 /// `PinFutContainer` can implement `PinFutContainerTyped` for any [Future] type.
 impl<'a, F: Future<Output = ()> + 'a, T: PinFutContainer<'a>> PinFutContainerTyped<'a, F> for T {
     fn add_with(&mut self, f: impl FnOnce() -> F) {
-        PinFutContainer::add_with(self, move || f())
+        PinFutContainer::add_with(self, f)
     }
 
     fn for_each_remove_if(

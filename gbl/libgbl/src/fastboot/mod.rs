@@ -4322,7 +4322,7 @@ pub(crate) mod test {
 
         gbl_fb.stage_data_type = Some(StageDataType::Trace);
 
-        let mut upload_out = vec![0u8; 100];
+        let mut upload_out = [0u8; 100];
         let test_uploader = TestUploadBuilder(&mut upload_out[..]);
 
         let res = block_on(gbl_fb.upload(test_uploader));
@@ -5554,7 +5554,7 @@ pub(crate) mod test {
 
         // Use preloaded buffers so that we can test that `GblOps::get_partition_buffer()` allows
         // backend to handle buffer acquire and release.
-        let preloaded = vec![
+        let preloaded = [
             (LoadPartition::VendorKernelBoot, "android/vendor_kernel_boot_a.img"),
             (LoadPartition::VendorBoot, "android/vendor_boot_v4_a.img"),
             (LoadPartition::InitBoot, "android/init_boot_a.img"),

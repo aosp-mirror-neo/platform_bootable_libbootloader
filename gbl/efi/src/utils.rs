@@ -215,7 +215,7 @@ pub(crate) fn get_boot_buffer(entry: &EfiEntry, default: usize) -> Result<GblEfi
     ]
     .map(|v| match gbl_get_boot_buffer(entry, v, 0) {
         Err(Error::NotFound) => Ok(None),
-        v => v.map(|v| Some(v)),
+        v => v.map(Some),
     });
 
     let general = gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD, default)?;

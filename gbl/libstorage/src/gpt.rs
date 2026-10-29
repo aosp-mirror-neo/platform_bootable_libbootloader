@@ -952,8 +952,7 @@ pub(crate) async fn update_gpt(
     let blk_sz: usize = disk.io().info().block_size.try_into()?;
     let (header, remain) = mbr_primary
         .get_mut(blk_sz..)
-        .map(|v| v.split_at_mut_checked(blk_sz))
-        .flatten()
+        .and_then(|v| v.split_at_mut_checked(blk_sz))
         .ok_or(Error::BufferTooSmall(Some(blk_sz * 2)))?;
     let header = Ref::into_mut(Ref::<_, GptHeader>::new_from_prefix(&mut header[..]).unwrap().0);
 
@@ -974,8 +973,7 @@ pub(crate) async fn update_gpt(
         (SafeNum::from(header.entries_count) * header.entries_size).try_into().unwrap();
     let entries = remain
         .get_mut(entries_off..)
-        .map(|v| v.get_mut(..entries_size))
-        .flatten()
+        .and_then(|v| v.get_mut(..entries_size))
         .ok_or(Error::BufferTooSmall(Some(2 * blk_sz + entries_off + entries_size)))?;
     check_entries(header, entries)?;
 
@@ -2106,8 +2104,7 @@ pub(crate) mod test {
             block_on(dev.erase_gpt(&mut gpt)).unwrap();
             let size: SafeNum = gpt_entries_size(entries_count) + GPT_HEADER_NO_ENTRIES_SIZE;
             let len: usize = size.round_up(BLOCK_SIZE).try_into().unwrap();
-            let mut expected_vec = Vec::with_capacity(len);
-            expected_vec.resize(len, 0u8);
+            let expected_vec = vec![0; len];
             assert_eq!(dev.io().storage().deref()[MBR_SIZE..][..len], expected_vec);
             // New scope to simplify lifetime for dev.io().storage()
             {

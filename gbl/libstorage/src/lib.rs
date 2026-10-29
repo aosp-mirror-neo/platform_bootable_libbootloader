@@ -440,7 +440,7 @@ impl<T: BlockIo, const N: usize, B: FromIterator<u8> + DerefMut<Target = [u8]>>
     pub fn new_alloc_scratch(io: T) -> Result<Self> {
         let scratch_size = scratch_size(&io)?;
         let pool = ArrayVec::from_iter(
-            (0..N).map(|_| Some(B::from_iter(iter::repeat(0).take(scratch_size)))),
+            (0..N).map(|_| Some(B::from_iter(iter::repeat_n(0, scratch_size)))),
         );
         Self::new(io, pool)
     }
@@ -1171,7 +1171,7 @@ mod test {
         let io = RamBlockIo::new(512, 512, vec![]);
         let scratch_size = scratch_size(&io).unwrap() - 1;
         let pool = ArrayVec::from_iter(
-            (0..2).map(|_| Some(Box::from_iter(iter::repeat(0).take(scratch_size)))),
+            (0..2).map(|_| Some(Box::from_iter(iter::repeat_n(0, scratch_size)))),
         );
         assert!(TestDisk::new(io, pool).is_err());
     }
@@ -1192,14 +1192,14 @@ mod test {
     #[test]
     fn test_write_overflow() {
         let disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
-        assert!(block_on(disk.write(512, &mut vec![0u8; 1])).is_err());
+        assert!(block_on(disk.write(512, &mut [0u8; 1])).is_err());
         assert!(block_on(disk.write(0, &mut vec![0u8; 513])).is_err());
     }
 
     #[test]
     fn test_write_arithmetic_overflow() {
         let disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
-        assert!(block_on(disk.write(u64::MAX, &mut vec![0u8; 1])).is_err());
+        assert!(block_on(disk.write(u64::MAX, &mut [0u8; 1])).is_err());
     }
 
     #[test]

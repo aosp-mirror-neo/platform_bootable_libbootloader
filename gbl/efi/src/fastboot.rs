@@ -356,7 +356,7 @@ pub(crate) fn efi_gbl_fastboot_entry<'a, G: GblOps<'a>>(
         .inspect_err(|e| efi_println!(entry, "Failed to start EFI network. {:?}.", e))
         .ok();
     #[cfg(feature = "gbl_dev")]
-    let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
+    let tcp = tcp.as_mut().map(EfiFastbootTcpTransport::new);
 
     if !transport_protocols.is_empty() || tcp.is_some() {
         // LINT.IfChange
@@ -373,7 +373,7 @@ pub(crate) fn efi_gbl_fastboot_entry<'a, G: GblOps<'a>>(
     // This can be made configurable if necessary.
     const GBL_FB_N: usize = 2;
     let mut bufs: ArrayVec<Option<&mut [u8]>, GBL_FB_N> =
-        ArrayVec::from_iter(buffer.chunks_exact_mut(buffer.len() / GBL_FB_N).map(|b| Some(b)));
+        ArrayVec::from_iter(buffer.chunks_exact_mut(buffer.len() / GBL_FB_N).map(Some));
     let bufs = &(bufs.as_mut_slice()).into();
     let mut fut = Box::pin(fb.run(bufs, VecPinFut::default(), &mut transport_protocols, tcp));
     block_on_mut(&mut fut);

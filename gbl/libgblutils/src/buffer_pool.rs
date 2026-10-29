@@ -59,7 +59,7 @@ where
     type Buffer = B;
 
     fn allocate(&mut self) -> Option<B> {
-        self.iter_mut().find_map(|v| take(v))
+        self.iter_mut().find_map(take)
     }
 
     fn deallocate(&mut self, buf: B) {

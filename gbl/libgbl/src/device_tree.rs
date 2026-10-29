@@ -739,7 +739,7 @@ pub(crate) mod test {
         }
 
         // Select base device tree
-        registry.components_mut().nth(0).unwrap().selected = true;
+        registry.components_mut().next().unwrap().selected = true;
         // Select first overlay
         registry.components_mut().nth(2).unwrap().selected = true;
         // Select second overlay
@@ -748,8 +748,8 @@ pub(crate) mod test {
         // Expected selected data
         let expected_selected = SelectedDtComponents {
             base_dt: SelectedDtComponent {
-                source_metadata: registry.components().nth(0).unwrap().source_metadata,
-                dt: registry.components().nth(0).unwrap().dt,
+                source_metadata: registry.components().next().unwrap().source_metadata,
+                dt: registry.components().next().unwrap().dt,
             },
             vmdtbo: None,
             overlays: [
@@ -791,13 +791,13 @@ pub(crate) mod test {
         }
 
         // Select base device tree
-        registry.components_mut().nth(0).unwrap().selected = true;
+        registry.components_mut().next().unwrap().selected = true;
 
         // Expected selected data
         let expected_selected = SelectedDtComponents {
             base_dt: SelectedDtComponent {
-                source_metadata: registry.components().nth(0).unwrap().source_metadata,
-                dt: registry.components().nth(0).unwrap().dt,
+                source_metadata: registry.components().next().unwrap().source_metadata,
+                dt: registry.components().next().unwrap().dt,
             },
             vmdtbo: None,
             overlays: ArrayVec::new(),
@@ -825,14 +825,14 @@ pub(crate) mod test {
         }
 
         // Select base device tree
-        registry.components_mut().nth(0).unwrap().selected = true;
+        registry.components_mut().next().unwrap().selected = true;
         // Select VMDTBO
         registry.components_mut().nth(1).unwrap().selected = true;
 
         let expected_selected = SelectedDtComponents {
             base_dt: SelectedDtComponent {
-                source_metadata: registry.components().nth(0).unwrap().source_metadata,
-                dt: registry.components().nth(0).unwrap().dt,
+                source_metadata: registry.components().next().unwrap().source_metadata,
+                dt: registry.components().next().unwrap().dt,
             },
             vmdtbo: Some(SelectedDtComponent {
                 source_metadata: registry.components().nth(1).unwrap().source_metadata,
@@ -863,7 +863,7 @@ pub(crate) mod test {
         }
 
         // Select base device tree
-        registry.components_mut().nth(0).unwrap().selected = true;
+        registry.components_mut().next().unwrap().selected = true;
         // Select 2 VMDTBOs
         registry.components_mut().nth(1).unwrap().selected = true;
         registry.components_mut().nth(2).unwrap().selected = true;
@@ -922,7 +922,7 @@ pub(crate) mod test {
         }
 
         // Select first base device tree
-        registry.components_mut().nth(0).unwrap().selected = true;
+        registry.components_mut().next().unwrap().selected = true;
         // Select second base device tree
         registry.components_mut().nth(1).unwrap().selected = true;
 
@@ -954,8 +954,8 @@ pub(crate) mod test {
         // Expected auto selected data
         let expected_selected = SelectedDtComponents {
             base_dt: SelectedDtComponent {
-                source_metadata: registry.components().nth(0).unwrap().source_metadata,
-                dt: registry.components().nth(0).unwrap().dt,
+                source_metadata: registry.components().next().unwrap().source_metadata,
+                dt: registry.components().next().unwrap().dt,
             },
             vmdtbo: None,
             overlays: ArrayVec::new(),
@@ -986,8 +986,8 @@ pub(crate) mod test {
         // Expected auto selected data
         let expected_selected = SelectedDtComponents {
             base_dt: SelectedDtComponent {
-                source_metadata: registry.components().nth(0).unwrap().source_metadata,
-                dt: registry.components().nth(0).unwrap().dt,
+                source_metadata: registry.components().next().unwrap().source_metadata,
+                dt: registry.components().next().unwrap().dt,
             },
             vmdtbo: None,
             overlays: ArrayVec::new(),

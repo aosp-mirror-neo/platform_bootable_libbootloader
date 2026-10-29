@@ -215,7 +215,7 @@ fn read_cells(bytes: &[u8]) -> usize {
 /// Helper function to find a bootconfig value by key. If multiple entries with the same
 /// key exist, the last one is returned. Assignment ":=" operator is not supported.
 fn find_bootconfig<'a>(config: &'a str, key: &str) -> Option<&'a str> {
-    Some(config.lines().filter_map(|v| v.split_once('=').filter(|(k, _)| *k == key)).last()?.1)
+    Some(config.lines().filter_map(|v| v.split_once('=').filter(|(k, _)| *k == key)).next_back()?.1)
 }
 
 #[panic_handler]
