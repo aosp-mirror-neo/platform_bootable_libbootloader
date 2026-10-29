@@ -65,10 +65,9 @@ fn generate_canary(entry: &EfiEntry) -> usize {
 
     cfg_if! {
         if #[cfg(feature = "gbl_dev")] {
-            let canary_default;
             cfg_if! {
                 if #[cfg(target_pointer_width = "64")] {
-                    canary_default = 0x27085dc5dd4d6b7dusize ^ (entry as *const _ as usize);
+                    let canary_default = 0x27085dc5dd4d6b7dusize ^ (entry as *const _ as usize);
                 } else {
                     compile_error!("Only 64 bit targets are supported");
                 }

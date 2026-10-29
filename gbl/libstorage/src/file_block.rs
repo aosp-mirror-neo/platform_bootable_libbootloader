@@ -83,7 +83,8 @@ unsafe impl BlockIo for FileBlockIo {
         let offset = blk_offset * BLOCK_SIZE;
         let mut buf = vec![0u8; out.len()];
         self.file.read_exact_at(&mut buf, offset).map_err(|_| Error::Other(None))?;
-        Ok(out.copy_from_slice(&buf))
+        out.copy_from_slice(&buf);
+        Ok(())
     }
 
     async fn write_blocks(&self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {

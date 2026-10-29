@@ -28,7 +28,7 @@ pub fn efi_android_load<'a>(
 ) -> Result<(&'a [u8], &'a [u8], &'a [u8], &'a mut [u8])> {
     let entry = ops.efi_entry;
     gbl_println!(ops, "Try booting as Android");
-    Ok(android_main(ops, load, |fb| efi_gbl_fastboot_entry(entry, fb))?)
+    android_main(ops, load, |fb| efi_gbl_fastboot_entry(entry, fb))
 }
 
 /// Boots loaded android images.

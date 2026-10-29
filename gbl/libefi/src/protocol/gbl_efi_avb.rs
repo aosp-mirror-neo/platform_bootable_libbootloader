@@ -861,7 +861,7 @@ mod test {
             let value_buffer = unsafe { from_raw_parts_mut(value, EXPECTED_VALUE.len()) };
             value_buffer.copy_from_slice(EXPECTED_VALUE);
 
-            return EFI_STATUS_SUCCESS;
+            EFI_STATUS_SUCCESS
         }
 
         let c_interface = GblEfiAvbProtocol {
@@ -899,7 +899,7 @@ mod test {
             // * `value_size` is a valid non-null pointer to `usize` value.
             unsafe { ptr::write(value_size, EXPECTED_BUFFER_SIZE) };
 
-            return EFI_STATUS_BUFFER_TOO_SMALL;
+            EFI_STATUS_BUFFER_TOO_SMALL
         }
 
         let c_interface = GblEfiAvbProtocol {
@@ -946,7 +946,7 @@ mod test {
             let value_buffer = unsafe { from_raw_parts(value, value_size) };
             assert_eq!(value_buffer, EXPECTED_VALUE);
 
-            return EFI_STATUS_SUCCESS;
+            EFI_STATUS_SUCCESS
         }
 
         let c_interface = GblEfiAvbProtocol {
@@ -985,7 +985,7 @@ mod test {
             assert!(value.is_null());
             assert_eq!(value_size, 0);
 
-            return EFI_STATUS_SUCCESS;
+            EFI_STATUS_SUCCESS
         }
 
         let c_interface = GblEfiAvbProtocol {
@@ -1020,7 +1020,7 @@ mod test {
                 EXPECTED_NAME
             );
 
-            return EFI_STATUS_INVALID_PARAMETER;
+            EFI_STATUS_INVALID_PARAMETER
         }
 
         let c_interface = GblEfiAvbProtocol {

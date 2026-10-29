@@ -58,7 +58,7 @@ where
 {
     let addr = bytes.as_ptr() as usize;
     let aligned_offset = (SafeNum::from(addr).round_up(alignment) - addr).try_into()?;
-    Ok(bytes.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
+    bytes.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))
 }
 
 /// A helper for getting the offset of the first byte with an aligned address.

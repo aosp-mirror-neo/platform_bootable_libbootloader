@@ -43,7 +43,7 @@ use safemath::SafeNum;
 use zerocopy::FromBytes;
 
 fn align_up(size: usize, alignment: usize) -> Result<usize> {
-    Ok(SafeNum::from(size).round_up(alignment).try_into().map_err(Error::ArithmeticOverflow)?)
+    SafeNum::from(size).round_up(alignment).try_into().map_err(Error::ArithmeticOverflow)
 }
 
 /// Returns `Err(InvalidAlignment)` if `buf`'s pointer isn't aligned to `alignment`.

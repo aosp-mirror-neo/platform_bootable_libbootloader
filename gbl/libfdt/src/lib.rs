@@ -465,7 +465,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
                 buffer.len().try_into().or(Err(Error::Other(None)))?,
             )
         })?;
-        Ok(Fdt::new(init)?)
+        Fdt::new(init)
     }
 
     /// Parse and get the FDT header.

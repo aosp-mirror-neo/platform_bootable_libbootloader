@@ -484,7 +484,8 @@ pub fn gbl_vsock_write(sid: u64, buffers: &[&[u8]]) -> Result<(), Error> {
 
 /// Closes the vsock.
 pub fn gbl_vsock_close(sid: u64) -> Result<(), Error> {
-    Ok(GBL_VSOCK_MANAGER.try_lock().ok_or(Error::NotReady)?.get()?.close(sid))
+    GBL_VSOCK_MANAGER.try_lock().ok_or(Error::NotReady)?.get()?.close(sid);
+    Ok(())
 }
 
 /// Helper function to wait for a result, yielding if it's not ready.

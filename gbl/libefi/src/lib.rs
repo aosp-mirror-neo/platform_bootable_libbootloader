@@ -91,17 +91,16 @@ pub unsafe fn with_global_efi_entry<F, T>(mut func: F) -> Result<T>
 where
     F: FnMut(&'static EfiEntry) -> T,
 {
-    let entry;
     cfg_if! {
         if #[cfg(test)] {
-            entry = GLOBAL_EFI_ENTRY
+            let entry = GLOBAL_EFI_ENTRY
             // Safety:
             // * It is the responsibility of initialization code to guarantee that
             //   `e_ptr` is valid and live.
                 .with(|e| e.borrow().map(|e_ptr| unsafe{ e_ptr.as_ref() }))
                 .ok_or(Error::InvalidState)?;
         } else {
-            entry = allocation::internal_efi_entry_and_rt().0.ok_or(Error::InvalidState)?;
+            let entry = allocation::internal_efi_entry_and_rt().0.ok_or(Error::InvalidState)?;
         }
     }
 

@@ -27,7 +27,7 @@ async fn read_aligned_all<'a>(
 ) -> Result<()> {
     let out = out.into();
     let blk_offset = check_range(io.info(), offset, &mut *out)?.try_into()?;
-    Ok(io.read_blocks(blk_offset, out).await?)
+    io.read_blocks(blk_offset, out).await
 }
 
 /// Read with block-aligned offset and aligned buffer. Size don't need to be block aligned.
@@ -184,7 +184,7 @@ pub(crate) async fn read_async<'a>(
 /// Write bytes from aligned buffer to a block boundary range.
 async fn write_aligned_all(io: &impl BlockIo, offset: u64, data: &mut [u8]) -> Result<()> {
     let blk_offset = check_range(io.info(), offset, &mut *data)?.try_into()?;
-    Ok(io.write_blocks(blk_offset, data).await?)
+    io.write_blocks(blk_offset, data).await
 }
 
 /// Write with block-aligned offset and aligned buffer. `data.len()` can be unaligned.

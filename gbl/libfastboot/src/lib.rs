@@ -845,7 +845,7 @@ impl<'a, T: Transport> Responder<'a, T> {
         self.transport_error?;
         assert!(size < self.buffer.len());
         self.transport_error = self.transport.send_packet(&self.buffer[..size]).await;
-        Ok(self.transport_error?)
+        self.transport_error
     }
 
     /// Helper for sending a formatted fastboot message.
@@ -879,13 +879,12 @@ impl<'a, T: Transport> VarInfoSender for &mut Responder<'a, T> {
         val: &str,
     ) -> Result<()> {
         // Sends a "INFO<var>:<':'-separated args>:<val>" packet to the host.
-        Ok(self
-            .send_formatted_msg("INFO", |v| {
-                write!(v, "{}", name).unwrap();
-                args.into_iter().for_each(|arg| write!(v, ":{}", arg).unwrap());
-                write!(v, ": {}", val).unwrap();
-            })
-            .await?)
+        self.send_formatted_msg("INFO", |v| {
+            write!(v, "{}", name).unwrap();
+            args.into_iter().for_each(|arg| write!(v, ":{}", arg).unwrap());
+            write!(v, ": {}", val).unwrap();
+        })
+        .await
     }
 }
 
@@ -911,21 +910,21 @@ macro_rules! reply_fail {
 
 impl<T: Transport> InfoSender for &mut Responder<'_, T> {
     async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(&mut self, cb: F) -> Result<()> {
-        Ok(self.send_formatted_msg("INFO", cb).await?)
+        self.send_formatted_msg("INFO", cb).await
     }
 }
 
 impl<T: Transport> OkaySender for &mut Responder<'_, T> {
     async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()> {
         self.result_message_sent = true;
-        Ok(self.send_formatted_msg("OKAY", cb).await?)
+        self.send_formatted_msg("OKAY", cb).await
     }
 }
 
 impl<T: Transport> FailSender for &mut Responder<'_, T> {
     async fn send_formatted_fail<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()> {
         self.result_message_sent = true;
-        Ok(self.send_formatted_msg("FAIL", cb).await?)
+        self.send_formatted_msg("FAIL", cb).await
     }
 }
 
@@ -1207,7 +1206,7 @@ async fn upload(
     let mut resp = Responder::new(transport);
     let upload_res = fb_impl.upload(&mut resp).await;
     match resp.remaining_upload > 0 {
-        true => return Err(Error::InvalidInput),
+        true => Err(Error::InvalidInput),
         _ => match upload_res {
             Err(e) => reply_fail!(resp, "{}", e.as_str()),
             _ => reply_okay!(resp, ""),
@@ -1245,7 +1244,7 @@ async fn fetch(
     }
     .await;
     match resp.remaining_upload > 0 {
-        true => return Err(Error::InvalidInput),
+        true => Err(Error::InvalidInput),
         _ => match fetch_res {
             Err(e) => reply_fail!(resp, "{}", e.as_str()),
             _ => reply_okay!(resp, ""),

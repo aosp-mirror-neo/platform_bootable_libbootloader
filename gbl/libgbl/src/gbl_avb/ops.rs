@@ -277,7 +277,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
 
 /// A helper function for converting `CStr` to `str`
 fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
-    Ok(s.to_str().or(Err(err))?)
+    s.to_str().or(Err(err))
 }
 
 /// A helper function to split partition into base name and slot index

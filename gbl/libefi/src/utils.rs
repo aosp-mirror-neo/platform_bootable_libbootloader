@@ -38,7 +38,7 @@ impl<'a> Timeout<'a> {
 
     /// Checks if it has timeout.
     pub fn check(&self) -> Result<bool> {
-        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
+        self.efi_entry.system_table().boot_services().check_event(&self.timer)
     }
 
     /// Resets the timeout.

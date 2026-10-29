@@ -91,11 +91,13 @@ pub trait Ops {
 
 impl Ops for [u8; ABR_DATA_SIZE] {
     fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
-        Ok(out.clone_from_slice(self.get(..out.len()).ok_or("Out of range")?))
+        out.clone_from_slice(self.get(..out.len()).ok_or("Out of range")?);
+        Ok(())
     }
 
     fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
-        Ok(self.get_mut(..data.len()).ok_or("Out of range")?.clone_from_slice(data))
+        self.get_mut(..data.len()).ok_or("Out of range")?.clone_from_slice(data);
+        Ok(())
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {
@@ -480,7 +482,7 @@ pub fn get_active_slot_from_data(data_a: &AbrSlotData, data_b: &AbrSlotData) -> 
     } else if priority_a > 0 {
         return SlotIndex::A;
     }
-    return SlotIndex::R;
+    SlotIndex::R
 }
 
 impl Default for AbrData {

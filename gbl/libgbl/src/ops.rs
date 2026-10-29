@@ -723,7 +723,8 @@ impl<'a, T> RambootOps<'a, T> {
                     .get(off.try_into()?..)
                     .and_then(|v| v.get(..out.len()))
                     .ok_or(Error::OutOfRange)?;
-                Ok(out.copy_from_slice(buf))
+                out.copy_from_slice(buf);
+                Ok(())
             }
             _ => Err(Error::NotFound),
         }
@@ -1134,7 +1135,10 @@ pub(crate) mod test {
         pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
             // For raw partition, use block_size=alignment=1 for simplicity.
             TestGblDisk::new_raw(Disk::new_ram_alloc(1, 1, data.as_ref().to_vec()).unwrap(), name)
-                .and_then(|v| Ok(self.0.push(v)))
+                .and_then(|v| {
+                    self.0.push(v);
+                    Ok(())
+                })
                 .unwrap()
         }
     }
@@ -1411,7 +1415,8 @@ pub(crate) mod test {
     /// Print `console_out` output, which can be useful for debugging.
     impl<'a> Write for FakeGblOps<'a> {
         fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
-            Ok(print!("{s}"))
+            print!("{s}");
+            Ok(())
         }
     }
 

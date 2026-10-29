@@ -179,7 +179,10 @@ impl Ops for AbrOpsSafe<'_> {
                 )
             } {
                 false => Err("read_abr_metadata_custom() failed".into()),
-                _ => Ok(out[..ABR_DATA_SIZE].clone_from_slice(&data.serialize())),
+                _ => {
+                    out[..ABR_DATA_SIZE].clone_from_slice(&data.serialize());
+                    Ok(())
+                }
             }
         } else {
             Err("No valid read methods".into())

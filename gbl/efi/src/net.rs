@@ -91,7 +91,7 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
         _ => {}
     };
     snp.initialize(0, 0)?;
-    Ok(snp.reset(true)?)
+    snp.reset(true)
 }
 
 /// `EfiNetworkDevice` manages a frame pool and handles receiving/sending network frames.
@@ -409,7 +409,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
 
     /// Checks whether a socket is closed.
     pub fn is_closed(&mut self) -> bool {
-        return !self.get_socket().is_open() || self.get_socket().state() == State::CloseWait;
+        !self.get_socket().is_open() || self.get_socket().state() == State::CloseWait
     }
 
     /// Sets the maximum number of bytes to read or write before a force await.

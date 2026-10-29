@@ -149,14 +149,16 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
         let out_len = out.len();
         self.num_accesses.borrow_mut().0 += 1;
 
-        Ok(out.copy_from_slice(&self.storage.borrow()[offset..][..out_len]))
+        out.copy_from_slice(&self.storage.borrow()[offset..][..out_len]);
+        Ok(())
     }
 
     async fn write_blocks(&self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
         let offset = self.checks(blk_offset, &mut *data).await?;
         self.num_accesses.borrow_mut().1 += 1;
 
-        Ok(self.storage.borrow_mut()[offset..][..data.len()].copy_from_slice(data))
+        self.storage.borrow_mut()[offset..][..data.len()].copy_from_slice(data);
+        Ok(())
     }
 
     async fn erase_blocks(&self, blk_offset: u64, num_blks: u64) -> Result<(), Error> {
@@ -169,7 +171,8 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
         let sz = (SafeNum::from(num_blks) * blk_sz).try_into().unwrap();
 
         // Erases by flipping the bits.
-        Ok(self.storage.borrow_mut()[off..][..sz].iter_mut().for_each(|v| *v = !*v))
+        self.storage.borrow_mut()[off..][..sz].iter_mut().for_each(|v| *v = !*v);
+        Ok(())
     }
 }
 

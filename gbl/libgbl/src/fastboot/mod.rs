@@ -703,7 +703,7 @@ where
                 Ok((Some(base), res))
             }
             // Failed to find the partition.
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
     }
 
@@ -863,7 +863,7 @@ where
         task: &mut Task<'a, 'b, B, P2, P>,
         responder: &mut impl InfoSender,
     ) -> CommandResult<()> {
-        Ok(match self.enable_async_task {
+        match self.enable_async_task {
             true => {
                 // `add_with` requires that the closure is lazily evaluated. If task cannot be
                 // added, it must not be evaluated.
@@ -881,7 +881,8 @@ where
                 }
             }
             _ => task.run_checked().await?,
-        })
+        };
+        Ok(())
     }
 
     /// Waits for all async tasks to complete.
@@ -1662,7 +1663,8 @@ where
             }
             "gbl-stage" => {
                 self.check_unlocked()?;
-                Ok(self.stage_data_type = Some(self.gbl_stage(args)?))
+                self.stage_data_type = Some(self.gbl_stage(args)?);
+                Ok(())
             }
             "gbl-pause-fastboot-after-load" => {
                 self.check_unlocked()?;
@@ -3934,7 +3936,9 @@ pub(crate) mod test {
             match self.lock().transport_in_queue.pop_front() {
                 Some(Ok(mut v)) => {
                     let (sz, rem) = v.read(out).map(|s| (s, v.len())).unwrap();
-                    (rem > 0).then(|| Some(self.lock().transport_in_queue.push_front(Ok(v))));
+                    if rem > 0 {
+                        self.lock().transport_in_queue.push_front(Ok(v));
+                    }
                     Ok((sz, rem))
                 }
                 Some(Err(e)) => Err(e.into()),
@@ -3944,7 +3948,8 @@ pub(crate) mod test {
 
         async fn send_packet(&mut self, packet: &[u8]) -> fastboot::Result<()> {
             self.lock().transport_out_err.as_mut().map(|f| f(packet)).unwrap_or(Ok(()))?;
-            Ok(self.lock().transport_out_queue.push_back(packet.into()))
+            self.lock().transport_out_queue.push_back(packet.into());
+            Ok(())
         }
     }
 
@@ -3963,7 +3968,8 @@ pub(crate) mod test {
         }
 
         async fn write_exact(&mut self, data: &[u8]) -> fastboot::Result<()> {
-            Ok(self.lock().tcp_out_queue.append(&mut data.to_vec().into()))
+            self.lock().tcp_out_queue.append(&mut data.to_vec().into());
+            Ok(())
         }
     }
 
