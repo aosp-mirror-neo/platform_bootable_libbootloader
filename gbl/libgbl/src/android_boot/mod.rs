@@ -1317,7 +1317,7 @@ pub(crate) mod tests {
     /// * `expected_bootconfig`: Expected fixed-up bootconfig.
     /// * `expected_bootargs`: Expected fixed-up bootargs.
     /// * `expected_fdt_property`: Expected fixed-up FDT properties.
-    fn test_android_load_verify_fixup_internal<'a>(
+    fn test_android_load_verify_fixup_internal(
         slot: Slot,
         partitions: &[(String, String)],
         specialized_partitions: &[SpecializedPartition],

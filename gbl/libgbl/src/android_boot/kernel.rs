@@ -41,7 +41,7 @@ pub(crate) fn parse_kernel_attributes(kernel: &[u8]) -> Result<KernelAttributes,
             Ok(KernelAttributes {
                 // Account for potential appended payloads so kernel size exceeds header image_size.
                 reserved_size: kernel.len().max(image_size),
-                page_size: page_size,
+                page_size,
             })
         } else if #[cfg(target_arch = "riscv64")] {
             let h = boot::parse_riscv64(kernel)?;

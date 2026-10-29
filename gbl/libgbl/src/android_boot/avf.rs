@@ -375,7 +375,7 @@ pub(crate) fn inject_vmdtbo(
 /// Add a device tree node describing pvmfw memory carveout. This is default behavior, required for
 /// pKVM, and can be overridden for other hypervisors by removing the
 /// `/reserved-memory/pkvm_guest_firmware` node in `ops.fixup_device_tree`.
-fn pkvm_describe_pvmfw_resvmem<'a, T>(fdt: &mut Fdt<T>, buffer: &[u8], bin_len: usize) -> Result<()>
+fn pkvm_describe_pvmfw_resvmem<T>(fdt: &mut Fdt<T>, buffer: &[u8], bin_len: usize) -> Result<()>
 where
     T: AsMut<[u8]> + AsRef<[u8]>,
 {

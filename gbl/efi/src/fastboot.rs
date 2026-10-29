@@ -68,7 +68,7 @@ mod network_fastboot {
 
     impl<'a, 'b, 'c> EfiFastbootTcpTransport<'a, 'b, 'c> {
         pub(super) fn new(socket: &'c mut EfiTcpSocket<'a, 'b>) -> Self {
-            Self { socket: socket, accept_new_state: AcceptNewState::None }
+            Self { socket, accept_new_state: AcceptNewState::None }
         }
     }
 

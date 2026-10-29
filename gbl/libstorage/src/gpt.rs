@@ -1049,7 +1049,7 @@ impl<D: Debug, G: Debug> Debug for GptBuilder<D, G> {
 // * B: The type for the GPT buffer in `Self::gpt`.
 // * D: The type for `Self::disk` which can dereference to a Disk<T, S>.
 // * G: The type for `Self::gpt` which can dereference to a Gpt<B>.
-impl<'a, T, P, B, D, G> GptBuilder<D, G>
+impl<T, P, B, D, G> GptBuilder<D, G>
 where
     T: BlockIo,
     P: BufferPool,
@@ -1453,7 +1453,7 @@ pub(crate) mod test {
     }
 
     /// A helper for testing restoration of invalid primary/secondary header modified by caller.
-    fn test_gpt_sync_restore<'a>(
+    fn test_gpt_sync_restore(
         modify_primary: impl FnOnce(&mut GptHeader, Ref<&mut [u8], [GptEntry]>),
         modify_secondary: impl FnOnce(&mut GptHeader, Ref<&mut [u8], [GptEntry]>),
         expect_primary_err: Error,

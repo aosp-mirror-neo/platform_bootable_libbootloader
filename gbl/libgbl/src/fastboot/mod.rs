@@ -1679,9 +1679,9 @@ where
         }
     }
 
-    async fn stream<'d>(
+    async fn stream(
         &mut self,
-        command: StreamCommand<&'d str>,
+        command: StreamCommand<&str>,
         mut responder: impl InfoSender,
     ) -> CommandResult<()> {
         self.check_unlocked()?;

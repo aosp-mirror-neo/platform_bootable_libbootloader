@@ -40,11 +40,11 @@ pub enum AndroidBootMode {
     Rescue,
 }
 
-const ANDROID_BOOT_MODE_CMD_NORMAL: &'static [u8] = b"";
-const ANDROID_BOOT_MODE_CMD_BOOTLOADER: &'static [u8] = b"bootonce-bootloader";
-const ANDROID_BOOT_MODE_CMD_RECOVERY: &'static [u8] = b"boot-recovery";
-const ANDROID_BOOT_MODE_CMD_FASTBOOT: &'static [u8] = b"boot-fastboot";
-const ANDROID_BOOT_MODE_CMD_RESCUE: &'static [u8] = b"boot-rescue";
+const ANDROID_BOOT_MODE_CMD_NORMAL: &[u8] = b"";
+const ANDROID_BOOT_MODE_CMD_BOOTLOADER: &[u8] = b"bootonce-bootloader";
+const ANDROID_BOOT_MODE_CMD_RECOVERY: &[u8] = b"boot-recovery";
+const ANDROID_BOOT_MODE_CMD_FASTBOOT: &[u8] = b"boot-fastboot";
+const ANDROID_BOOT_MODE_CMD_RESCUE: &[u8] = b"boot-rescue";
 
 impl TryFrom<&[u8]> for AndroidBootMode {
     type Error = Error;

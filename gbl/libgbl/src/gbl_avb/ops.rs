@@ -582,7 +582,7 @@ pub(crate) mod custom_vbmeta {
         pub rollback_indexes: &'a [(usize, u64)],
     }
 
-    const VBMETA: &'static str = "vbmeta";
+    const VBMETA: &str = "vbmeta";
 
     /// Inherits everything from `AvbOps` but override a few to support run verification
     /// on top of custom RAM-provided `vbmeta` partition.

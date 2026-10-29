@@ -225,7 +225,7 @@ pub struct DevicePathText<'a> {
 impl<'a> DevicePathText<'a> {
     pub(crate) fn new(text: *mut u16, efi_entry: &'a EfiEntry) -> Self {
         if text.is_null() || !text.is_aligned() {
-            return Self { text: None, efi_entry: efi_entry };
+            return Self { text: None, efi_entry };
         }
 
         let mut len: usize = 0;
@@ -236,7 +236,7 @@ impl<'a> DevicePathText<'a> {
         Self {
             // SAFETY: Pointer is confirmed non-null with known length at this point.
             text: Some(unsafe { core::slice::from_raw_parts(text, len) }),
-            efi_entry: efi_entry,
+            efi_entry,
         }
     }
 

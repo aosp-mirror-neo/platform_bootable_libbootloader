@@ -320,7 +320,7 @@ pub fn avb_fake_verify_slot<'a, 'b: 'c, 'c>(
             );
             Ok((
                 into_verify_data(r).unwrap(),
-                VerificationStatus { color: color, is_eio: false },
+                VerificationStatus { color, is_eio: false },
                 status.is_unlocked,
             ))
         }

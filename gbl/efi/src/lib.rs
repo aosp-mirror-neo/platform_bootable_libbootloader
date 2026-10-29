@@ -44,6 +44,7 @@ mod fuchsia_boot;
 // In tests, map the `efi_mocks` module as `efi`. This allows other modules to `use crate::efi`
 // and automatically pick up the correct one.
 #[cfg(not(test))]
+#[allow(clippy::single_component_path_imports)] // Needed for `crate::efi` paths.
 pub(crate) use efi;
 #[cfg(test)]
 pub(crate) use efi_mocks as efi;

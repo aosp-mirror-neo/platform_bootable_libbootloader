@@ -166,9 +166,7 @@ pub(crate) fn efi_to_zbi_mem_range_type(efi_mem_type: EfiMemoryType) -> u32 {
 
 /// Find Memory attributes from EFI configuration_table
 #[allow(unused)]
-pub(crate) fn get_efi_mem_attr<'a>(
-    entry: &'a EfiEntry,
-) -> Option<EfiMemoryAttributesTable<'static>> {
+pub(crate) fn get_efi_mem_attr(entry: &EfiEntry) -> Option<EfiMemoryAttributesTable<'static>> {
     entry.system_table().configuration_table().and_then(|config_tables| {
         config_tables
             .iter()

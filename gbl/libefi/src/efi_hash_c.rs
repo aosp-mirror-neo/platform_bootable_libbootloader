@@ -194,7 +194,7 @@ mod test {
     use std::collections::VecDeque;
     use zerocopy::{FromZeros, IntoBytes};
 
-    const DATA: &'static str = "Well if it seems to be real, it' s illusion.";
+    const DATA: &str = "Well if it seems to be real, it's illusion.";
 
     struct HashTest<Algorithm: HashAlgorithm> {
         init: extern "C" fn() -> *mut Hasher<'static, Algorithm>,
