@@ -126,12 +126,12 @@ impl<'a> EfiNetworkDevice<'a> {
 
 impl Drop for EfiNetworkDevice<'_> {
     fn drop(&mut self) {
-        if let Err(e) = self.protocol.shutdown() {
-            if e != Error::NotStarted {
-                // If shutdown fails, the protocol might still be operating on transmit buffers,
-                // which can cause undefined behavior. Thus we need to panic.
-                panic!("Failed to shutdown EFI network. {:?}", e);
-            }
+        if let Err(e) = self.protocol.shutdown()
+            && e != Error::NotStarted
+        {
+            // If shutdown fails, the protocol might still be operating on transmit buffers,
+            // which can cause undefined behavior. Thus we need to panic.
+            panic!("Failed to shutdown EFI network. {:?}", e);
         }
 
         // Deallocate TX frames.
@@ -516,17 +516,15 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         let meta = UdpMetadata::from((ip6_broadcast, MDNS_PORT));
         let handle = self.socket_set.iter().nth(1).unwrap().0;
         let socket = self.socket_set.get_mut::<UdpSocket>(handle);
-        if !socket.is_open() {
-            match socket.bind(IpListenEndpoint { addr: None, port: MDNS_PORT }) {
-                Err(e) => efi_println!(self.efi_entry, "bind error: {:?}", e),
-                _ => {}
-            }
+        if !socket.is_open()
+            && let Err(e) = socket.bind(IpListenEndpoint { addr: None, port: MDNS_PORT })
+        {
+            efi_println!(self.efi_entry, "bind error: {:?}", e)
         }
-        if socket.can_send() {
-            match socket.send_slice(&self.fuchsia_fastboot_mdns_packet, meta) {
-                Err(e) => efi_println!(self.efi_entry, "UDP send error: {:?}", e),
-                _ => {}
-            }
+        if socket.can_send()
+            && let Err(e) = socket.send_slice(&self.fuchsia_fastboot_mdns_packet, meta)
+        {
+            efi_println!(self.efi_entry, "UDP send error: {:?}", e)
         }
     }
 }
@@ -572,12 +570,11 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
 
         // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that
         // all uni/multicast packets can be captured.
-        match snp.set_promiscuous_mode() {
-            Err(e) => efi_println!(
+        if let Err(e) = snp.set_promiscuous_mode() {
+            efi_println!(
                 efi_entry,
                 "Warning: Failed to set promiscuous mode {e:?}. Device may be undiscoverable",
-            ),
-            _ => {}
+            )
         }
 
         Ok(Self {

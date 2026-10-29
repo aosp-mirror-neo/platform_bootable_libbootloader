@@ -69,10 +69,7 @@ where
     fn check_buffer_sizes(&self, size: usize) -> bool {
         // No buffers means there aren't any buffers of our requested size.
         !self.is_empty()
-            && self
-                .iter()
-                .filter_map(|v| if let Some(v) = v { Some(v.len()) } else { None })
-                .all(|l| l >= size)
+            && self.iter().filter_map(|v| v.as_ref().map(|v| v.len())).all(|l| l >= size)
     }
 }
 

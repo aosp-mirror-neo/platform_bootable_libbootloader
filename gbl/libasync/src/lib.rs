@@ -37,9 +37,8 @@ pub fn block_on_mut<O, F: Future<Output = O> + ?Sized>(
     fut: &mut Pin<impl DerefMut<Target = F>>,
 ) -> O {
     loop {
-        match poll(fut) {
-            Some(res) => return res,
-            _ => {}
+        if let Some(res) = poll(fut) {
+            return res;
         }
     }
 }

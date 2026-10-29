@@ -33,8 +33,10 @@ pub fn read_bootloader_message_to<'a, 'b>(
     ops: &mut impl GblOps<'a>,
     buffer: &'b mut [u8],
 ) -> Result<&'b mut BootloaderMessage> {
-    let (bcb, _) = BootloaderMessage::mut_from_prefix(buffer).map_err(|e| match e.into() {
-        SizeError { .. } => Error::BufferTooSmall(Some(BootloaderMessage::SIZE_BYTES)),
+    let (bcb, _) = BootloaderMessage::mut_from_prefix(buffer).map_err(|e| {
+        // Converting to `SizeError` statically ensures that no other error is possible.
+        let SizeError { .. } = e.into();
+        Error::BufferTooSmall(Some(BootloaderMessage::SIZE_BYTES))
     })?;
     bcb.zero();
     ops.read_from_partition_sync(MISC_PARTITION, 0, bcb.as_mut_bytes())?;

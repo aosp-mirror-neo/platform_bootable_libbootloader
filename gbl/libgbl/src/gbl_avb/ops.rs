@@ -271,7 +271,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
         self.preloaded_partitions
             .iter()
             .position(|(name, _)| *name == partition_name)
-            .ok_or_else(|| IoError::NotImplemented)
+            .ok_or(IoError::NotImplemented)
     }
 }
 

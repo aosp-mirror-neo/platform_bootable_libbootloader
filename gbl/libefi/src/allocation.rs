@@ -208,17 +208,14 @@ impl EfiAllocator {
     ///
     /// Errors are logged but ignored.
     fn deallocate(&self, ptr: *mut u8) {
-        match self.state.efi_entry() {
-            Some(entry) => {
-                let _ = entry
-                    .system_table_checked()
-                    .and_then(|v| v.boot_services_checked())
-                    .and_then(|v| v.free_pool(ptr as *mut _))
-                    .inspect_err(|e| efi_try_print!("Failed to deallocate: {e}"));
-            }
-            // After EFI_BOOT_SERVICES.ExitBootServices(), all allocated memory is considered
-            // leaked and under full ownership of subsequent OS loader code.
-            _ => {}
+        // After EFI_BOOT_SERVICES.ExitBootServices(), there is no EFI entry and all allocated
+        // memory is considered leaked and under full ownership of subsequent OS loader code.
+        if let Some(entry) = self.state.efi_entry() {
+            let _ = entry
+                .system_table_checked()
+                .and_then(|v| v.boot_services_checked())
+                .and_then(|v| v.free_pool(ptr as *mut _))
+                .inspect_err(|e| efi_try_print!("Failed to deallocate: {e}"));
         }
     }
 

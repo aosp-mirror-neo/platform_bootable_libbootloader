@@ -534,7 +534,7 @@ fn finalize_bootconfig<'a, 'b, 'c>(
 
     if let Some(ref v) = boot_items {
         for val in v.utf8_items(BootItem::Bootconfig) {
-            write!(builder, "{}{}", val, val.ends_with("\n").then_some("").unwrap_or("\n"))
+            write!(builder, "{}{}", val, if val.ends_with("\n") { "" } else { "\n" })
                 .map_err(Error::from)?;
         }
     }
@@ -829,8 +829,7 @@ pub fn android_main<'a, 'b, G: GblOps<'a>>(
             ops.sync_partition_buffer(true)?;
 
             // Checks whether fastboot has set a different active slot. Reboot if it does.
-            if slot.map_or(
-                false,
+            if slot.is_some_and(
                 |s| matches!(result.last_set_active_slot, Some(x) if x != s.suffix.as_char()),
             ) {
                 gbl_println!(ops, "Active slot changed by \"fastboot set_active\". Reset..");

@@ -43,12 +43,12 @@ pub(crate) fn fdt_select<'b, 'a: 'b, 'c: 'b>(
     // TODO(b/385690995): Track FIT usage in metrics.
 
     // Detect FIT in DTBO partition
-    if images.dtbo.len() > 0 {
-        if let Ok(fit) = Fit::from_bytes(images.dtbo) {
-            gbl_println!(ops, "FIT image detected in DTBO partition");
-            return get_fit_selected_devicetree(ops, fit, buffer)
-                .map(|(selected, remains)| (Some(selected), remains));
-        }
+    if images.dtbo.len() > 0
+        && let Ok(fit) = Fit::from_bytes(images.dtbo)
+    {
+        gbl_println!(ops, "FIT image detected in DTBO partition");
+        return get_fit_selected_devicetree(ops, fit, buffer)
+            .map(|(selected, remains)| (Some(selected), remains));
     }
     fdt_select_from_boot_partitions(ops, images, buffer)
 }

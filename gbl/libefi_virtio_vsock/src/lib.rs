@@ -270,11 +270,11 @@ impl GblVsockConnectionManager {
     pub fn poll_once(&mut self) -> bool {
         // Clears timeout connections.
         for slot in self.slots.iter_mut() {
-            if let Some(v) = slot {
-                if (timestamp() - v.last_event_ts) > v.timeout {
-                    v.remote.map(|remote| self.connection_manager.shutdown(remote, v.port));
-                    *slot = None;
-                }
+            if let Some(v) = slot
+                && (timestamp() - v.last_event_ts) > v.timeout
+            {
+                v.remote.map(|remote| self.connection_manager.shutdown(remote, v.port));
+                *slot = None;
             }
         }
 
@@ -285,12 +285,13 @@ impl GblVsockConnectionManager {
         // Find if there is any on-going session for this event.
         let mut active_idx = None;
         for (i, v) in self.slots.iter_mut().enumerate() {
-            if let Some(v) = v {
-                if v.remote == Some(source) && v.port == destination.port {
-                    v.last_event_ts = timestamp();
-                    active_idx = Some(i);
-                    break;
-                }
+            if let Some(v) = v
+                && v.remote == Some(source)
+                && v.port == destination.port
+            {
+                v.last_event_ts = timestamp();
+                active_idx = Some(i);
+                break;
             }
         }
 

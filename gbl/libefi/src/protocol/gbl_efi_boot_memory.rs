@@ -405,11 +405,8 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
         }
         BootBufferOp::Clear(v) => {
             let name = boot_buf_info(v).0;
-            match BOOT_BUFFER_POOL.clear(name)? {
-                Buffer::Allocated { .. } => {
-                    efi_println!(entry, "Released allocated buffer for {name:?}.");
-                }
-                _ => {}
+            if let Buffer::Allocated { .. } = BOOT_BUFFER_POOL.clear(name)? {
+                efi_println!(entry, "Released allocated buffer for {name:?}.");
             }
             Ok(None)
         }

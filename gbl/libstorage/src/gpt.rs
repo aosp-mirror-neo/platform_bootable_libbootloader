@@ -446,10 +446,8 @@ impl Partition {
     /// Creates a new instance.
     fn new(entry: GptEntry, block_size: u64) -> Self {
         let mut buf = [0u8; GPT_NAME_LEN_U8];
-        let decoded_name = match entry.name_to_str(&mut buf[..]).ok().map(|v| v.len()) {
-            Some(len) => Some((buf, len)),
-            _ => None,
-        };
+        let decoded_name =
+            entry.name_to_str(&mut buf[..]).ok().map(|v| v.len()).map(|len| (buf, len));
         Self { entry, block_size, decoded_name }
     }
 
@@ -985,7 +983,9 @@ pub(crate) async fn update_gpt(
         // Updates the last entry to cover the rest of the storage.
         let gpt_entries =
             Ref::<_, [GptEntry]>::new_slice(&mut entries[..]).unwrap().into_mut_slice();
-        gpt_entries.iter_mut().filter(|e| !e.is_null()).last().map(|v| v.last = header.last);
+        if let Some(v) = gpt_entries.iter_mut().rev().find(|e| !e.is_null()) {
+            v.last = header.last;
+        }
         header.update_entries_crc(entries);
         // Re-verifies everything.
         check_header(disk.io(), header, true).unwrap();
@@ -1217,7 +1217,7 @@ where
     ) -> Result<()> {
         let (header, _) = LoadBufferRef::from(&mut self.gpt.buffer[..]).secondary();
         let entry_count = usize::try_from(header.entries_count).unwrap();
-        let search_start = size.is_some().then_some(0).unwrap_or(entry_count);
+        let search_start = if size.is_some() { 0 } else { entry_count };
         for i in search_start..entry_count + 1 {
             if self.insert_before(i, name, part_type, unique_guid, flags, size).is_ok() {
                 return Ok(());

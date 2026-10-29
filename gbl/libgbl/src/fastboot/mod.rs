@@ -186,12 +186,11 @@ impl<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> Task<'a, 'b, B, P2, P> {
     /// The method is intended for use in the context of parallel/background async tasks where
     /// errors can't be easily handled by the main routine.
     async fn run(mut self) {
-        match self.workload.run().await {
-            Err(e) => panic!(
+        if let Err(e) = self.workload.run().await {
+            panic!(
                 "A Fastboot async task failed: {e:?}, context: {}",
                 from_utf8(&self.context[..]).unwrap_or("")
-            ),
-            _ => {}
+            )
         }
     }
 
@@ -490,18 +489,18 @@ where
                     }
                 }
 
-                if let Some(v) = tcp.as_mut() {
-                    if v.accept_new() {
-                        // Enable trace when actually doing useful work.
-                        let _guard = TraceGuard::new(trace_config_orig);
-                        match run_tcp_session(v, self).await {
-                            Ok(()) => break 'outer,
-                            Err(e) if e != fastboot::Error::Disconnected => {
-                                gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {e}");
-                            }
-                            _ => (),
-                        };
-                    }
+                if let Some(v) = tcp.as_mut()
+                    && v.accept_new()
+                {
+                    // Enable trace when actually doing useful work.
+                    let _guard = TraceGuard::new(trace_config_orig);
+                    match run_tcp_session(v, self).await {
+                        Ok(()) => break 'outer,
+                        Err(e) if e != fastboot::Error::Disconnected => {
+                            gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {e}");
+                        }
+                        _ => (),
+                    };
                 }
 
                 yield_now().await;
@@ -1136,11 +1135,10 @@ where
     /// Helper for checking and getting a `BootItemContainer` from general load buffer.
     fn boot_item_container(&mut self) -> CommandResult<&mut BootItemContainer<'b>> {
         let v = self.data.boot_buffer.boot_items();
-        match v.check_valid() {
-            Err(_) => v.init().map_err(|e| {
+        if v.check_valid().is_err() {
+            v.init().map_err(|e| {
                 CommandError::from(format_args!("Failed to initialize boot item container {e}"))
-            })?,
-            _ => {}
+            })?;
         }
         Ok(v)
     }
@@ -1217,7 +1215,7 @@ where
         mut responder: impl UploadBuilder + InfoSender,
     ) -> CommandResult<()> {
         // Makes sure a download buffer can be allocated.
-        if let Some(_) = self.take_download() {
+        if self.take_download().is_some() {
             responder.send_info("A previous download is discarded.").await?;
         }
         let mut buffer = self.take_or_allocate_download_buffer().await;
@@ -6537,9 +6535,13 @@ pub(crate) mod test {
         gbl_ops.avb_device_status.is_unlocked = true;
         let mut transport_out_err = |v: &[u8]| -> Result<(), Error> {
             // The response is from "getvar:partition-size:raw"
-            (v == b"OKAY0x800").then_some(Err(Error::Disconnected)).unwrap_or(Ok(()))?;
+            if v == b"OKAY0x800" {
+                return Err(Error::Disconnected);
+            }
             // Data uploaded by '"fetch:raw:0:0x800"
-            (v[0] == 0x55).then_some(Err(Error::Disconnected)).unwrap_or(Ok(()))?;
+            if v[0] == 0x55 {
+                return Err(Error::Disconnected);
+            }
             Ok(())
         };
         let listener: SharedTestListener = Default::default();

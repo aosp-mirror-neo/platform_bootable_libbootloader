@@ -194,30 +194,30 @@ impl VendorBootImageInfo {
         let table = page_aligned_range(dtb_range.end, table_sz, page_size)?;
         let bootconfig_range = table.end..(table.end + usize::try_from(bootconfig_sz)?);
         let mut ramdisk_table = arrayvec::ArrayVec::new();
-        if let VendorImageHeader::V4(hdr) = header {
-            if hdr.vendor_ramdisk_table_entry_num > 0 {
-                let table_entries: Ref<_, [vendor_ramdisk_table_entry_v4]> =
-                    Ref::from_prefix_with_elems(
-                        &buffer[table],
-                        hdr.vendor_ramdisk_table_entry_num as usize,
-                    )
-                    .map_err(|_| Error::InvalidInput)?
-                    .0;
-                if hdr.vendor_ramdisk_table_entry_num as usize > RAMDISK_TABLE_MAX_ENTRIES {
-                    return Err(Error::Other(Some(
-                        "Ramdisk table entry exceeded max supported entry count",
-                    )));
-                }
-
-                ramdisk_table.extend(table_entries.iter().map(|e| {
-                    let start = ramdisk_range.start + e.ramdisk_offset as usize;
-                    let end = start + e.ramdisk_size as usize;
-                    VendorBootRamdiskEntry {
-                        ramdisk_range: start..end,
-                        ramdisk_type: e.ramdisk_type.try_into().unwrap(),
-                    }
-                }));
+        if let VendorImageHeader::V4(hdr) = header
+            && hdr.vendor_ramdisk_table_entry_num > 0
+        {
+            let table_entries: Ref<_, [vendor_ramdisk_table_entry_v4]> =
+                Ref::from_prefix_with_elems(
+                    &buffer[table],
+                    hdr.vendor_ramdisk_table_entry_num as usize,
+                )
+                .map_err(|_| Error::InvalidInput)?
+                .0;
+            if hdr.vendor_ramdisk_table_entry_num as usize > RAMDISK_TABLE_MAX_ENTRIES {
+                return Err(Error::Other(Some(
+                    "Ramdisk table entry exceeded max supported entry count",
+                )));
             }
+
+            ramdisk_table.extend(table_entries.iter().map(|e| {
+                let start = ramdisk_range.start + e.ramdisk_offset as usize;
+                let end = start + e.ramdisk_size as usize;
+                VendorBootRamdiskEntry {
+                    ramdisk_range: start..end,
+                    ramdisk_type: e.ramdisk_type.try_into().unwrap(),
+                }
+            }));
         }
         Ok(Self { ramdisk_range, dtb_range, bootconfig_range, ramdisk_table })
     }

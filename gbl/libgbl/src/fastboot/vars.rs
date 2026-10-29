@@ -607,10 +607,10 @@ where
             self.data.boot_buffer.scratch(),
             total_partitions,
         )
-        .map_err(|e| match e.into() {
-            SizeError { .. } => {
-                Error::BufferTooSmall(Some(total_partitions * size_of::<PartHasSlot>()))
-            }
+        .map_err(|e| {
+            // Converting to `SizeError` statically ensures that no other error is possible.
+            let SizeError { .. } = e.into();
+            Error::BufferTooSmall(Some(total_partitions * size_of::<PartHasSlot>()))
         })?
         .0;
         let mut part_has_slot = SliceVec::new(buf);
@@ -634,11 +634,12 @@ where
                     }
                     Some(pos) => part_has_slot[pos].1 = PartHasSlot::NO,
                 },
-                Some((name, suffix)) if suffix == default_slot => {
-                    if part_has_slot.iter().all(|p| p.0.to_str() != name) {
-                        if let Ok(base_name) = name.try_into() {
-                            part_has_slot.push(PartHasSlot(base_name, PartHasSlot::YES));
-                        }
+                Some((name, suffix))
+                    if suffix == default_slot
+                        && part_has_slot.iter().all(|p| p.0.to_str() != name) =>
+                {
+                    if let Ok(base_name) = name.try_into() {
+                        part_has_slot.push(PartHasSlot(base_name, PartHasSlot::YES));
                     }
                 }
                 _ => {}
@@ -667,8 +668,10 @@ where
             self.data.boot_buffer.scratch(),
             SUPER_METADATA_SIZE,
         )
-        .map_err(|e| match e.into() {
-            SizeError { .. } => Error::BufferTooSmall(Some(SUPER_METADATA_SIZE)),
+        .map_err(|e| {
+            // Converting to `SizeError` statically ensures that no other error is possible.
+            let SizeError { .. } = e.into();
+            Error::BufferTooSmall(Some(SUPER_METADATA_SIZE))
         })?;
 
         let disk = &self.disks[blk_idx];

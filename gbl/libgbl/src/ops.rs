@@ -1135,10 +1135,7 @@ pub(crate) mod test {
         pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
             // For raw partition, use block_size=alignment=1 for simplicity.
             TestGblDisk::new_raw(Disk::new_ram_alloc(1, 1, data.as_ref().to_vec()).unwrap(), name)
-                .and_then(|v| {
-                    self.0.push(v);
-                    Ok(())
-                })
+                .map(|v| self.0.push(v))
                 .unwrap()
         }
     }

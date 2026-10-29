@@ -107,7 +107,7 @@ impl AVFVerificationData for SlotVerifyData<'_> {
         // extracting their public keys (b/578053216).
         let mut hasher = T::new();
         self.vbmeta_data().iter().try_for_each(|data| {
-            if vbmeta.map_or(true, |v| data.partition_name().to_str() == Ok(v)) {
+            if vbmeta.is_none_or(|v| data.partition_name().to_str() == Ok(v)) {
                 hasher.update(data.header_verified()?.public_key());
             }
             Ok(())
