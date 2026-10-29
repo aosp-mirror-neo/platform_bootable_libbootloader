@@ -12,14 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+
 package(
     default_applicable_licenses = ["@gbl//licensing:gbl_license"],
     default_visibility = ["//visibility:public"],
 )
 
+# Build-only coverage for targets that aren't reachable from `gbl_efi_dist` or
+# any test, so that presubmit catches breakages in them.
+build_test(
+    name = "extra_targets_build_test",
+    targets = [
+        "@gbl//efi:aarch64_debug_dev",
+        "@gbl//efi:aarch64_debug_prod",
+        "@gbl//efi:x86_64_debug_dev",
+        "@gbl//efi:x86_64_debug_prod",
+        "@gbl//protocol_integration:protocol_integration_optional",
+        "@gbl//protocol_integration:protocol_integration_required",
+    ],
+)
+
 test_suite(
     name = "tests",
     tests = [
+        ":extra_targets_build_test",
         "@gbl//:readme_test",
         "@gbl//efi:test",
         "@gbl//efi:test_dev",
@@ -50,6 +67,7 @@ test_suite(
         "@gbl//libgbl:libgbl_test_dev",
         "@gbl//libgblutils:test",
         "@gbl//libgblutils:testutils_test",
+        "@gbl//liblp:liblp_test",
         "@gbl//libmisc:libmisc_test",
         "@gbl//libopendice:libopendice_test",
         "@gbl//libpvmfwconfig:libpvmfwconfig_test",
