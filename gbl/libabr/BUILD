@@ -41,6 +41,12 @@ rust_static_library(
     crate_name = "abr_c",
     crate_root = "src/c_staticlib.rs",
     edition = "2021",
+    # `no_std` static libraries can't use the default unwinding panic
+    # strategy. This matches the Fuchsia GN build (`panic_as_abort`).
+    rustc_flags = [
+        "-C",
+        "panic=abort",
+    ],
     deps = [":libabr"],
 )
 

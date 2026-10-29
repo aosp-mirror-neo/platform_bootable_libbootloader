@@ -40,7 +40,7 @@ test_suite(
         "@gbl//:readme_test",
         "@gbl//efi:test",
         "@gbl//efi:test_dev",
-        "@gbl//libabr:libabr_test",
+        "@gbl//libabr:libabr_tests",
         "@gbl//libasync:libasync_test",
         "@gbl//libboot:libboot_test",
         "@gbl//libbootimg:libbootimg_test",
