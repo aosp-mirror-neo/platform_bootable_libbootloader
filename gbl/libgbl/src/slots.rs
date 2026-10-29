@@ -87,9 +87,10 @@ impl TryFrom<char> for Suffix {
 }
 
 /// Slot metadata describing why that slot is unbootable.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum UnbootableReason {
     /// No information is given about why this slot is not bootable.
+    #[default]
     Unknown,
     /// This slot has exhausted its retry budget and cannot be booted.
     NoMoreTries,
@@ -103,12 +104,6 @@ pub enum UnbootableReason {
     /// This slot has failed a verification check as part of
     /// Android Verified Boot.
     VerificationFailure,
-}
-
-impl Default for UnbootableReason {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Describes whether a slot has successfully booted and, if not,

@@ -493,6 +493,11 @@ impl File {
     pub fn len(&self) -> Result<usize, Error> {
         flen(self.0)
     }
+
+    /// Queries whether the file is empty.
+    pub fn is_empty(&self) -> Result<bool, Error> {
+        Ok(self.len()? == 0)
+    }
 }
 
 impl Drop for File {

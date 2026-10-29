@@ -151,7 +151,7 @@ mod test {
     use std::{cell::RefCell, collections::VecDeque};
 
     thread_local! {
-        pub static GET_TIMESTAMP_COUNTER: RefCell<u64> = RefCell::new(0);
+        pub static GET_TIMESTAMP_COUNTER: RefCell<u64> = const { RefCell::new(0) };
     }
 
     /// Mocks `TimestampProtocol.get_timestamp`

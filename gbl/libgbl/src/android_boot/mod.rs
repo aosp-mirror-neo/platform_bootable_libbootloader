@@ -3385,9 +3385,8 @@ pub(crate) mod tests {
     fn test_add_perf_metrics() {
         let mut buffer = vec![0u8; 1024];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        let mut metrics = GblMetrics::default();
-        metrics.start_tick = Some(100);
-        metrics.avb_ticks = Some(200);
+        let mut metrics =
+            GblMetrics { start_tick: Some(100), avb_ticks: Some(200), ..Default::default() };
         metrics.add_io_timing_ticks("boot", 300);
         let time = FakeGblTime::new(vec![1000]);
 

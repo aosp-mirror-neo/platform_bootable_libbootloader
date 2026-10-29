@@ -369,7 +369,7 @@ mod test {
         // Stash the partition information in static thread storage so we can access it there.
         thread_local! {
             static NAMES_AND_FLAGS: Cell<Vec<(&'static str, u64)>> = Default::default();
-            static RETURN_VALUE: Cell<EfiStatus> = Cell::new(EFI_STATUS_SUCCESS);
+            static RETURN_VALUE: Cell<EfiStatus> = const { Cell::new(EFI_STATUS_SUCCESS) };
         }
         NAMES_AND_FLAGS.set(names_and_flags.to_vec());
         RETURN_VALUE.set(return_value);

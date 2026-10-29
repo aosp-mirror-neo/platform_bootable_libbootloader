@@ -180,6 +180,12 @@ fn try_dt_totalsize_from_unaligned_bytes_ref(header: &[u8], buffer: &mut [u8]) -
     }
 }
 
+impl<'a> Default for DtComponentsRegistry<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> DtComponentsRegistry<'a> {
     /// Create new empty DtComponentsRegistry.
     pub fn new() -> Self {

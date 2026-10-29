@@ -102,7 +102,7 @@ macro_rules! efi_try_print {
         {
             let _ = (|| -> liberror::Result<()> {
                 use core::fmt::Write;
-                if let Some(entry) = crate::allocation::internal_efi_entry_and_rt().0 {
+                if let Some(entry) = $crate::allocation::internal_efi_entry_and_rt().0 {
                     write!(entry.system_table_checked()?.con_out()?, $($x,)*)?;
                 }
 
@@ -145,6 +145,12 @@ pub(crate) unsafe fn exit_efi_global_alloc() {
     // SAFETY: See SAFETY of `internal_efi_entry_and_rt()`
     unsafe {
         EFI_GLOBAL_ALLOCATOR.state = EfiState::Exited;
+    }
+}
+
+impl Default for EfiAllocator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

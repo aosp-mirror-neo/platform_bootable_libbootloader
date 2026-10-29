@@ -1895,9 +1895,11 @@ mod test {
 
     #[test]
     fn test_boot_not_exit_if_failed() {
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.boot_result = Some(Err("Test".into()));
-        fastboot_impl.vars = BTreeMap::from([(("max-download-size", &[][..]), "0x400")]);
+        let mut fastboot_impl = FastbootTest {
+            boot_result: Some(Err("Test".into())),
+            vars: BTreeMap::from([(("max-download-size", &[][..]), "0x400")]),
+            ..Default::default()
+        };
         let mut transport = TestTransport::new();
         transport.add_input(b"boot");
         transport.add_input(b"getvar:max-download-size");
@@ -2021,9 +2023,11 @@ mod test {
             assert_eq!(dl.download_all(&mut out[..]), Ok(()));
             Ok(())
         };
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_handler = Some(&mut download_handler);
-        fastboot_impl.predownload_handler = Some(&mut predownload_handler);
+        let mut fastboot_impl = FastbootTest {
+            download_handler: Some(&mut download_handler),
+            predownload_handler: Some(&mut predownload_handler),
+            ..Default::default()
+        };
         let _ = block_on(run(&mut transport, &mut fastboot_impl));
         let expected = VecDeque::<Vec<u8>>::from([
             b"INFOInfo before download".into(),
@@ -2045,8 +2049,10 @@ mod test {
         let mut transport = TestTransport::new();
         transport.add_input(format!("download:{:#x}", 1024).as_bytes());
         let mut predownload_handler = |_: &mut dyn TestInfoSender| Err(Error::Aborted);
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.predownload_handler = Some(&mut predownload_handler);
+        let mut fastboot_impl = FastbootTest {
+            predownload_handler: Some(&mut predownload_handler),
+            ..Default::default()
+        };
         let _ = block_on(run(&mut transport, &mut fastboot_impl));
         let expected = VecDeque::<Vec<u8>>::from([b"FAILAborted".into()]);
         assert_eq!(
@@ -2082,8 +2088,8 @@ mod test {
         let mut download = vec![0u8; 2048];
         let mut download_handler =
             |dl: &mut dyn TestDownloader, _: usize| dl.download_all(&mut download);
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_handler = Some(&mut download_handler);
+        let mut fastboot_impl =
+            FastbootTest { download_handler: Some(&mut download_handler), ..Default::default() };
         let download_content: Vec<u8> = vec![0u8; 1024];
         let mut transport = TestTransport::new();
         transport.add_input(format!("download:{:#x}", download_content.len() - 1).as_bytes());
@@ -2350,9 +2356,11 @@ mod test {
             dl.download_all(&mut download).unwrap();
             Ok(())
         };
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_handler = Some(&mut download_handler);
-        fastboot_impl.vars = BTreeMap::from([(("max-download-size", &[][..]), "0x400")]);
+        let mut fastboot_impl = FastbootTest {
+            download_handler: Some(&mut download_handler),
+            vars: BTreeMap::from([(("max-download-size", &[][..]), "0x400")]),
+            ..Default::default()
+        };
         let download_content: Vec<u8> = (0..1024).map(|v| v as u8).collect();
         let mut tcp_stream: TestTcpStream = Default::default();
         tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
@@ -2455,8 +2463,10 @@ mod test {
 
     #[test]
     fn test_continue() {
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.vars = BTreeMap::from([(("max-download-size", &[][..]), "0x400")]);
+        let mut fastboot_impl = FastbootTest {
+            vars: BTreeMap::from([(("max-download-size", &[][..]), "0x400")]),
+            ..Default::default()
+        };
         let mut transport = TestTransport::new();
         transport.add_input(b"getvar:max-download-size");
         transport.add_input(b"continue");
@@ -2555,8 +2565,8 @@ mod test {
 
     #[test]
     fn test_command_exec() {
-        let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.command_exec_res = Some(Err("test".into()));
+        let mut fastboot_impl =
+            FastbootTest { command_exec_res: Some(Err("test".into())), ..Default::default() };
         let mut transport = TestTransport::new();
         transport.add_input(b"flash test");
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
