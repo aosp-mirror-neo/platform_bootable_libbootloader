@@ -237,7 +237,9 @@ unsafe fn semihosting_call(op_code: OpCode, param: usize) -> Result<usize, Error
                     }
                 }
                 u32::write_to_port(ISA_DEBUG_EXIT_PORT, code as u32);
-                loop {}
+                loop {
+                    core::hint::spin_loop();
+                }
             }
             OpCode::System => {
                 // `getenv` invokes `system` with `printf "%s" "$<VAR>" > getenv.tmp`.
@@ -373,7 +375,9 @@ pub fn shutdown(exit_code: usize) -> ! {
     let args = [ExitReason::ApplicationExit as usize, exit_code];
     // SAFETY: `OpCode::ExitExtended` expects a 2-element array `[reason, exit_code]`.
     let _ = unsafe { semihosting_call_with_args(OpCode::ExitExtended, args) };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Mode for opening a file.

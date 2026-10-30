@@ -369,7 +369,7 @@ pub(crate) mod test {
     fn test_hash() {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let handles = [DeviceHandle(1 as *const _)];
+            let handles = [DeviceHandle(std::ptr::dangling())];
 
             let mut h2_sp = EfiServiceBindingProtocol {
                 create_child: Some(create_child),
@@ -407,7 +407,7 @@ pub(crate) mod test {
                 assert_eq!(
                     traces.open_protocol_trace.inputs,
                     [(
-                        DeviceHandle(1 as *mut _),
+                        DeviceHandle(std::ptr::dangling_mut()),
                         <Hash2ServiceBindingProtocol as ProtocolInfo>::GUID,
                         image_handle
                     ),]
@@ -426,7 +426,7 @@ pub(crate) mod test {
     fn test_hasher() {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let handles = [DeviceHandle(1 as *const _)];
+            let handles = [DeviceHandle(std::ptr::dangling())];
 
             let mut h2_sp = EfiServiceBindingProtocol {
                 create_child: Some(create_child),
@@ -475,7 +475,7 @@ pub(crate) mod test {
                 assert_eq!(
                     traces.open_protocol_trace.inputs,
                     [(
-                        DeviceHandle(1 as *const _),
+                        DeviceHandle(std::ptr::dangling()),
                         <Hash2ServiceBindingProtocol as ProtocolInfo>::GUID,
                         image_handle
                     ),]

@@ -95,7 +95,7 @@ pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
 ];
 
 #[derive(FromBytes, IntoBytes, Unaligned)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct PartHasSlot(RawName, u8);
 
 /// Query result of `getvar has-slot`.

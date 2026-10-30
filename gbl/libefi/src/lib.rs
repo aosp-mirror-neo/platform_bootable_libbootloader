@@ -1531,7 +1531,9 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
             }
             _ => efi_print!(entry, "Runtime services not supported. Hanging...\r\n"),
         }
-        loop {}
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     log_fatal::report_fatal_error_and_reset_internal(entry, panic_info, tag, reset)
@@ -1556,7 +1558,9 @@ pub unsafe fn report_error_and_reset_with_global_entry<P: core::fmt::Display>(
     let _ = unsafe {
         with_global_efi_entry::<_, ()>(|entry| report_error_and_reset(entry, panic_info, tag))
     };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Cryptographic hash interfaces based on the EfiHash2Protocol.
@@ -2232,7 +2236,7 @@ mod test {
 
             // Set up locate_handle_buffer_trace trace.
             let mut located_handles: [DeviceHandle; 3] = [
-                DeviceHandle(1 as *const _),
+                DeviceHandle(std::ptr::dangling()),
                 DeviceHandle(2 as *const _),
                 DeviceHandle(3 as *const _),
             ];
@@ -2269,7 +2273,7 @@ mod test {
 
             // Set up locate_handle_buffer_trace trace.
             let located_handles = [
-                DeviceHandle(1 as *const _),
+                DeviceHandle(std::ptr::dangling()),
                 DeviceHandle(2 as *const _),
                 DeviceHandle(3 as *const _),
             ];
@@ -2295,7 +2299,7 @@ mod test {
             EFI_CALL_TRACES.with(|traces| {
                 assert_eq!(
                     traces.borrow_mut().open_protocol_trace.inputs,
-                    [(DeviceHandle(1 as *const _), BlockIoProtocol::GUID, image_handle),]
+                    [(DeviceHandle(std::ptr::dangling()), BlockIoProtocol::GUID, image_handle),]
                 );
             });
         })
@@ -2687,7 +2691,7 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
 
-            let located_handles = [DeviceHandle(1 as *const _)];
+            let located_handles = [DeviceHandle(std::ptr::dangling())];
             let mut test = TestProtocol;
 
             efi_call_traces().with(|traces| {
@@ -2743,7 +2747,7 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
 
-            let located_handles = [DeviceHandle(1 as *const _)];
+            let located_handles = [DeviceHandle(std::ptr::dangling())];
             let mut test = TestProtocol;
 
             efi_call_traces().with(|traces| {
@@ -2874,7 +2878,7 @@ mod test {
     ) {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let located_handles = vec![DeviceHandle(1 as *const _)];
+            let located_handles = vec![DeviceHandle(std::ptr::dangling())];
             let mut test = T::new();
 
             efi_call_traces().with(|traces| {
