@@ -43,6 +43,7 @@ use core::{
     array::from_fn,
     cell::RefCell,
     cmp::min,
+    convert::Infallible,
     ffi::CStr,
     fmt::{Display, Write},
     future::Future,
@@ -954,7 +955,7 @@ where
         &mut self,
         mode: RebootMode,
         mut resp: impl InfoSender + OkaySender,
-    ) -> CommandResult<!> {
+    ) -> CommandResult<Infallible> {
         self.sync_tasks(&mut resp, "Reboot").await;
         let msg = match mode {
             RebootMode::Normal => "Rebooting...",
@@ -973,7 +974,7 @@ where
         };
         resp.send_info(msg).await?;
         resp.send_okay("").await?;
-        self.gbl_ops.reboot()?
+        Ok(self.gbl_ops.reboot()?)
     }
 
     /// Syncs all tasks and performs factory data reset.
@@ -1566,7 +1567,7 @@ where
         &mut self,
         mode: RebootMode,
         resp: impl InfoSender + OkaySender,
-    ) -> CommandResult<!> {
+    ) -> CommandResult<Infallible> {
         self.sync_tasks_and_reboot(mode, resp).await
     }
 

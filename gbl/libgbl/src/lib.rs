@@ -28,7 +28,6 @@
 //! * libavb
 //! * kernel decompression
 
-#![feature(never_type)]
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 #![allow(async_fn_in_trait)]
 extern crate avb;

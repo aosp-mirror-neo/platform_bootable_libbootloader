@@ -17,7 +17,6 @@
 //! `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
 //! supported/unsupported features at the moment.
 
-#![feature(never_type)]
 #![cfg_attr(not(test), no_std)]
 
 // For the `vec!` macro
@@ -56,6 +55,7 @@ use {
         ops::Ops,
     },
     cfg_if::cfg_if,
+    core::convert::Infallible,
     efi::{efi_println, report_error_and_reset, EfiEntry},
     libbuild_number::{format_build_fingerprint, format_build_vcs_info},
     libgbl::{Os, Result},
@@ -101,7 +101,7 @@ fn get_target_os(_entry: &EfiEntry, _disks: &[EfiGblDisk]) -> TargetOs {
 
 /// GBL EFI application logic entry point.
 #[cfg(not(test))]
-pub fn app_main(entry: EfiEntry) -> Result<!> {
+pub fn app_main(entry: EfiEntry) -> Result<Infallible> {
     use libutils::get_sp;
     efi_println!(entry, "**** Generic Bootloader (GBL) ****");
     efi_println!(entry, "Fingerprint: {}", format_build_fingerprint!());
@@ -121,7 +121,7 @@ pub fn app_main(entry: EfiEntry) -> Result<!> {
             let mut ops = Ops::new(&entry, &disks[..], Some(Os::Fuchsia), get_sp());
             let images = fuchsia_boot::efi_fuchsia_load(&mut ops, load.scratch())?;
             drop(disks);
-            fuchsia_boot::efi_fuchsia_boot(entry, images)?;
+            fuchsia_boot::efi_fuchsia_boot(entry, images)
         }
         TargetOs::Android => {
             let load = utils::get_boot_buffer(&entry, 256 * 1024 * 1024)?;
@@ -129,7 +129,7 @@ pub fn app_main(entry: EfiEntry) -> Result<!> {
             let (ramdisk, fdt, kernel, remains) =
                 android_boot::efi_android_load(&mut ops, load.into())?;
             drop(disks);
-            android_boot::efi_android_boot(entry, kernel, ramdisk, fdt, remains)?;
+            android_boot::efi_android_boot(entry, kernel, ramdisk, fdt, remains)
         }
     }
 }

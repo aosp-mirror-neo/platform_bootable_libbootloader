@@ -15,7 +15,6 @@
 //! Functionality to boot kernels on X86, ARM, and RISC-V boards.
 
 #![cfg_attr(not(test), no_std)]
-#![feature(never_type)]
 
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;

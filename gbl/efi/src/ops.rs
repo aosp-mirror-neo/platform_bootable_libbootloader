@@ -18,7 +18,7 @@ use crate::{efi, efi_blocks::EfiGblDisk, utils::EfiTime};
 #[cfg(feature = "fuchsia")]
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
-use core::{ffi::CStr, fmt::Write, ops::DerefMut, ptr::null};
+use core::{convert::Infallible, ffi::CStr, fmt::Write, ops::DerefMut, ptr::null};
 use efi::{
     efi_print, efi_println,
     profiling::EfiProfileBackend,
@@ -391,7 +391,7 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
     }
 
     /// Reboots the system into the last set boot mode.
-    fn reboot(&mut self) -> Result<!> {
+    fn reboot(&mut self) -> Result<Infallible> {
         self.efi_entry.system_table().runtime_services().cold_reset()
     }
 

@@ -49,12 +49,11 @@
 //! ```
 
 #![cfg_attr(not(test), no_std)]
-#![feature(never_type)]
 
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 use arrayvec::ArrayVec;
-use core::ptr::NonNull;
+use core::{convert::Infallible, ptr::NonNull};
 use efi_types::{
     protocol::{BridgeToRust, Provider},
     Identified,
@@ -1061,7 +1060,7 @@ impl RuntimeServices {
         reset_type: EfiResetType,
         reset_status: EfiStatus,
         reset_data: Option<&mut [u8]>,
-    ) -> Result<!> {
+    ) -> Result<Infallible> {
         let (reset_data_len, reset_data_ptr) = match reset_data {
             Some(v) => (v.len(), v.as_mut_ptr() as _),
             _ => (0, null_mut()),
@@ -1082,12 +1081,12 @@ impl RuntimeServices {
     }
 
     /// Performs a cold reset without status code or data.
-    pub fn cold_reset(&self) -> Result<!> {
+    pub fn cold_reset(&self) -> Result<Infallible> {
         self.reset_system(EFI_RESET_TYPE_COLD, EFI_STATUS_SUCCESS, None)
     }
 
     /// Shutdown the system.
-    pub fn shutdown(&self) -> Result<!> {
+    pub fn shutdown(&self) -> Result<Infallible> {
         self.reset_system(EFI_RESET_TYPE_SHUTDOWN, EFI_STATUS_SUCCESS, None)
     }
 }

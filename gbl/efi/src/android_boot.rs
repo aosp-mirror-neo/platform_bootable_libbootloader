@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::{fastboot::efi_gbl_fastboot_entry, ops::Ops};
+use core::convert::Infallible;
 use efi::{efi_println, EfiEntry};
 use libgbl::{
     android_boot::{android_main, BootBuffer},
@@ -39,7 +40,7 @@ pub fn efi_android_boot(
     ramdisk: &'static [u8],
     fdt: &'static [u8],
     remains: &'static mut [u8],
-) -> Result<!> {
+) -> Result<Infallible> {
     efi_println!(entry, "");
     efi_println!(
         entry,
@@ -125,7 +126,7 @@ pub fn efi_android_boot(
         };
         let efi_mmap = efi::exit_boot_services(entry, mmap_buffer)?;
         // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
-        unsafe {
+        Ok(unsafe {
             boot::x86::boot_linux_bzimage(
                 kernel,
                 ramdisk,
@@ -180,8 +181,8 @@ pub fn efi_android_boot(
                     Ok(idx.try_into().unwrap())
                 },
                 0x9_0000,
-            )?;
-        }
+            )?
+        })
     }
 
     #[cfg(target_arch = "riscv64")]

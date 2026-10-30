@@ -16,6 +16,7 @@ use crate::{
     efi_blocks::EfiGblDisk, fastboot::efi_gbl_fastboot_entry, ops::Ops,
     utils::efi_to_zbi_mem_range_type,
 };
+use core::convert::Infallible;
 use efi::{efi_println, EfiEntry, EfiMemoryAttributesTable, EfiMemoryMap};
 use efi_types::{
     EfiMemoryAttributesTableHeader, EfiMemoryDescriptor, EFI_MEMORY_ATTRIBUTE_EMA_RUNTIME,
@@ -68,7 +69,10 @@ pub fn efi_fuchsia_load<'a>(ops: &mut Ops, load: &'a mut [u8]) -> Result<LoadedV
 }
 
 /// Exits boot services and boots loaded fuchsia images.
-pub fn efi_fuchsia_boot(efi_entry: EfiEntry, images: LoadedVerifiedZircon<'_>) -> Result<!> {
+pub fn efi_fuchsia_boot(
+    efi_entry: EfiEntry,
+    images: LoadedVerifiedZircon<'_>,
+) -> Result<Infallible> {
     let LoadedVerifiedZircon { zbi_items, kernel, .. } = images;
     efi_println!(
         efi_entry,
