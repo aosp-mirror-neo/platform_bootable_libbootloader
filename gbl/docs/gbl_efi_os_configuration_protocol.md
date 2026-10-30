@@ -440,8 +440,8 @@ in the FIT image.
 
 Exactly one FIT configuration must be selected. GBL will refuse to boot if no
 configuration is selected. `EFI_UNSUPPORTED` may be returned to indicate that
-firmware-specific selection isn't required. In this case, GBL will use
-traditional device tree selection and ignore the FIT image entirely.
+firmware-specific selection isn't required. In this case, GBL will use the
+default configuration of the FIT image.
 
 ### Status Codes Returned
 
