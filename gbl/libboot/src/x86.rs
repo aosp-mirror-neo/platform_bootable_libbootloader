@@ -344,7 +344,8 @@ where
 
 /// Jump to prepared ZBI Fuchsia entry
 ///
-/// SAFETY:
+/// # Safety
+///
 /// Caller must ensure `entry` is valid entry point for kernel.
 /// Caller must ensure `data` is valid ZBI data and is 4K aligned.
 #[cfg(feature = "fuchsia")]
@@ -367,7 +368,8 @@ pub unsafe fn zbi_boot_raw(entry: usize, data: &[u8]) -> ! {
 
 /// Boot ZBI kernel from provided ZBI containers
 ///
-/// SAFETY:
+/// # Safety
+///
 /// Caller must ensure `kernel` is valid ZBI kernel and is 4K aligned.
 /// Caller must ensure `data` is valid ZBI data and is 4K aligned.
 #[cfg(feature = "fuchsia")]

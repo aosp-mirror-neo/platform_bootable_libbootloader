@@ -24,7 +24,8 @@ use efi::{
 
 /// Implementation of getentropy(2) for UEFI environment using EFI_RNG_PROTOCOL.
 ///
-/// Safety:
+/// # Safety
+///
 /// * `buffer` must be a valid pointer to at least `length` bytes.
 /// * It is the responsibility of initialization code to guarantee that the
 ///   global efi entry is valid.

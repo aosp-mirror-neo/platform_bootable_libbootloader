@@ -223,8 +223,6 @@ ANDROID_RUST_LINTS = [
     "-A",
     "clippy::await_holding_refcell_ref",
     "-A",
-    "clippy::missing_safety_doc",
-    "-A",
     "clippy::result_large_err",
     "-A",
     "clippy::too_many_arguments",

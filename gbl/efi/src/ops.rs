@@ -646,12 +646,10 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         const AVB_PROPERTIES_MAX_NUM: usize = 128;
         struct AvbPropertiesStorage(ArrayVec<GblEfiAvbProperty, AVB_PROPERTIES_MAX_NUM>);
 
-        /// # Safety
-        ///
-        /// `GblEfiAvbProperty` raw pointers are re-initialized from the const-borrowed `properties`
-        /// data at the start of each lock session and never reused afterward. This ensures the
-        /// pointed-to data is accessed only by the current thread, making `Send` safe for this
-        /// case.
+        // SAFETY: `GblEfiAvbProperty` raw pointers are re-initialized from the const-borrowed
+        // `properties` data at the start of each lock session and never reused afterward. This
+        // ensures the pointed-to data is accessed only by the current thread, making `Send` safe
+        // for this case.
         unsafe impl Send for AvbPropertiesStorage {}
 
         // Storage for extracted AVB properties to be provided as a sequential array through the AVB

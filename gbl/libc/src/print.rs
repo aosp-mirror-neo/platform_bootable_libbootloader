@@ -20,7 +20,7 @@ use core::ffi::{c_char, CStr};
 
 /// Back-end function to print a nul-terminated string.
 ///
-/// # Safety:
+/// # Safety
 ///
 /// * `s` must be a valid null-terminated C string.
 #[no_mangle]

@@ -82,7 +82,8 @@ thread_local! {
 /// Escape valve for operations that need the global EfiEntry
 /// but cannot be provided with it as a parameter.
 ///
-/// Safety:
+/// # Safety
+///
 /// * It is the responsibility of whatever code initializes the global efi entry
 ///   to guarantee that it is well formed and valid for as long as any caller might
 ///   see it, usually 'static or for the duration of the unit test.
@@ -210,9 +211,9 @@ impl EfiEntry {
 
     /// Gets an instance of `SystemTable` if pointer is valid.
     pub fn system_table_checked(&self) -> Result<SystemTable<'_>> {
-        // SAFETY: Pointers to UEFI data strucutres.
         Ok(SystemTable {
             efi_entry: self,
+            // SAFETY: Pointers to UEFI data structures.
             table: unsafe { self.systab_ptr.as_ref() }.ok_or(Error::Unsupported)?,
         })
     }
@@ -1316,9 +1317,10 @@ impl<'a> EfiMemoryAttributesTable<'a> {
     /// Ok(EfiMemoryAttributesTable) - on success
     /// Err(Error::NotFound) - if table type is incorrect
     /// Err(e) - if error `e` occurred parsing table buffer
-    //
-    // SAFETY:
-    // `configuration_table` must be valid EFI Configuration Table object.
+    ///
+    /// # Safety
+    ///
+    /// `configuration_table` must be valid EFI Configuration Table object.
     pub unsafe fn new(
         configuration_table: EfiConfigurationTable,
     ) -> Result<EfiMemoryAttributesTable<'a>> {
@@ -1548,7 +1550,8 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
 /// Don't set this as the panic handler within libefi so that other crates' tests
 /// can depend on libefi.
 ///
-/// Safety:
+/// # Safety
+///
 /// * It is the caller's responsibility to guarantee that the global EfiEntry has
 ///   been initialized and is live and valid.
 pub unsafe fn report_error_and_reset_with_global_entry<P: core::fmt::Display>(
