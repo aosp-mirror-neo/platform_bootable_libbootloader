@@ -288,6 +288,10 @@ where
     ///   `sync_res` contains the GPT verification and restoration result.
     /// * Returns `Ok(None)` if partition type is not GPT.
     /// * Returns `Err` in other cases.
+    //
+    // `partitions` is intentionally borrowed across the `.await` to act as a lock while the GPT
+    // is being modified. See the comment on `partitions`.
+    #[allow(clippy::await_holding_refcell_ref)]
     pub async fn sync_gpt(&self) -> Result<Option<GptSyncResult>, Error> {
         match self.partitions.try_borrow_mut().map_err(|_| Error::NotReady)?.deref_mut() {
             PartitionTable::Raw(_, _) => Ok(None),
@@ -313,6 +317,10 @@ where
     /// * Return `Err(Error::NotReady)` if device is busy.
     /// * Return `Err(Error::Unsupported)` if partition type is not GPT.
     /// * Return `Ok(())` new GPT is valid and device is updated and synced successfully.
+    //
+    // `partitions` is intentionally borrowed across the `.await` to act as a lock while the GPT
+    // is being modified. See the comment on `partitions`.
+    #[allow(clippy::await_holding_refcell_ref)]
     pub async fn update_gpt(&self, mbr_primary: &mut [u8], resize: bool) -> Result<(), Error> {
         match self.partitions.try_borrow_mut().map_err(|_| Error::NotReady)?.deref_mut() {
             PartitionTable::Raw(_, _) => Err(Error::Unsupported),
@@ -326,6 +334,10 @@ where
     ///
     /// * Return `Err(Error::NotReady)` if device is busy.
     /// * Return `Err(Error::Unsupported)` if partition type is not GPT.
+    //
+    // `partitions` is intentionally borrowed across the `.await` to act as a lock while the GPT
+    // is being modified. See the comment on `partitions`.
+    #[allow(clippy::await_holding_refcell_ref)]
     pub async fn erase_gpt(&self) -> Result<(), Error> {
         match self.partitions.try_borrow_mut().map_err(|_| Error::NotReady)?.deref_mut() {
             PartitionTable::Raw(_, _) => Err(Error::Unsupported),
