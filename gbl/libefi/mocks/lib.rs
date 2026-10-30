@@ -213,6 +213,9 @@ mock! {
 
         /// Returns a real [efi::EfiConfigurationTable], which is data-only so isn't mocked.
         pub fn configuration_table(&self) -> Option<&'static [EfiConfigurationTable]>;
+
+        /// Returns the raw pointer to the underlying `EfiSystemTable`.
+        pub fn as_ptr(&self) -> *const efi_types::EfiSystemTable;
     }
 }
 /// Map to the libefi name so code under test can just use one name.
@@ -231,6 +234,12 @@ fn passthrough_system_table() -> MockSystemTable {
     table
         .expect_con_out()
         .returning(|| MOCK_EFI.with_borrow_mut(|efi| efi.as_mut().unwrap().system_table.con_out()));
+    table.expect_configuration_table().returning(|| {
+        MOCK_EFI.with_borrow_mut(|efi| efi.as_mut().unwrap().system_table.configuration_table())
+    });
+    table
+        .expect_as_ptr()
+        .returning(|| MOCK_EFI.with_borrow_mut(|efi| efi.as_mut().unwrap().system_table.as_ptr()));
     table
 }
 

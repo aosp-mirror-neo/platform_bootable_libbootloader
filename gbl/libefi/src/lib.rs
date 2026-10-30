@@ -1228,7 +1228,7 @@ impl<'a, 'b> Iterator for EfiMemoryMapIter<'a, 'b> {
 
 impl<'a> EfiMemoryMap<'a> {
     /// Creates a new instance with the given parameters obtained from `get_memory_map()`.
-    fn new(
+    pub fn new(
         buffer: &'a mut [u8],
         map_key: usize,
         descriptor_size: usize,

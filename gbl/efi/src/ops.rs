@@ -15,8 +15,6 @@
 //! Implements [Gbl::Ops] for the EFI environment.
 
 use crate::{efi, efi_blocks::EfiGblDisk, utils::EfiTime};
-#[cfg(feature = "fuchsia")]
-use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use core::{convert::Infallible, ffi::CStr, fmt::Write, ops::DerefMut, ptr::null};
 use efi::{
@@ -78,9 +76,32 @@ use libgblutils::buffer_pool::BufferPool;
 use libprofile::ProfileBackend;
 use spin::Mutex;
 use static_assertions::{const_assert, const_assert_eq};
-#[cfg(feature = "fuchsia")]
-use zbi::ZbiContainer;
 use zerocopy::IntoBytes;
+#[cfg(feature = "fuchsia")]
+mod fuchsia {
+    pub(super) use alloc::vec::Vec;
+    pub(super) use zbi::ZbiContainer;
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(super) use {
+        efi_types::EfiGuid,
+        zbi::{ZbiFlags, ZbiType},
+    };
+
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(super) const EFI_ACPI_20_TABLE_GUID: EfiGuid =
+        EfiGuid::new(0x8868e871, 0xe4f1, 0x11d3, [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81]);
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(super) const ACPI_TABLE_GUID: EfiGuid =
+        EfiGuid::new(0xeb9d2d30, 0x2d88, 0x11d3, [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d]);
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(super) const SMBIOS3_TABLE_GUID: EfiGuid =
+        EfiGuid::new(0xf2fd1544, 0x9794, 0x4a2c, [0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94]);
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(super) const SMBIOS_TABLE_GUID: EfiGuid =
+        EfiGuid::new(0xeb9d2d31, 0x2d88, 0x11d3, [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d]);
+}
+#[cfg(feature = "fuchsia")]
+use fuchsia::*;
 
 // Ensure the max partition name length in the image loading protocol matches the max image type
 // name length in GBL ops.
@@ -428,6 +449,64 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         {
             container.extend_unaligned(blob).map_err(|_| "Failed to append ZBI")?;
         } else {
+            #[cfg(any(target_arch = "x86_64", test))]
+            {
+                let has_zbi_type = |container: &ZbiContainer<&mut [u8]>, zbi_type: ZbiType| {
+                    container.iter().any(|item| item.header.type_ == zbi_type as u32)
+                };
+
+                let sys_table_addr = self.efi_entry.system_table().as_ptr() as u64;
+                if sys_table_addr != 0 && !has_zbi_type(container, ZbiType::EfiSystemTable) {
+                    container
+                        .create_entry_with_payload(
+                            ZbiType::EfiSystemTable,
+                            0,
+                            ZbiFlags::default(),
+                            sys_table_addr.as_bytes(),
+                        )
+                        .map_err(|_| "Failed to append EFI_SYSTEM_TABLE ZBI item")?;
+                }
+
+                if let Some(config_tables) = self.efi_entry.system_table().configuration_table() {
+                    let find_table = |primary: &EfiGuid, fallback: &EfiGuid| {
+                        config_tables
+                            .iter()
+                            .find(|t| t.vendor_guid == *primary)
+                            .or_else(|| config_tables.iter().find(|t| t.vendor_guid == *fallback))
+                            .map(|t| t.vendor_table as u64)
+                            .filter(|&addr| addr != 0)
+                    };
+
+                    if !has_zbi_type(container, ZbiType::AcpiRsdp)
+                        && let Some(rsdp_addr) =
+                            find_table(&EFI_ACPI_20_TABLE_GUID, &ACPI_TABLE_GUID)
+                    {
+                        container
+                            .create_entry_with_payload(
+                                ZbiType::AcpiRsdp,
+                                0,
+                                ZbiFlags::default(),
+                                rsdp_addr.as_bytes(),
+                            )
+                            .map_err(|_| "Failed to append ACPI_RSDP ZBI item")?;
+                    }
+
+                    if !has_zbi_type(container, ZbiType::Smbios)
+                        && let Some(smbios_addr) =
+                            find_table(&SMBIOS3_TABLE_GUID, &SMBIOS_TABLE_GUID)
+                    {
+                        container
+                            .create_entry_with_payload(
+                                ZbiType::Smbios,
+                                0,
+                                ZbiFlags::default(),
+                                smbios_addr.as_bytes(),
+                            )
+                            .map_err(|_| "Failed to append SMBIOS ZBI item")?;
+                    }
+                }
+            }
+            #[cfg(not(any(target_arch = "x86_64", test)))]
             efi_println!(self.efi_entry, "No device ZBI items.\r\n");
         }
 
@@ -2657,17 +2736,149 @@ mod test {
         );
     }
 
-    #[test]
     #[cfg(feature = "fuchsia")]
-    fn test_slot_count_fuchsia_abr_default() {
-        let mut mock_efi = MockEfi::new();
-        mock_efi
-            .boot_services
-            .expect_find_first_and_open::<GblBootControlProtocol>()
-            .returning(|| Err(Error::Unsupported));
-        let installed = mock_efi.install();
-        let mut ops = Ops::new(installed.entry(), &[], Some(Os::Fuchsia), 0);
+    mod fuchsia {
+        use super::*;
+        use efi_types::{EfiConfigurationTable, EfiSystemTable};
 
-        assert_eq!(ops.get_slot_count(), Ok(2));
+        #[test]
+        fn test_slot_count_fuchsia_abr_default() {
+            let mut mock_efi = MockEfi::new();
+            mock_efi
+                .boot_services
+                .expect_find_first_and_open::<GblBootControlProtocol>()
+                .returning(|| Err(Error::Unsupported));
+            let installed = mock_efi.install();
+            let mut ops = Ops::new(installed.entry(), &[], Some(Os::Fuchsia), 0);
+
+            assert_eq!(ops.get_slot_count(), Ok(2));
+        }
+
+        #[test]
+        fn test_zircon_add_device_zbi_items_uefi_tables() {
+            const TABLES: &[EfiConfigurationTable] = &[
+                EfiConfigurationTable {
+                    vendor_guid: ACPI_TABLE_GUID,
+                    vendor_table: 0x1111_0000usize as *mut _,
+                },
+                EfiConfigurationTable {
+                    vendor_guid: EFI_ACPI_20_TABLE_GUID,
+                    vendor_table: 0x2222_0000usize as *mut _,
+                },
+                EfiConfigurationTable {
+                    vendor_guid: SMBIOS_TABLE_GUID,
+                    vendor_table: 0x3333_0000usize as *mut _,
+                },
+                EfiConfigurationTable {
+                    vendor_guid: SMBIOS3_TABLE_GUID,
+                    vendor_table: 0x4444_0000usize as *mut _,
+                },
+            ];
+
+            let mut mock_efi = MockEfi::new();
+            mock_efi
+                .system_table
+                .expect_as_ptr()
+                .returning(|| 0xfeed_beefusize as *const EfiSystemTable);
+            mock_efi.system_table.expect_configuration_table().returning(|| Some(TABLES));
+            let installed = mock_efi.install();
+            let mut ops = Ops::new(installed.entry(), &[], Some(Os::Fuchsia), 0);
+
+            let mut zbi_buf = [0u8; 512];
+            let mut container = ZbiContainer::new(&mut zbi_buf[..]).unwrap();
+
+            ops.zircon_add_device_zbi_items(&mut container).unwrap();
+
+            let get_u64_item = |zbi_type: ZbiType| -> Option<u64> {
+                container
+                    .iter()
+                    .find(|item| item.header.type_ == zbi_type as u32)
+                    .map(|item| u64::from_le_bytes(item.payload.as_bytes().try_into().unwrap()))
+            };
+
+            assert_eq!(get_u64_item(ZbiType::EfiSystemTable), Some(0xfeed_beef));
+            assert_eq!(get_u64_item(ZbiType::AcpiRsdp), Some(0x2222_0000));
+            assert_eq!(get_u64_item(ZbiType::Smbios), Some(0x4444_0000));
+        }
+
+        #[test]
+        fn test_zircon_add_device_zbi_items_legacy_table_fallbacks() {
+            const TABLES: &[EfiConfigurationTable] = &[
+                EfiConfigurationTable {
+                    vendor_guid: ACPI_TABLE_GUID,
+                    vendor_table: 0x1111_0000usize as *mut _,
+                },
+                EfiConfigurationTable {
+                    vendor_guid: SMBIOS_TABLE_GUID,
+                    vendor_table: 0x3333_0000usize as *mut _,
+                },
+            ];
+
+            let mut mock_efi = MockEfi::new();
+            mock_efi.system_table.expect_as_ptr().returning(core::ptr::null::<EfiSystemTable>);
+            mock_efi.system_table.expect_configuration_table().returning(|| Some(TABLES));
+            let installed = mock_efi.install();
+            let mut ops = Ops::new(installed.entry(), &[], Some(Os::Fuchsia), 0);
+
+            let mut zbi_buf = [0u8; 512];
+            let mut container = ZbiContainer::new(&mut zbi_buf[..]).unwrap();
+
+            ops.zircon_add_device_zbi_items(&mut container).unwrap();
+
+            let get_u64_item = |zbi_type: ZbiType| -> Option<u64> {
+                container
+                    .iter()
+                    .find(|item| item.header.type_ == zbi_type as u32)
+                    .map(|item| u64::from_le_bytes(item.payload.as_bytes().try_into().unwrap()))
+            };
+
+            assert_eq!(get_u64_item(ZbiType::EfiSystemTable), None);
+            assert_eq!(get_u64_item(ZbiType::AcpiRsdp), Some(0x1111_0000));
+            assert_eq!(get_u64_item(ZbiType::Smbios), Some(0x3333_0000));
+        }
+
+        #[test]
+        fn test_zircon_add_device_zbi_items_does_not_duplicate_existing() {
+            const TABLES: &[EfiConfigurationTable] = &[
+                EfiConfigurationTable {
+                    vendor_guid: EFI_ACPI_20_TABLE_GUID,
+                    vendor_table: 0x2222_0000usize as *mut _,
+                },
+                EfiConfigurationTable {
+                    vendor_guid: SMBIOS3_TABLE_GUID,
+                    vendor_table: 0x4444_0000usize as *mut _,
+                },
+            ];
+
+            let mut mock_efi = MockEfi::new();
+            mock_efi
+                .system_table
+                .expect_as_ptr()
+                .returning(|| 0xfeed_beefusize as *const EfiSystemTable);
+            mock_efi.system_table.expect_configuration_table().returning(|| Some(TABLES));
+            let installed = mock_efi.install();
+            let mut ops = Ops::new(installed.entry(), &[], Some(Os::Fuchsia), 0);
+
+            let mut zbi_buf = [0u8; 512];
+            let mut container = ZbiContainer::new(&mut zbi_buf[..]).unwrap();
+            let existing_rsdp: u64 = 0x9999_0000;
+            container
+                .create_entry_with_payload(
+                    ZbiType::AcpiRsdp,
+                    0,
+                    ZbiFlags::default(),
+                    existing_rsdp.as_bytes(),
+                )
+                .unwrap();
+
+            ops.zircon_add_device_zbi_items(&mut container).unwrap();
+
+            let rsdp_items: Vec<u64> = container
+                .iter()
+                .filter(|item| item.header.type_ == ZbiType::AcpiRsdp as u32)
+                .map(|item| u64::from_le_bytes(item.payload.as_bytes().try_into().unwrap()))
+                .collect();
+            assert_eq!(rsdp_items, vec![0x9999_0000]);
+        }
     }
 }
