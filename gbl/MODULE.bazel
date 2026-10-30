@@ -972,6 +972,7 @@ gbl_rust_crate_repository(
     name = "spin",
     features = [
         "mutex",
+        "once",
         "spin_mutex",
     ],
     path = "external/rust/android-crates-io/crates/spin",

@@ -68,28 +68,61 @@ thread_local! {
     static GLOBAL_EFI_ENTRY: std::cell::RefCell<Option<NonNull<EfiEntry>>> = std::cell::RefCell::new(None);
 }
 
-/// Escape valve for operations that need the global EfiEntry
+/// Escape valve for operations that need the global [EfiEntry]
 /// but cannot be provided with it as a parameter.
 ///
-/// Safety:
-/// * It is the responsibility of whatever code initializes the global efi entry
-///   to guarantee that it is well formed and valid for as long as any caller might
-///   see it, usually 'static or for the duration of the unit test.
-pub unsafe fn with_global_efi_entry<F, T>(mut func: F) -> Result<T>
+/// # Safety
+///
+/// * In non-test UEFI builds, calling this function is always safe: `EfiAllocator` tracks
+///   initialization and [exit_boot_services], returning `Err(Error::InvalidState)` whenever the
+///   global [EfiEntry] is not active.
+/// * In `#[cfg(test)]` builds, if thread-local `GLOBAL_EFI_ENTRY` is `Some`, it must point to a
+///   well-formed, live [EfiEntry] for the duration of the call.
+pub unsafe fn with_global_efi_entry<F, T>(func: F) -> Result<T>
 where
-    F: FnMut(&'static EfiEntry) -> T,
+    F: FnMut(&EfiEntry) -> T,
 {
-    let entry;
     cfg_if! {
         if #[cfg(test)] {
-            entry = GLOBAL_EFI_ENTRY
-            // Safety:
-            // * It is the responsibility of initialization code to guarantee that
-            //   `e_ptr` is valid and live.
-                .with(|e| e.borrow().map(|e_ptr| unsafe{ e_ptr.as_ref() }))
+            GLOBAL_EFI_ENTRY.with(|e| {
+                let borrow = e.borrow();
+                // SAFETY: Per function safety docs, any pointer stored in `GLOBAL_EFI_ENTRY` is
+                // valid and live for the duration of this call.
+                let entry = unsafe { borrow.ok_or(Error::InvalidState)?.as_ref() };
+                let mut func = func;
+                Ok(func(entry))
+            })
+        } else {
+            allocation::with_internal_efi_entry(func).ok_or(Error::InvalidState)
+        }
+    }
+}
+
+/// Calls `func` with a `'static` reference to the global `EfiEntry` when an FFI state object must
+/// outlive a single Rust call frame while boot services remain active.
+///
+/// # Safety
+///
+/// * Any value borrowing the `'static` reference must be dropped before `exit_boot_services()`
+///   (or, in `#[cfg(test)]` builds, before the test's `EfiEntry` goes out of scope).
+/// * In `#[cfg(test)]` builds, if thread-local `GLOBAL_EFI_ENTRY` is `Some`, it must point to a
+///   well-formed, live `EfiEntry` for as long as any value borrowing the reference exists.
+pub(crate) unsafe fn with_static_global_efi_entry<F, T>(func: F) -> Result<T>
+where
+    F: FnOnce(&'static EfiEntry) -> T,
+{
+    cfg_if! {
+        if #[cfg(test)] {
+            let entry = GLOBAL_EFI_ENTRY
+                // SAFETY: Per function safety docs, any pointer stored in `GLOBAL_EFI_ENTRY` stays
+                // valid and live for as long as any value borrowing `entry` exists.
+                .with(|e| e.borrow().map(|e_ptr| unsafe { e_ptr.as_ref() }))
                 .ok_or(Error::InvalidState)?;
         } else {
-            entry = allocation::internal_efi_entry_and_rt().0.ok_or(Error::InvalidState)?;
+            // SAFETY: Caller guarantees any value borrowing `entry` is dropped before
+            // `exit_boot_services()`.
+            let entry =
+                unsafe { allocation::internal_static_efi_entry() }.ok_or(Error::InvalidState)?;
         }
     }
 
@@ -246,25 +279,23 @@ pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_fuchsia";
 /// This must have the same `YYYYMM` format as the ro.board.api_level system property.
 pub const GBL_EFI_FW_API_LEVEL: &str = "gbl_fw_api_level";
 
-/// Creates an `EfiEntry` and initialize EFI global allocator.
+/// Creates an [EfiEntry] and initializes the EFI global allocator.
+///
+/// Only the first call initializes the global allocator; subsequent calls (or calls after
+/// [exit_boot_services]) return `Err(Error::AlreadyStarted)` without modifying global state.
 ///
 /// # Safety
 ///
-/// The API modifies internal global state. It should only be called once upon EFI entry to obtain
-/// an instance of `EfiEntry` for accessing other APIs. Calling it again when EFI APIs are already
-/// being used can introduce a risk of race.
+/// `image_handle` and `systab_ptr` must be valid, firmware-provided objects adhering to the UEFI
+/// specification with boot services still active. Safe methods on [EfiEntry] and `EfiAllocator`
+/// dereference `systab_ptr` and invoke its function tables without further validation.
 #[cfg(not(test))]
 pub unsafe fn initialize(
     image_handle: EfiHandle,
     systab_ptr: *const EfiSystemTable,
 ) -> Result<EfiEntry> {
-    // SAFETY: By safety requirement of this function, `initialize` is only called once upon
-    // entering EFI application, where there should be no event notify function that can be
-    // triggered.
-    unsafe {
-        // Create one for internal global allocator.
-        allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
-    }
+    // Create one for internal global allocator.
+    allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
     Ok(EfiEntry { image_handle, systab_ptr })
 }
 
@@ -285,13 +316,8 @@ pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> Result<Efi
             report_error_and_reset(&entry, e, GBL_EFI_DEBUG_ERROR_TAG_BOOT_ERROR)
         })?;
     entry.system_table().boot_services().exit_boot_services(&res)?;
-    // SAFETY:
-    // At this point, UEFI has successfully exited boot services and no event/notification can be
-    // triggered.
     #[cfg(not(test))]
-    unsafe {
-        allocation::exit_efi_global_alloc();
-    }
+    allocation::exit_efi_global_alloc();
     Ok(res)
 }
 
@@ -680,21 +706,23 @@ impl<'a> BootServices<'a> {
     /// in a callback, but will need to wrap it in a [Sync] type which will ensure safe sharing
     /// between the main application and the callback.
     ///
-    /// The exception is the global allocation and panic hooks, which use a separate global
-    /// [EfiEntry] that is not synchronized outside the main application. The caller must ensure
-    /// that the main application code is not using its [EfiEntry] while a notification callback
-    /// is trying to concurrently use the global [EfiEntry].
+    /// `libefi`'s internal global [EfiEntry] state (`EfiAllocator`) is already initialized before
+    /// any [BootServices] instance can be obtained and is read lock-free, so accessing it from a
+    /// notification callback does not race in Rust. The remaining obligation is that `notify` must
+    /// adhere to the [UEFI TPL restrictions] for its configured [Tpl]: any UEFI service or
+    /// protocol invoked by the callback — whether directly or indirectly via global hooks such as
+    /// heap allocation/deallocation (`AllocatePool`/`FreePool`, `<= TPL_NOTIFY`, plus `ConOut` on
+    /// error) or the panic handler (`ConOut`, `GblDebugProtocol`, and `ResetSystem`) — must only
+    /// be called at or below its documented maximum [Tpl] and in accordance with UEFI reentrancy
+    /// rules.
     ///
-    /// The easiest way to accomplish this is to write notifications callbacks that:
-    /// * do not allocate or deallocate heap memory
-    /// * do not panic
-    /// Callbacks following these guidelines are safe as they do not use the global [EfiEntry].
+    /// Callbacks that do not invoke UEFI services, allocate or deallocate heap memory, or panic
+    /// trivially satisfy this requirement at any [Tpl].
     ///
-    /// If that is not possible, then the caller must ensure that nothing else makes any calls into
-    /// UEFI while the returned [Event] is alive; the callback function must have exclusive access
-    /// to the UEFI APIs so it can use the globals without triggering UEFI reentry.
+    /// In unittests there is no global `EfiAllocator` or interrupt preemption, so this is always
+    /// safe.
     ///
-    /// In unittests there is no global [EfiEntry] so this is always safe.
+    /// [UEFI TPL restrictions]: https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html#tpl-restrictions
     pub unsafe fn create_event_with_notification<'e>(
         &self,
         event_type: EventType,
@@ -1397,7 +1425,7 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
 ) -> ! {
     fn reset(entry: &EfiEntry, _: log_fatal::FatalErrorToken) -> ! {
         efi_print!(entry, "Resetting...\r\n");
-        match allocation::internal_efi_entry_and_rt().1 {
+        match allocation::internal_runtime_services() {
             Some(rt) => {
                 let _ = rt
                     .reset_system(EFI_RESET_TYPE_COLD, EFI_STATUS_DEVICE_ERROR, None)
@@ -1417,16 +1445,19 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
 /// Don't set this as the panic handler within libefi so that other crates' tests
 /// can depend on libefi.
 ///
-/// Safety:
-/// * It is the caller's responsibility to guarantee that the global EfiEntry has
-///   been initialized and is live and valid.
+/// # Safety
+///
+/// * In non-test UEFI builds, calling this function is always safe (provided the caller adheres to
+///   UEFI TPL restrictions if invoked from an event callback); if the global [EfiEntry] is not
+///   active, it loops indefinitely.
+/// * In `#[cfg(test)]` builds, if thread-local `GLOBAL_EFI_ENTRY` is `Some`, it must point to a
+///   well-formed, live [EfiEntry] for the duration of the call.
 pub unsafe fn report_error_and_reset_with_global_entry<P: core::fmt::Display>(
     panic_info: &P,
     tag: GblEfiDebugErrorTag,
 ) -> ! {
-    // Safety:
-    // * It is the caller's responsibility to guarantee that the global EfiEntry has
-    //   been initialized and is live and valid.
+    // SAFETY: Non-test builds safely check `EFI_GLOBAL_ALLOCATOR` state; in `#[cfg(test)]` builds,
+    // the caller guarantees any pointer in `GLOBAL_EFI_ENTRY` is valid and live.
     let _ = unsafe {
         with_global_efi_entry::<_, ()>(|entry| report_error_and_reset(entry, panic_info, tag))
     };

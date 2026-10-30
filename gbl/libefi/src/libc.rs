@@ -19,7 +19,6 @@
 //! it's available.
 
 use crate::efi_try_print;
-use liberror::Result;
 
 /// EFI framework-based print implementation required by GBL `libc`.
 #[no_mangle]

@@ -20,7 +20,8 @@
 extern crate alloc;
 
 use efi::{
-    efi_println, initialize, protocol::gbl_efi_boot_memory::GblBootMemoryProtocol, EfiAllocator,
+    efi_global_allocator, efi_println, initialize,
+    protocol::gbl_efi_boot_memory::GblBootMemoryProtocol,
 };
 use efi_types::{
     protocol::gbl_efi_boot_memory::GblEfiBootMemoryManaged, EfiHandle, EfiSystemTable,
@@ -28,9 +29,7 @@ use efi_types::{
 use efi_virtio_vsock::gbl_vsock_init;
 use gbl_efi_boot_memory::GblEfiBootMemoryImpl;
 
-#[unsafe(no_mangle)]
-#[global_allocator]
-static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::new();
+efi_global_allocator!();
 
 /// Pull in the sysdeps required by libavb so the linker can find them.
 extern crate avb_sysdeps;

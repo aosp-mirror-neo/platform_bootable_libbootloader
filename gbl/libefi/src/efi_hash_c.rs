@@ -18,7 +18,7 @@ use alloc::boxed::Box;
 
 use crate::{
     hash2::{HashAlgorithm, Hasher, Sha256, Sha512},
-    with_global_efi_entry,
+    with_static_global_efi_entry,
 };
 use avb_bindgen::avb_abort;
 use core::ptr::{copy_nonoverlapping, null_mut};
@@ -29,10 +29,9 @@ use zerocopy::IntoBytes;
 // allocating it.
 
 fn efi_sha_init<Algorithm: HashAlgorithm>() -> *mut Hasher<'static, Algorithm> {
-    // Safety:
-    // * It is the responsibility of initialization code to guarantee that the
-    //   global efi entry is valid.
-    unsafe { with_global_efi_entry(|e| Hasher::<Algorithm>::new(e).ok()) }
+    // SAFETY: Initialization code guarantees that the global `EfiEntry` is valid, and libavb
+    // finalizes every `AvbSHA*Ctx` before `exit_boot_services()`.
+    unsafe { with_static_global_efi_entry(|e| Hasher::<Algorithm>::new(e).ok()) }
         .ok()
         .flatten()
         .map_or(null_mut(), |h| Box::into_raw(Box::new(h)))
