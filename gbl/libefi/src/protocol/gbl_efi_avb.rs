@@ -20,7 +20,7 @@ use crate::{
     versioned_protocol,
 };
 use arrayvec::ArrayVec;
-use core::{ffi::CStr, iter, ptr::null};
+use core::{ffi::CStr, ptr::null};
 use efi_types::{
     EfiGuid, GblEfiAvbDeviceStatus, GblEfiAvbKeyValidationStatus, GblEfiAvbLockState,
     GblEfiAvbLockType, GblEfiAvbPartitionAttributes, GblEfiAvbProtocol,
@@ -30,7 +30,7 @@ use efi_types::{
     GBL_EFI_AVB_PROTOCOL_GUID_U64_1, GBL_EFI_AVB_PROTOCOL_REVISION,
 };
 use liberror::{Error, Result};
-use libgbl::gbl_avb::{Critical, Fdr, SpecializedPartition, Verification};
+use libgbl::gbl_avb::{Critical, Fdr, PartitionName, SpecializedPartition, Verification};
 
 /// `GBL_EFI_AVB_PROTOCOL` implementation.
 pub struct GblAvbProtocol;
@@ -54,11 +54,13 @@ impl Protocol<'_, GblAvbProtocol> {
     /// Wraps `GBL_EFI_AVB_PROTOCOL.read_partition_attributes()`.
     ///
     /// The returned `ArrayVec` will contain the number of provided partitions, each with a
-    /// nul-terminated name in its `name_buffer`.
+    /// validated, nul-terminated UTF-8 name.
     ///
     /// # Errors
     ///
     /// * `BufferTooSmall(Some(size))` - `N` is not large enough to hold all partitions.
+    /// * `InvalidInput` - a returned partition name is not valid UTF-8 or contains an embedded nul
+    ///   byte, or partition flags are invalid.
     /// * other - implementation reported a different error.
     ///
     /// # Panics
@@ -68,23 +70,14 @@ impl Protocol<'_, GblAvbProtocol> {
     pub fn read_partition_attributes<const N: usize>(
         &self,
     ) -> Result<ArrayVec<SpecializedPartition, N>> {
-        // Our Rust objects which contain the backing storage for the partition names.
-        // Start at capacity, we will later shrink it to the elements that were actually filled.
-        // `SpecializedPartition` is not `Copy` so we need to iterate to initialize it.
-        let mut partitions: ArrayVec<SpecializedPartition, N> =
-            iter::repeat_n(SpecializedPartition::default(), N).collect();
+        // Scratch storage for the raw partition names and protocol attributes written by firmware.
+        let mut name_buffers = [[0u8; PartitionName::MAX_LEN]; N];
+        let mut partitions_ffi = [GblEfiAvbPartitionAttributes::default(); N];
 
-        // The protocol partition format backed by `partitions`.
-        let mut partitions_ffi = ArrayVec::from([GblEfiAvbPartitionAttributes::default(); N]);
-
-        // Initialize the FFI name buffers to point to the Rust backing storage.
-        partitions.iter_mut().zip(partitions_ffi.iter_mut()).for_each(
-            |(partition, partition_ffi)| {
-                // Capacity -1 to ensure we can null-terminate for libavb.
-                partition_ffi.base_name_len = partition.name_buffer.len() - 1;
-                partition_ffi.base_name = partition.name_buffer.as_mut_ptr();
-            },
-        );
+        for (name_buffer, partition_ffi) in name_buffers.iter_mut().zip(partitions_ffi.iter_mut()) {
+            partition_ffi.base_name_len = name_buffer.len();
+            partition_ffi.base_name = name_buffer.as_mut_ptr();
+        }
 
         let mut num_partitions = partitions_ffi.len();
 
@@ -107,22 +100,20 @@ impl Protocol<'_, GblAvbProtocol> {
             )?;
         }
 
-        // Shrink the arrays to just the used elements.
-        partitions_ffi.truncate(num_partitions);
-        partitions.truncate(num_partitions);
-
-        // Copy the results back to the Rust objects.
-        for (partition, partition_ffi) in partitions.iter_mut().zip(partitions_ffi.iter()) {
-            // Ensure we still have the null terminator for libavb, in case the protocol overwrote
-            // it at some point. This also serves as a safety check that the protocol didn't
-            // overflow the name buffer, since this will panic if `base_name_len` was set past the
-            // allotted buffer length.
-            partition.name_buffer[partition_ffi.base_name_len] = 0;
+        // Validate and translate the results into Rust `SpecializedPartition` objects.
+        let mut partitions = ArrayVec::new();
+        for (name_buffer, partition_ffi) in
+            name_buffers.iter().zip(&partitions_ffi[..num_partitions])
+        {
+            // Slicing `name_buffer` by `base_name_len` also serves as a safety check that the
+            // protocol didn't overflow the name buffer, since this will panic if `base_name_len`
+            // was set past `PartitionName::MAX_LEN`.
+            let name = PartitionName::try_from(&name_buffer[..partition_ffi.base_name_len])?;
 
             // Translate the verification bitmask.
             const VERIFY_MASK: u64 =
                 GBL_EFI_AVB_PARTITION_FLAG_VERIFY | GBL_EFI_AVB_PARTITION_FLAG_VERIFY_IF_EXISTS;
-            partition.verification = match partition_ffi.flags & VERIFY_MASK {
+            let verification = match partition_ffi.flags & VERIFY_MASK {
                 0 => None,
                 GBL_EFI_AVB_PARTITION_FLAG_VERIFY => Some(Verification::Required),
                 GBL_EFI_AVB_PARTITION_FLAG_VERIFY_IF_EXISTS => Some(Verification::IfExists),
@@ -131,7 +122,7 @@ impl Protocol<'_, GblAvbProtocol> {
                     efi_println!(
                         self.efi_entry,
                         "Error: '{:?}' cannot specify both VERIFY and VERIFY_IF_EXISTS",
-                        partition.name_cstr()
+                        name.as_cstr()
                     );
                     return Err(Error::InvalidInput);
                 }
@@ -141,15 +132,16 @@ impl Protocol<'_, GblAvbProtocol> {
             };
 
             // Translate the other bitflags.
-            partition.fdr = match partition_ffi.flags & GBL_EFI_AVB_PARTITION_FLAG_FDR {
+            let fdr = match partition_ffi.flags & GBL_EFI_AVB_PARTITION_FLAG_FDR {
                 0 => Fdr::No,
                 _ => Fdr::Yes,
             };
-            partition.critical =
-                match partition_ffi.flags & GBL_EFI_AVB_PARTITION_FLAG_FLASH_CRITICAL {
-                    0 => Critical::No,
-                    _ => Critical::Yes,
-                };
+            let critical = match partition_ffi.flags & GBL_EFI_AVB_PARTITION_FLAG_FLASH_CRITICAL {
+                0 => Critical::No,
+                _ => Critical::Yes,
+            };
+
+            partitions.push(SpecializedPartition { name, verification, fdr, critical });
         }
 
         Ok(partitions)
@@ -340,7 +332,6 @@ mod test {
         EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_OUT_OF_RESOURCES,
         EFI_STATUS_SUCCESS, GBL_EFI_AVB_BOOT_COLOR_RED,
     };
-    use libutils::cstr_buffer;
     use std::{
         cell::Cell,
         cmp::min,
@@ -348,27 +339,15 @@ mod test {
         slice::{from_raw_parts, from_raw_parts_mut},
     };
 
-    /// Test helper for `read_partition_attributes()`.
-    ///
-    /// Sets up a fake C backend for the UEFI protocol API which will populate the partition
-    /// attributes, calls it using our Rust wrapper, and then returns the result.
-    ///
-    /// If the provided partition information cannot fit in the buffers, this function will not
-    /// overflow but will update the length fields as if it had. This can be used to test that
-    /// our Rust wrapper is properly panicking if it detects memory corruption.
-    ///
-    /// # Arguments
-    ///
-    /// * `names_and_flags` - the list of partition names and flags to populate.
-    /// * `return_value` - the EFI status value to return from the fake C backend.
-    fn read_partition_attributes_test<const N: usize>(
-        names_and_flags: &[(&'static str, u64)],
+    /// Test helper for `read_partition_attributes()` taking raw byte slices for partition names.
+    fn read_partition_attributes_bytes_test<const N: usize>(
+        names_and_flags: &[(&'static [u8], u64)],
         return_value: EfiStatus,
     ) -> Result<ArrayVec<SpecializedPartition, N>> {
         // The UEFI protocol API is just a C function pointer so can't see any local state.
         // Stash the partition information in static thread storage so we can access it there.
         thread_local! {
-            static NAMES_AND_FLAGS: Cell<Vec<(&'static str, u64)>> = Default::default();
+            static NAMES_AND_FLAGS: Cell<Vec<(&'static [u8], u64)>> = Default::default();
             static RETURN_VALUE: Cell<EfiStatus> = const { Cell::new(EFI_STATUS_SUCCESS) };
         }
         NAMES_AND_FLAGS.set(names_and_flags.to_vec());
@@ -390,9 +369,9 @@ mod test {
             // SAFETY: API guarantees `partitions` points to a writeable array of `num_partitions`.
             let partitions = unsafe { from_raw_parts_mut(partitions, *num_partitions) };
 
-            for ((name, flags), partition) in names_and_flags.iter().zip(partitions.iter_mut()) {
-                // Copy the name.
-                let name_bytes = name.as_bytes();
+            for ((name_bytes, flags), partition) in
+                names_and_flags.iter().zip(partitions.iter_mut())
+            {
                 // SAFETY: API guarantees each partition `base_name` points to writeable array
                 // of `base_name_len` bytes. We use `min()` to ensure we stay inside this buffer.
                 unsafe {
@@ -433,6 +412,28 @@ mod test {
         result.unwrap()
     }
 
+    /// Test helper for `read_partition_attributes()`.
+    ///
+    /// Sets up a fake C backend for the UEFI protocol API which will populate the partition
+    /// attributes, calls it using our Rust wrapper, and then returns the result.
+    ///
+    /// If the provided partition information cannot fit in the buffers, this function will not
+    /// overflow but will update the length fields as if it had. This can be used to test that
+    /// our Rust wrapper is properly panicking if it detects memory corruption.
+    ///
+    /// # Arguments
+    ///
+    /// * `names_and_flags` - the list of partition names and flags to populate.
+    /// * `return_value` - the EFI status value to return from the fake C backend.
+    fn read_partition_attributes_test<const N: usize>(
+        names_and_flags: &[(&'static str, u64)],
+        return_value: EfiStatus,
+    ) -> Result<ArrayVec<SpecializedPartition, N>> {
+        let bytes_and_flags: Vec<_> =
+            names_and_flags.iter().map(|(name, flags)| (name.as_bytes(), *flags)).collect();
+        read_partition_attributes_bytes_test(&bytes_and_flags, return_value)
+    }
+
     #[test]
     fn read_partition_attributes_success() {
         let result = read_partition_attributes_test::<16>(
@@ -449,24 +450,27 @@ mod test {
         assert_eq!(
             &result.unwrap()[..],
             [
-                SpecializedPartition { name_buffer: cstr_buffer("no_flags"), ..Default::default() },
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("verify"),
+                    name: PartitionName::try_from("no_flags").unwrap(),
+                    ..Default::default()
+                },
+                SpecializedPartition {
+                    name: PartitionName::try_from("verify").unwrap(),
                     verification: Some(Verification::Required),
                     ..Default::default()
                 },
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("verify_if_exists"),
+                    name: PartitionName::try_from("verify_if_exists").unwrap(),
                     verification: Some(Verification::IfExists),
                     ..Default::default()
                 },
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("fdr"),
+                    name: PartitionName::try_from("fdr").unwrap(),
                     fdr: Fdr::Yes,
                     ..Default::default()
                 },
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("critical"),
+                    name: PartitionName::try_from("critical").unwrap(),
                     critical: Critical::Yes,
                     ..Default::default()
                 },
@@ -494,19 +498,35 @@ mod test {
             &result.unwrap()[..],
             [
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("fdr_and_critical"),
+                    name: PartitionName::try_from("fdr_and_critical").unwrap(),
                     fdr: Fdr::Yes,
                     critical: Critical::Yes,
                     ..Default::default()
                 },
                 SpecializedPartition {
-                    name_buffer: cstr_buffer("verify_and_critical"),
+                    name: PartitionName::try_from("verify_and_critical").unwrap(),
                     verification: Some(Verification::Required),
                     critical: Critical::Yes,
                     ..Default::default()
                 },
             ]
         );
+    }
+
+    #[test]
+    fn read_partition_attributes_invalid_utf8() {
+        let result =
+            read_partition_attributes_bytes_test::<16>(&[(b"\xff\xfe", 0)], EFI_STATUS_SUCCESS);
+
+        assert_eq!(result, Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn read_partition_attributes_embedded_nul() {
+        let result =
+            read_partition_attributes_bytes_test::<16>(&[(b"boot\0extra", 0)], EFI_STATUS_SUCCESS);
+
+        assert_eq!(result, Err(Error::InvalidInput));
     }
 
     #[test]

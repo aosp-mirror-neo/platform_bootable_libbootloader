@@ -17,7 +17,8 @@
 use crate::android_boot::STANDARD_PARTITIONS;
 use arrayvec::ArrayVec;
 use avb_bindgen::AVB_MAX_NUMBER_OF_LOADED_PARTITIONS;
-use core::ffi::CStr;
+use core::{ffi::CStr, fmt};
+use liberror::Error;
 
 pub(crate) mod ops;
 pub mod state;
@@ -122,17 +123,74 @@ pub enum Critical {
     Yes,
 }
 
+/// Nul-terminated UTF-8 partition name.
+///
+/// Every constructor validates the input so that the backing buffer always contains at most
+/// [`Self::MAX_LEN`] non-nul UTF-8 bytes followed exclusively by zero bytes (`0u8`).
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct PartitionName([u8; SPECIALIZED_PARTITION_NAME_MAX_SIZE]);
+
+impl PartitionName {
+    /// Maximum partition name length in bytes (excluding the trailing nul terminator).
+    pub const MAX_LEN: usize = SPECIALIZED_PARTITION_NAME_MAX_SIZE - 1;
+
+    /// Returns the partition name as a [`CStr`].
+    pub fn as_cstr(&self) -> &CStr {
+        CStr::from_bytes_until_nul(&self.0).unwrap_or(c"")
+    }
+
+    /// Returns the partition name as a [`str`].
+    pub fn as_str(&self) -> &str {
+        self.as_cstr().to_str().unwrap_or("")
+    }
+}
+
+impl Default for PartitionName {
+    fn default() -> Self {
+        Self([0; SPECIALIZED_PARTITION_NAME_MAX_SIZE])
+    }
+}
+
+impl fmt::Debug for PartitionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("PartitionName").field(&self.as_str()).finish()
+    }
+}
+
+impl fmt::Display for PartitionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for PartitionName {
+    type Error = Error;
+
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        let bytes = name.as_bytes();
+        if bytes.len() > Self::MAX_LEN || bytes.contains(&0) {
+            return Err(Error::InvalidInput);
+        }
+        let mut buffer = [0u8; SPECIALIZED_PARTITION_NAME_MAX_SIZE];
+        buffer.get_mut(..bytes.len()).ok_or(Error::InvalidInput)?.copy_from_slice(bytes);
+        Ok(Self(buffer))
+    }
+}
+
+impl TryFrom<&[u8]> for PartitionName {
+    type Error = Error;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let name = core::str::from_utf8(bytes).map_err(|_| Error::InvalidInput)?;
+        Self::try_from(name)
+    }
+}
+
 /// A partition which has specialized handling requirements.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SpecializedPartition {
-    /// Buffer to hold the partition name as nul-terminated UTF-8.
-    /// For slotted partitions this will be the base name without any slot suffix.
-    //
-    // TODO(b/483148175): exposing this field directly makes this struct a lot easier to
-    // work with, but also makes it possible to violate the UTF-8 and/or termination requirements.
-    // This can't cause UB in safe code still, it could only panic, but some sort of helper struct
-    // might make it a bit easier to enforce these requirements.
-    pub name_buffer: [u8; SPECIALIZED_PARTITION_NAME_MAX_SIZE],
+    /// Partition base name (without any slot suffix for slotted partitions).
+    pub name: PartitionName,
     /// How to verify this partition, or `None` if this partition does not need to be verified.
     pub verification: Option<Verification>,
     /// Whether this partition is linked to FDR.
@@ -142,22 +200,10 @@ pub struct SpecializedPartition {
     pub critical: Critical,
 }
 
-impl SpecializedPartition {
-    /// Returns the partition name as a C-style string.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `name_buffer` does not contain a valid nul-terminated UTF-8 string.
-    pub fn name_cstr(&self) -> &CStr {
-        CStr::from_bytes_until_nul(&self.name_buffer).unwrap()
-    }
-}
-
-// Arrays only provide `Default` up to 32 so we have to manually implement this for `name_buffer`.
 impl Default for SpecializedPartition {
     fn default() -> Self {
         SpecializedPartition {
-            name_buffer: [0; SPECIALIZED_PARTITION_NAME_MAX_SIZE],
+            name: PartitionName::default(),
             verification: None,
             fdr: Fdr::No,
             critical: Critical::No,
@@ -184,23 +230,27 @@ pub enum LoadPartition<'a> {
     Pvmfw,
     /// Platform specific partition.
     ///
-    /// It's up to the caller to ensure that:
-    /// * `SpecializedPartition.name_buffer` is valid nul-terminated UTF-8
-    /// * `SpecializedPartition.verification` is `Some`
-    ///
+    /// It's up to the caller to ensure that `SpecializedPartition.verification` is `Some`,
     /// or else trying to use this partition later will panic.
     PlatformSpecific(&'a SpecializedPartition),
 }
 
 impl<'a> LoadPartition<'a> {
     /// Returns slotless partition name as &str.
-    /// Panics if a `PlatformSpecific` partition has an invalid `name`.
     pub fn name(&self) -> &'a str {
-        self.name_cstr().to_str().unwrap()
+        match self {
+            Self::Boot => "boot",
+            Self::VendorBoot => "vendor_boot",
+            Self::VendorKernelBoot => "vendor_kernel_boot",
+            Self::InitBoot => "init_boot",
+            Self::Dtb => "dtb",
+            Self::Dtbo => "dtbo",
+            Self::Pvmfw => "pvmfw",
+            Self::PlatformSpecific(part) => part.name.as_str(),
+        }
     }
 
     /// Returns slotless partition name as &CStr.
-    /// Panics if a `PlatformSpecific` partition has an invalid `name`.
     pub fn name_cstr(&self) -> &'a CStr {
         match self {
             Self::Boot => c"boot",
@@ -210,7 +260,7 @@ impl<'a> LoadPartition<'a> {
             Self::Dtb => c"dtb",
             Self::Dtbo => c"dtbo",
             Self::Pvmfw => c"pvmfw",
-            Self::PlatformSpecific(part) => part.name_cstr(),
+            Self::PlatformSpecific(part) => part.name.as_cstr(),
         }
     }
 
@@ -234,18 +284,43 @@ mod test {
     fn test_requested_partition_default_is_empty() {
         let default = SpecializedPartition::default();
 
-        assert_eq!(default.name_cstr(), c"");
-        assert_eq!(default.name_buffer, [b'\0'; SPECIALIZED_PARTITION_NAME_MAX_SIZE]);
+        assert_eq!(default.name.as_cstr(), c"");
+        assert_eq!(default.name.as_str(), "");
+        assert_eq!(default.name, PartitionName::try_from("").unwrap());
     }
 
     #[test]
-    fn test_requested_partition_form_partition_name() {
-        let mut partition = SpecializedPartition::default();
+    fn test_partition_name_try_from_str() {
+        let name = PartitionName::try_from("boot").unwrap();
+        assert_eq!(name.as_cstr(), c"boot");
+        assert_eq!(name.as_str(), "boot");
 
-        partition.name_buffer[..4].copy_from_slice(b"boot");
-        // `SpecializedPartition::default()` should initialize as all zeros so we shouldn't
-        // have to explicitly nul-terminate here.
+        let raw = [b'a'; PartitionName::MAX_LEN];
+        let max_str = core::str::from_utf8(&raw).unwrap();
+        let max_name = PartitionName::try_from(max_str).unwrap();
+        assert_eq!(max_name.as_str(), max_str);
 
-        assert_eq!(partition.name_cstr(), c"boot");
+        let too_long_raw = [b'a'; PartitionName::MAX_LEN + 1];
+        let too_long_str = core::str::from_utf8(&too_long_raw).unwrap();
+        assert_eq!(PartitionName::try_from(too_long_str), Err(Error::InvalidInput));
+        assert_eq!(PartitionName::try_from("boot\0extra"), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn test_partition_name_try_from_bytes() {
+        let name = PartitionName::try_from(&b"vendor_fw"[..]).unwrap();
+        assert_eq!(name.as_str(), "vendor_fw");
+        assert_eq!(name.as_cstr(), c"vendor_fw");
+
+        let max_bytes = [b'a'; PartitionName::MAX_LEN];
+        assert_eq!(
+            PartitionName::try_from(&max_bytes[..]).unwrap().as_cstr().to_bytes(),
+            &max_bytes[..]
+        );
+
+        let too_long = [b'a'; PartitionName::MAX_LEN + 1];
+        assert_eq!(PartitionName::try_from(&too_long[..]), Err(Error::InvalidInput));
+        assert_eq!(PartitionName::try_from(&b"boot\0extra"[..]), Err(Error::InvalidInput));
+        assert_eq!(PartitionName::try_from(&b"\xff\xfe"[..]), Err(Error::InvalidInput));
     }
 }
