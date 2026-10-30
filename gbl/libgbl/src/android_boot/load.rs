@@ -339,11 +339,18 @@ pub(super) fn android_load_verified<'a, 'b>(
     is_recovery: bool,
     verify_data: &'b SlotVerifyData,
 ) -> Result<LoadedImages<'b>, Error> {
-    let mut images = LoadedImages::default();
-    images.dtb_part =
-        get_verified_partition(ops, LoadPartition::Dtb, slot, unlocked, true, verify_data)?;
-    images.dtbo =
-        get_verified_partition(ops, LoadPartition::Dtbo, slot, unlocked, true, verify_data)?;
+    let mut images = LoadedImages {
+        dtb_part: get_verified_partition(
+            ops,
+            LoadPartition::Dtb,
+            slot,
+            unlocked,
+            true,
+            verify_data,
+        )?,
+        dtbo: get_verified_partition(ops, LoadPartition::Dtbo, slot, unlocked, true, verify_data)?,
+        ..Default::default()
+    };
     if ops.avf_is_supported()? {
         images.pvmfw =
             get_verified_partition(ops, LoadPartition::Pvmfw, slot, unlocked, true, verify_data)?;

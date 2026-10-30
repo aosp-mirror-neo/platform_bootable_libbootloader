@@ -59,6 +59,11 @@ where
     /// Returns the buffer length.
     fn len(&self) -> usize;
 
+    /// Returns whether the buffer is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Returns the slice or [Error].
     fn get(&self, index: T) -> Result<&Self::Output> {
         self.check_index(&index)?;

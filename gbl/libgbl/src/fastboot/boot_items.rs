@@ -41,7 +41,7 @@ const BOOT_ITEM_CONTAINER_MAGIC: u64 = 0xc6157cb151cac1b4;
 /// +---------------------------+
 /// ~ ...                       ~
 /// +---------------------------+
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct BootItemContainerHeader {
     magic: u64,
@@ -69,7 +69,7 @@ impl TryFrom<usize> for BootItem {
 }
 
 /// Header structure for boot item.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct BootItemHeader {
     item_type: usize,

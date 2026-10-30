@@ -207,7 +207,7 @@ macro_rules! versioned_protocol {
         versioned_protocol!($protocol_struct, $revision, revision);
     };
     ($protocol_struct:tt, $revision:expr, $field_name:ident) => {
-        use crate::protocol::{MaybeVersioned, Revision, Versioned};
+        use $crate::protocol::{MaybeVersioned, Revision, Versioned};
 
         impl MaybeVersioned for <$protocol_struct as ProtocolInfo>::InterfaceType {
             const REVISION: Option<Revision> = Some(Revision::from_u32($revision as u32));

@@ -35,6 +35,7 @@ use core::{ffi::CStr, ops::DerefMut};
 use liberror::Error;
 
 /// A container holding partitions for libavb verification
+#[derive(Default)]
 pub struct PartitionsToVerify<'a> {
     partitions: ArrayMaxParts<LoadPartition<'a>>,
     preloaded: ArrayMaxParts<(&'a str, PreloadBufferState<'a>)>,
@@ -63,12 +64,6 @@ impl<'a> PartitionsToVerify<'a> {
         self.partitions.try_push(partition).or(err)?;
         self.preloaded.try_push((partition.name_cstr().to_str().unwrap(), buf)).or(err)?;
         Ok(())
-    }
-}
-
-impl<'a> Default for PartitionsToVerify<'a> {
-    fn default() -> Self {
-        Self { partitions: ArrayMaxParts::new(), preloaded: ArrayMaxParts::new() }
     }
 }
 

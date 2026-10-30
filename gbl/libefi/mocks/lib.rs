@@ -83,7 +83,13 @@ pub struct MockEfi {
 }
 
 thread_local! {
-    pub(crate) static MOCK_EFI: RefCell<Option<MockEfi>> = RefCell::new(None);
+    pub(crate) static MOCK_EFI: RefCell<Option<MockEfi>> = const { RefCell::new(None) };
+}
+
+impl Default for MockEfi {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockEfi {

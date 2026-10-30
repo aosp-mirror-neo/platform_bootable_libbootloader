@@ -132,6 +132,12 @@ pub struct EfiInitrdDevicePathProtocol {
     end: EfiDevicePathProtocol,
 }
 
+impl Default for EfiInitrdDevicePathProtocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EfiInitrdDevicePathProtocol {
     /// GUID for the Linux EFI Initrd vendor media device path node.
     const LINUX_EFI_INITRD_MEDIA_GUID: EfiGuid =

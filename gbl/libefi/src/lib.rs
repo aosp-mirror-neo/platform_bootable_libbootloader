@@ -77,7 +77,7 @@ mod allocation;
 
 #[cfg(test)]
 thread_local! {
-    static GLOBAL_EFI_ENTRY: std::cell::RefCell<Option<NonNull<EfiEntry>>> = std::cell::RefCell::new(None);
+    static GLOBAL_EFI_ENTRY: std::cell::RefCell<Option<NonNull<EfiEntry>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Escape valve for operations that need the global EfiEntry
@@ -174,7 +174,7 @@ static EFI_METRICS: spin::Mutex<EfiMetrics> =
 
 #[cfg(test)]
 thread_local! {
-    static EFI_METRICS: core::cell::RefCell<EfiMetrics> = core::cell::RefCell::new(EfiMetrics { opened_protocols: ArrayVec::new_const() });
+    static EFI_METRICS: core::cell::RefCell<EfiMetrics> = const { core::cell::RefCell::new(EfiMetrics { opened_protocols: ArrayVec::new_const() }) };
 }
 
 /// Records an opened protocol version.
@@ -1258,6 +1258,11 @@ impl<'a> EfiMemoryMap<'a> {
     pub fn len(&self) -> usize {
         self.buffer.len() / self.descriptor_size
     }
+
+    /// Returns whether there are no descriptors.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<'a: 'b, 'b> IntoIterator for &'b EfiMemoryMap<'a> {
@@ -1526,7 +1531,9 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
             }
             _ => efi_print!(entry, "Runtime services not supported. Hanging...\r\n"),
         }
-        loop {}
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     log_fatal::report_fatal_error_and_reset_internal(entry, panic_info, tag, reset)
@@ -1551,7 +1558,9 @@ pub unsafe fn report_error_and_reset_with_global_entry<P: core::fmt::Display>(
     let _ = unsafe {
         with_global_efi_entry::<_, ()>(|entry| report_error_and_reset(entry, panic_info, tag))
     };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Cryptographic hash interfaces based on the EfiHash2Protocol.
@@ -2060,18 +2069,20 @@ mod test {
             ..Default::default()
         };
         let mut systab = EfiSystemTable { con_out: &mut sto, ..Default::default() };
-        let mut boot_services: EfiBootService = Default::default();
-        boot_services.free_pool = Some(free_pool);
-        boot_services.open_protocol = Some(open_protocol);
-        boot_services.handle_protocol = Some(handle_protocol);
-        boot_services.locate_handle_buffer = Some(locate_handle_buffer);
-        boot_services.locate_handle = Some(locate_handle);
-        boot_services.get_memory_map = Some(get_memory_map);
-        boot_services.exit_boot_services = Some(exit_boot_services);
-        boot_services.create_event = Some(create_event);
-        boot_services.close_event = Some(close_event);
-        boot_services.check_event = Some(check_event);
-        boot_services.set_watchdog_timer = Some(set_watchdog_timer);
+        let mut boot_services = EfiBootService {
+            free_pool: Some(free_pool),
+            open_protocol: Some(open_protocol),
+            handle_protocol: Some(handle_protocol),
+            locate_handle_buffer: Some(locate_handle_buffer),
+            locate_handle: Some(locate_handle),
+            get_memory_map: Some(get_memory_map),
+            exit_boot_services: Some(exit_boot_services),
+            create_event: Some(create_event),
+            close_event: Some(close_event),
+            check_event: Some(check_event),
+            set_watchdog_timer: Some(set_watchdog_timer),
+            ..Default::default()
+        };
         systab.boot_services = &mut boot_services as *mut _;
         let image_handle: usize = 1234; // Don't care.
 
@@ -2225,7 +2236,7 @@ mod test {
 
             // Set up locate_handle_buffer_trace trace.
             let mut located_handles: [DeviceHandle; 3] = [
-                DeviceHandle(1 as *const _),
+                DeviceHandle(std::ptr::dangling()),
                 DeviceHandle(2 as *const _),
                 DeviceHandle(3 as *const _),
             ];
@@ -2262,7 +2273,7 @@ mod test {
 
             // Set up locate_handle_buffer_trace trace.
             let located_handles = [
-                DeviceHandle(1 as *const _),
+                DeviceHandle(std::ptr::dangling()),
                 DeviceHandle(2 as *const _),
                 DeviceHandle(3 as *const _),
             ];
@@ -2288,7 +2299,7 @@ mod test {
             EFI_CALL_TRACES.with(|traces| {
                 assert_eq!(
                     traces.borrow_mut().open_protocol_trace.inputs,
-                    [(DeviceHandle(1 as *const _), BlockIoProtocol::GUID, image_handle),]
+                    [(DeviceHandle(std::ptr::dangling()), BlockIoProtocol::GUID, image_handle),]
                 );
             });
         })
@@ -2680,7 +2691,7 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
 
-            let located_handles = [DeviceHandle(1 as *const _)];
+            let located_handles = [DeviceHandle(std::ptr::dangling())];
             let mut test = TestProtocol;
 
             efi_call_traces().with(|traces| {
@@ -2736,7 +2747,7 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
 
-            let located_handles = [DeviceHandle(1 as *const _)];
+            let located_handles = [DeviceHandle(std::ptr::dangling())];
             let mut test = TestProtocol;
 
             efi_call_traces().with(|traces| {
@@ -2867,7 +2878,7 @@ mod test {
     ) {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let located_handles = vec![DeviceHandle(1 as *const _)];
+            let located_handles = vec![DeviceHandle(std::ptr::dangling())];
             let mut test = T::new();
 
             efi_call_traces().with(|traces| {
@@ -2967,7 +2978,7 @@ mod test {
     fn test_panic_handler_logs_fatal_error() {
         use std::sync::atomic::{AtomicU64, Ordering};
         thread_local! {
-            static PANICS_CAUGHT:AtomicU64 = AtomicU64::new(0);
+            static PANICS_CAUGHT:AtomicU64 = const { AtomicU64::new(0) };
         }
 
         unsafe extern "efiapi" fn fatal_error(

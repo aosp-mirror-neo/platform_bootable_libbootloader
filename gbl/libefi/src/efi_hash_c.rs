@@ -205,7 +205,7 @@ mod test {
     fn efi_hash_wrapper_test<Algorithm: HashAlgorithm>(test_struct: HashTest<Algorithm>) {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let handles = [DeviceHandle(1 as *const _)];
+            let handles = [DeviceHandle(std::ptr::dangling())];
 
             let mut h2_sp = EfiServiceBindingProtocol {
                 create_child: Some(create_child),
