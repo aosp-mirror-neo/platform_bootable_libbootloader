@@ -16,7 +16,7 @@
 
 use crate::{
     efi_call, efi_println,
-    protocol::{Protocol, ProtocolInfo},
+    protocol::{Protocol, ProtocolInfo, Requirement},
     versioned_protocol, EfiEntry,
 };
 use alloc::{vec, vec::Vec};
@@ -187,6 +187,8 @@ impl ProtocolInfo for GblBootMemoryProtocol {
     type InterfaceType = GblEfiBootMemoryProtocol;
 
     const GUID: EfiGuid = GblEfiBootMemoryProtocol::GUID;
+
+    const REQUIREMENT: Requirement = Requirement::Optional;
 
     const METRICS_TAG: Option<&'static str> = Some("gbl_boot_memory");
 }
