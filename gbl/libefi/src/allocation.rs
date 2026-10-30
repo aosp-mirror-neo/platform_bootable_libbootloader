@@ -110,17 +110,6 @@ where
     Some(f(entry))
 }
 
-/// Obtains a `'static` reference to the library's global `EfiEntry` if initialized and boot
-/// services have not exited.
-///
-/// # Safety
-///
-/// The caller must ensure that any value borrowing the returned `'static` reference is dropped
-/// before `exit_boot_services()`.
-pub(crate) unsafe fn internal_static_efi_entry() -> Option<&'static EfiEntry> {
-    EFI_GLOBAL_ALLOCATOR.efi_entry()
-}
-
 /// An internal API to obtain the library's global `RuntimeServices`.
 pub(crate) fn internal_runtime_services() -> Option<RuntimeServices> {
     EFI_GLOBAL_ALLOCATOR.state.get().and_then(|s| s.runtime_services)

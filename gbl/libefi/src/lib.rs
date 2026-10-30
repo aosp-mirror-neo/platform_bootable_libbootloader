@@ -80,7 +80,7 @@ thread_local! {
 ///   well-formed, live [EfiEntry] for the duration of the call.
 pub unsafe fn with_global_efi_entry<F, T>(func: F) -> Result<T>
 where
-    F: FnMut(&EfiEntry) -> T,
+    F: FnOnce(&EfiEntry) -> T,
 {
     cfg_if! {
         if #[cfg(test)] {
@@ -89,44 +89,12 @@ where
                 // SAFETY: Per function safety docs, any pointer stored in `GLOBAL_EFI_ENTRY` is
                 // valid and live for the duration of this call.
                 let entry = unsafe { borrow.ok_or(Error::InvalidState)?.as_ref() };
-                let mut func = func;
                 Ok(func(entry))
             })
         } else {
             allocation::with_internal_efi_entry(func).ok_or(Error::InvalidState)
         }
     }
-}
-
-/// Calls `func` with a `'static` reference to the global `EfiEntry` when an FFI state object must
-/// outlive a single Rust call frame while boot services remain active.
-///
-/// # Safety
-///
-/// * Any value borrowing the `'static` reference must be dropped before `exit_boot_services()`
-///   (or, in `#[cfg(test)]` builds, before the test's `EfiEntry` goes out of scope).
-/// * In `#[cfg(test)]` builds, if thread-local `GLOBAL_EFI_ENTRY` is `Some`, it must point to a
-///   well-formed, live `EfiEntry` for as long as any value borrowing the reference exists.
-pub(crate) unsafe fn with_static_global_efi_entry<F, T>(func: F) -> Result<T>
-where
-    F: FnOnce(&'static EfiEntry) -> T,
-{
-    cfg_if! {
-        if #[cfg(test)] {
-            let entry = GLOBAL_EFI_ENTRY
-                // SAFETY: Per function safety docs, any pointer stored in `GLOBAL_EFI_ENTRY` stays
-                // valid and live for as long as any value borrowing `entry` exists.
-                .with(|e| e.borrow().map(|e_ptr| unsafe { e_ptr.as_ref() }))
-                .ok_or(Error::InvalidState)?;
-        } else {
-            // SAFETY: Caller guarantees any value borrowing `entry` is dropped before
-            // `exit_boot_services()`.
-            let entry =
-                unsafe { allocation::internal_static_efi_entry() }.ok_or(Error::InvalidState)?;
-        }
-    }
-
-    Ok(func(entry))
 }
 
 #[cfg(all(not(test), not(target_os = "linux")))]

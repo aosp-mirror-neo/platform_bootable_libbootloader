@@ -16,10 +16,10 @@
 
 use crate::{
     efi_call,
-    protocol::{MaybeVersioned, Protocol, ProtocolInfo, Requirement},
+    protocol::{MaybeVersioned, Protocol, ProtocolInfo, RawProtocol, Requirement},
     DeviceHandle, EfiEntry,
 };
-use core::mem::ManuallyDrop;
+use core::{ffi::c_void, mem::ManuallyDrop, ptr};
 use efi_types::{EfiGuid, EfiHandle, EfiServiceBindingProtocol};
 use liberror::Result;
 
@@ -112,6 +112,85 @@ impl<'a, SBP: ServiceBindingProtocolInfo> ProtocolBinder<'a, SBP> {
     /// Returns a reference to the child protocol instance.
     pub fn child_protocol(&self) -> &Protocol<'a, SBP::ChildProtocol> {
         &self.child_protocol
+    }
+
+    /// Detaches this binder from its `&'a EfiEntry` borrows without destroying the child handle,
+    /// for storage across C FFI call boundaries.
+    pub(crate) fn into_raw(self) -> RawProtocolBinder<SBP> {
+        let mut this = ManuallyDrop::new(self);
+        // SAFETY: `this` is wrapped in `ManuallyDrop` so `ProtocolBinder::drop` will not run, and
+        // neither field is accessed again after moving out.
+        let service_protocol = unsafe { ptr::read(&this.service_protocol) }.into_raw();
+        // SAFETY: `child_protocol` is never accessed again after moving out.
+        let child_protocol = unsafe { ManuallyDrop::take(&mut this.child_protocol) }.into_raw();
+        RawProtocolBinder { service_protocol, child_protocol }
+    }
+
+    /// Reattaches a detached [`RawProtocolBinder`] to a live `EfiEntry`, restoring `Drop` cleanup.
+    ///
+    /// # Safety
+    ///
+    /// * `raw` must have been produced by [`Self::into_raw`] during the same active UEFI boot
+    ///   services session, and its handles and protocol interfaces must remain valid for `'a`.
+    pub(crate) unsafe fn from_raw(raw: RawProtocolBinder<SBP>, entry: &'a EfiEntry) -> Self {
+        // SAFETY: Guaranteed by caller precondition.
+        let service_protocol = unsafe { Protocol::from_raw(raw.service_protocol, entry) };
+        // SAFETY: Guaranteed by caller precondition.
+        let child_protocol =
+            ManuallyDrop::new(unsafe { Protocol::from_raw(raw.child_protocol, entry) });
+        Self { service_protocol, child_protocol }
+    }
+}
+
+/// Detached [`ProtocolBinder`] state without `&EfiEntry` borrows, for storing across C FFI call
+/// boundaries while boot services remain active.
+///
+/// Does not implement `Drop`; the caller must reattach via [`ProtocolBinder::from_raw`] while boot
+/// services remain active so `destroy_child` can run cleanly.
+pub(crate) struct RawProtocolBinder<SBP: ServiceBindingProtocolInfo> {
+    service_protocol: RawProtocol<SBP>,
+    child_protocol: RawProtocol<SBP::ChildProtocol>,
+}
+
+impl<SBP: ServiceBindingProtocolInfo> RawProtocolBinder<SBP> {
+    /// Converts `self` into four raw pointers `[service_device, service_interface, child_device,
+    /// child_interface]`, preserving pointer provenance.
+    pub(crate) fn into_raw_ptrs(self) -> [*mut c_void; 4] {
+        let (sd, si) = self.service_protocol.into_raw_ptrs();
+        let (cd, ci) = self.child_protocol.into_raw_ptrs();
+        [sd, si, cd, ci]
+    }
+
+    /// Reconstructs a [`RawProtocolBinder`] from four raw pointers produced by
+    /// [`Self::into_raw_ptrs`], returning `None` if either interface pointer is null.
+    ///
+    /// # Safety
+    ///
+    /// * If both interface pointers are non-null, `ptrs` must have been produced by
+    ///   [`Self::into_raw_ptrs`] for `SBP` during the current UEFI boot services session and not
+    ///   yet reattached and dropped.
+    pub(crate) unsafe fn from_raw_ptrs(ptrs: [*mut c_void; 4]) -> Option<Self> {
+        let [sd, si, cd, ci] = ptrs;
+        Some(Self {
+            // SAFETY: Guaranteed by caller precondition.
+            service_protocol: unsafe { RawProtocol::from_raw_ptrs(sd, si) }?,
+            // SAFETY: Guaranteed by caller precondition.
+            child_protocol: unsafe { RawProtocol::from_raw_ptrs(cd, ci) }?,
+        })
+    }
+
+    /// Borrows the child protocol with a live `EfiEntry` without transferring ownership.
+    ///
+    /// # Safety
+    ///
+    /// * `self` must have been produced by [`ProtocolBinder::into_raw`] during the same active
+    ///   UEFI boot services session, and the child protocol interface must remain valid for `'a`.
+    pub(crate) unsafe fn child_protocol<'a>(
+        &self,
+        entry: &'a EfiEntry,
+    ) -> ManuallyDrop<Protocol<'a, SBP::ChildProtocol>> {
+        // SAFETY: Guaranteed by caller precondition.
+        unsafe { self.child_protocol.as_protocol(entry) }
     }
 }
 
