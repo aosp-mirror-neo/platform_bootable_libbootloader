@@ -84,6 +84,8 @@ const UNLOCKED_CRITICAL: &str = "unlocked-critical";
 
 const STREAM_SEGMENT_SIZE: &str = "stream-segment-size";
 
+const SNAPSHOT_UPDATE_STATUS: &str = "snapshot-update-status";
+
 pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
     IS_USERSPACE,
     VERSION_GBL,
@@ -105,6 +107,7 @@ pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
     UNLOCKED,
     UNLOCKED_CRITICAL,
     STREAM_SEGMENT_SIZE,
+    SNAPSHOT_UPDATE_STATUS,
 ];
 
 #[derive(FromBytes, IntoBytes, Unaligned)]
@@ -296,6 +299,9 @@ where
             BLOCK_DEVICE => self.get_var_block_device(args_str, out)?,
             UNLOCKED => self.get_var_unlocked(fastboot::LockType::Device, out)?,
             UNLOCKED_CRITICAL => self.get_var_unlocked(fastboot::LockType::Critical, out)?,
+            SNAPSHOT_UPDATE_STATUS => {
+                snprintf!(out, "{}", self.snapshot_merge_status().await?)
+            }
             _ => {
                 let sz = self.gbl_ops.fastboot_variable(name, args, out)?;
                 from_utf8(out.get(..sz).ok_or("Invalid variable value size")?)?
@@ -390,6 +396,14 @@ where
             }
             Err(e) => gbl_println!(self.gbl_ops, "failed to read lock state: {e}"),
         };
+
+        match self.snapshot_merge_status().await {
+            Ok(status) => {
+                send.send_var_info(SNAPSHOT_UPDATE_STATUS, [], status.into()).await?;
+            }
+            Err(GblFastbootError::Libgbl(Error::Unsupported)) => {}
+            Err(e) => gbl_println!(self.gbl_ops, "snapshot-update-status unavailable: {e}"),
+        }
 
         // Gets platform specific variables
         let tasks = self.tasks();
