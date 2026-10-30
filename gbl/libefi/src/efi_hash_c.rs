@@ -100,7 +100,8 @@ pub extern "C" fn efi_sha256_init() -> *mut Hasher<'static, Sha256> {
 
 /// Adds data to the Hasher<Sha256> context.
 ///
-/// Safety:
+/// # Safety
+///
 /// * `hasher` points to a valid Hasher<Sha256> that has been initialized.
 /// * `data` is valid to read for `len` bytes.
 #[no_mangle]
@@ -117,7 +118,8 @@ pub unsafe extern "C" fn efi_sha256_update(
 }
 /// Returns the digest from a Hasher<Sha256>.
 ///
-/// Safety:
+/// # Safety
+///
 /// * `hasher_ptr` points to a pointer to a valid Hasher<Sha256> that has been initialized.
 /// * `out` is valid to write for 32 bytes.
 #[no_mangle]
@@ -141,7 +143,8 @@ pub extern "C" fn efi_sha512_init() -> *mut Hasher<'static, Sha512> {
 
 /// Adds data to the Hasher<Sha512> context.
 ///
-/// Safety:
+/// # Safety
+///
 /// * `hasher` points to a valid Hasher<Sha512> that has been initialized.
 /// * `data` is valid to read for `len` bytes.
 #[no_mangle]
@@ -159,7 +162,8 @@ pub unsafe extern "C" fn efi_sha512_update(
 
 /// Returns the digest from a Hasher<Sha512>.
 ///
-/// Safety:
+/// # Safety
+///
 /// * `hasher` points to a pointer to a valid Hasher<Sha512> that has been initialized.
 /// * `out` is valid to write for 64 bytes.
 #[no_mangle]

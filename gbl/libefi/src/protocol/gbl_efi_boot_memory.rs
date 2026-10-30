@@ -267,15 +267,17 @@ fn partition_buffer_op(
                 efi_println!(entry, "NULL partition buffer pointer is not allowed");
                 return Err(Error::InvalidInput);
             }
-            // SAFETY:
-            // * Protocol spec requires that the returned buffer must remain valid for read/write
-            //   between calls of `sync_partition_buffer()` and be exclusively accessed by GBL.
-            // * `sync_partition_buffer()` is only called in the `PartitionBufferOps::Sync(v) =>`
-            //    branch and after dropping all existing buffer references.
-            // * Protocol spec requires that the memory is unique for each `name` id.
-            //   `PARTITION_BUFFER_POOL.get(part, true)?;` checks that we have not acquired the same
-            //   buffer before.
             *add.0 = Buffer::Borrowed {
+                // SAFETY:
+                // * Protocol spec requires that the returned buffer must remain valid for
+                //   read/write between calls of `sync_partition_buffer()` and be exclusively
+                //   accessed by GBL.
+                // * `sync_partition_buffer()` is only called in the
+                //   `PartitionBufferOps::Sync(v) =>` branch and after dropping all existing buffer
+                //   references.
+                // * Protocol spec requires that the memory is unique for each `name` id.
+                //   `PARTITION_BUFFER_POOL.get(part, true)?;` checks that we have not acquired the
+                //   same buffer before.
                 buffer: unsafe { from_raw_parts_mut(addr as _, sz) },
                 is_preloaded_partition,
             };
@@ -388,13 +390,13 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
                 (Ok((NULL_PTR, _)), _) => return Err(Error::NotFound),
                 (Ok((addr, sz)), _) => {
                     efi_println!(entry, "Found {name:?} buffer: addr {addr:?}, sz: {sz:#x}.");
-                    // SAFETY:
-                    // * Protocol spec requires that the returned buffer must be valid for
-                    //   read/write, have static lifetime and be exclusively accessed by GBL.
-                    // * Protocol spec requires that the memory is unique for each `buf_type` id.
-                    //   `PARTITION_BUFFER_POOL.get(part, true)?;` checks that we have not acquired
-                    //   the same buffer before.
                     Buffer::Borrowed {
+                        // SAFETY:
+                        // * Protocol spec requires that the returned buffer must be valid for
+                        //   read/write, have static lifetime and be exclusively accessed by GBL.
+                        // * Protocol spec requires that the memory is unique for each `buf_type`
+                        //   id. `PARTITION_BUFFER_POOL.get(part, true)?;` checks that we have not
+                        //   acquired the same buffer before.
                         buffer: unsafe { from_raw_parts_mut(addr as _, sz) },
                         is_preloaded_partition: false,
                     }

@@ -157,7 +157,8 @@ impl BlockInfo {
 /// This is normally easy to achieve due to the borrow checker, but care must be taken
 /// if an implementation crosses an FFI boundary.
 ///
-/// SAFETY:
+/// # Safety
+///
 /// * Both `read_blocks` and `read_blocks_sync` methods must guarantee `out` to be fully
 ///   initialized on success and must never write uninitialized bytes into `out`.
 ///   Otherwise an error must be returned.

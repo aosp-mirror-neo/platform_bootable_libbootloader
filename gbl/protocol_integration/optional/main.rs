@@ -42,7 +42,8 @@ static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::new();
 
 /// Driver for the integration test application
 ///
-/// Safety:
+/// # Safety
+///
 /// * It is the responsibility of the UEFI firmware to pass valid, non null
 ///   `image_handle` and `systab_ptr` parameters.
 #[no_mangle]

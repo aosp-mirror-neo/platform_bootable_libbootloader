@@ -24,7 +24,7 @@ const DTO_MALLOC_ALIGNMENT: usize = 8;
 
 /// void *malloc(size_t size)
 ///
-/// # Safety:
+/// # Safety
 ///
 /// * `return value` pointing buffer must be used within provided `size`
 #[no_mangle]
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn dto_malloc(size: usize) -> *mut c_void {
 
 /// void free(void *ptr)
 ///
-/// # Safety:
+/// # Safety
 ///
 /// * `ptr` must be a pointer allocated by `dto_malloc` or null
 #[no_mangle]

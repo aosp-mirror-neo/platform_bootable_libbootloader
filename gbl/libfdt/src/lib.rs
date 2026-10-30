@@ -66,8 +66,8 @@ pub mod std_props {
 /// Convert libfdt_c error code to Result
 fn map_result(code: c_int) -> Result<c_int> {
     match code {
-        // SAFETY: Static null terminated string returned from libfdt_c API.
         v if v < 0 => {
+            // SAFETY: Static null terminated string returned from libfdt_c API.
             Err(Error::Other(Some(unsafe { CStr::from_ptr(fdt_strerror(v)).to_str().unwrap() })))
         }
         v => Ok(v),
@@ -296,6 +296,8 @@ impl FdtHeader {
     }
 
     /// Get FDT header and raw bytes from a raw pointer.
+    ///
+    /// # Safety
     ///
     /// Caller should guarantee that
     ///   1. `ptr` contains a valid FDT.
