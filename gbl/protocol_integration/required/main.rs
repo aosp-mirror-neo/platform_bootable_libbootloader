@@ -18,7 +18,8 @@
 #![no_main]
 
 use efi::{
-    efi_println, initialize, report_error_and_reset_with_global_entry, utils::wait, EfiAllocator,
+    efi_global_allocator, efi_println, initialize, report_error_and_reset_with_global_entry,
+    utils::wait,
 };
 use efi_types::{
     EfiHandle, EfiStatus, EfiSystemTable, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_PROTOCOL_ERROR,
@@ -36,9 +37,7 @@ fn handle_panic(p_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-#[no_mangle]
-#[global_allocator]
-static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::new();
+efi_global_allocator!();
 
 /// Driver for the integration test application
 ///

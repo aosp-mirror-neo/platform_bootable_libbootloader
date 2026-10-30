@@ -27,9 +27,9 @@ mod riscv64;
 use cfg_if::cfg_if;
 use core::panic::PanicInfo;
 use efi::{
-    efi_println, initialize,
+    efi_global_allocator, efi_println, initialize,
     protocol::random_number_generator::{RandomNumberGeneratorProtocol, RngAlgorithm},
-    report_error_and_reset_with_global_entry, EfiAllocator, EfiEntry,
+    report_error_and_reset_with_global_entry, EfiEntry,
 };
 use efi_types::{EfiHandle, EfiSystemTable, GBL_EFI_DEBUG_ERROR_TAG_ASSERTION_ERROR};
 use gbl_efi::app_main;
@@ -45,9 +45,7 @@ fn handle_panic(p_info: &PanicInfo) -> ! {
     }
 }
 
-#[no_mangle]
-#[global_allocator]
-static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::new();
+efi_global_allocator!();
 
 /// Pull in the sysdeps required by libavb so the linker can find them.
 extern crate avb_sysdeps;
