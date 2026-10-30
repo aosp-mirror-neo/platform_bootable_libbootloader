@@ -226,6 +226,4 @@ ANDROID_RUST_LINTS = [
     "clippy::result_large_err",
     "-A",
     "clippy::too_many_arguments",
-    "-A",
-    "clippy::undocumented_unsafe_blocks",
 ]

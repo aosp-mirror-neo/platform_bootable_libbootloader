@@ -33,6 +33,7 @@ extern "C" {
 // from the binary.
 #[no_mangle]
 pub extern "C" fn get_efi_header() -> *const core::ffi::c_void {
+    // SAFETY: `dos_header` is a static symbol defined in `riscv64_efi_header.S` and is only read.
     unsafe { dos_header }
 }
 

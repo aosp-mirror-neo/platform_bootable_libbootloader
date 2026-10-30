@@ -121,12 +121,7 @@ impl PartHasSlot {
 
 /// Extracts the partition name from `LpMetadataPartition`.
 fn lp_partition_name(partition: &LpMetadataPartition) -> Option<&str> {
-    // SAFETY: The `partition.name` field is `[i8; 36]` (C char array). We reinterpret it as
-    // `[u8; 36]` to parse as UTF-8. This is safe because we only read the bytes and the
-    // representation of `i8` and `u8` is identical for ASCII characters used in partition names.
-    let name_bytes: &[u8] = unsafe {
-        core::slice::from_raw_parts(partition.name.as_ptr().cast::<u8>(), partition.name.len())
-    };
+    let name_bytes = partition.name.as_bytes();
     let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
     core::str::from_utf8(&name_bytes[..end]).ok()
 }

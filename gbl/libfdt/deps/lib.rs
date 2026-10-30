@@ -24,14 +24,13 @@ const DTO_MALLOC_ALIGNMENT: usize = 8;
 
 /// void *malloc(size_t size)
 ///
-/// # Safety
+/// # Returns
 ///
 /// * `return value` pointing buffer must be used within provided `size`
 #[no_mangle]
-pub unsafe extern "C" fn dto_malloc(size: usize) -> *mut c_void {
-    // SAFETY: libufdt calls are compatible with libc counterparts, alignment the same as
-    // dto_free
-    unsafe { gbl_malloc(size, DTO_MALLOC_ALIGNMENT) }
+pub extern "C" fn dto_malloc(size: usize) -> *mut c_void {
+    // libufdt calls are compatible with libc counterparts, alignment the same as dto_free.
+    gbl_malloc(size, DTO_MALLOC_ALIGNMENT)
 }
 
 /// void free(void *ptr)

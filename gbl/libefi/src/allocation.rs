@@ -245,6 +245,17 @@ impl EfiAllocator {
 #[cfg(feature = "gbl_tracing")]
 static HEAP_USAGE: AtomicUsize = AtomicUsize::new(0);
 
+// SAFETY: This meets the `GlobalAlloc` safety requirements:
+// * It does not unwind. Allocation failures are returned as null and deallocation failures are
+//   logged and ignored. The remaining `unwrap()`/`assert!()` calls cannot fail for a layout that
+//   `alloc()` already succeeded with, and `EfiAllocator` is only used as the global allocator in
+//   UEFI applications built with `panic=abort`.
+// * Layout calculations are correct. `alloc()` returns either null or a pointer to at least
+//   `layout.size()` bytes aligned to `layout.align()`. When alignment adjustment is needed, it
+//   over-allocates and stores the original pointer after the block, which `dealloc()` uses to free
+//   the original allocation using the same size computed from `layout`.
+// * It does not rely on allocations actually happening. Apart from optional heap usage tracing, it
+//   has no side effects beyond allocating and freeing memory.
 unsafe impl GlobalAlloc for EfiAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         (|| -> Result<*mut u8> {

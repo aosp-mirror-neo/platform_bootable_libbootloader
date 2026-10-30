@@ -61,8 +61,8 @@ pub unsafe trait HashAlgorithm: private::Sealed {
     ///
     /// # Safety
     ///
-    /// * It is the caller's responsibility to guarantee that `output` has been
-    ///   initialized with the appropriate union member.
+    /// * It is the caller's responsibility to guarantee that `output` has been initialized with the
+    ///   appropriate union member.
     unsafe fn digest(output: EfiHash2Output) -> Self::DigestType;
 }
 
@@ -77,8 +77,7 @@ pub struct Sha1;
 impl private::Sealed for Sha1 {}
 
 /// SAFETY:
-/// * `sha1_hash` is the correct field to access
-///   for a message of type Sha1.
+/// * `sha1_hash` is the correct field to access for a message of type Sha1.
 unsafe impl HashAlgorithm for Sha1 {
     const GUID: EfiGuid =
         EfiGuid::from_u64s(EFI_HASH_ALGORITHM_SHA1_GUID_U64_0, EFI_HASH_ALGORITHM_SHA1_GUID_U64_1);
@@ -86,9 +85,9 @@ unsafe impl HashAlgorithm for Sha1 {
     type DigestType = EfiSha1Hash2;
 
     /// SAFETY:
-    /// * Caller is required to verify that `sha1_hash`
-    ///   is the active field of `output`.
+    /// * Caller is required to verify that `sha1_hash` is the active field of `output`.
     unsafe fn digest(output: EfiHash2Output) -> Self::DigestType {
+        // SAFETY: The caller guarantees that `sha1_hash` is the active field of `output`.
         unsafe { output.sha1_hash }
     }
 }
@@ -100,8 +99,7 @@ pub struct Sha256;
 impl private::Sealed for Sha256 {}
 
 /// SAFETY:
-/// * `sha256_hash` is the correct field to access
-///   for a message of type Sha256.
+/// * `sha256_hash` is the correct field to access for a message of type Sha256.
 unsafe impl HashAlgorithm for Sha256 {
     const GUID: EfiGuid = EfiGuid::from_u64s(
         EFI_HASH_ALGORITHM_SHA256_GUID_U64_0,
@@ -111,9 +109,9 @@ unsafe impl HashAlgorithm for Sha256 {
     type DigestType = EfiSha256Hash2;
 
     /// SAFETY:
-    /// * Caller is required to verify that `sha256_hash`
-    ///   is the active field of `output`.
+    /// * Caller is required to verify that `sha256_hash` is the active field of `output`.
     unsafe fn digest(output: EfiHash2Output) -> Self::DigestType {
+        // SAFETY: The caller guarantees that `sha256_hash` is the active field of `output`.
         unsafe { output.sha256_hash }
     }
 }
@@ -125,8 +123,7 @@ pub struct Sha512;
 impl private::Sealed for Sha512 {}
 
 /// SAFETY:
-/// * `sha512_hash` is the correct field to access
-///   for a message of type Sha512.
+/// * `sha512_hash` is the correct field to access for a message of type Sha512.
 unsafe impl HashAlgorithm for Sha512 {
     const GUID: EfiGuid = EfiGuid::from_u64s(
         EFI_HASH_ALGORITHM_SHA512_GUID_U64_0,
@@ -136,9 +133,9 @@ unsafe impl HashAlgorithm for Sha512 {
     type DigestType = EfiSha512Hash2;
 
     /// SAFETY:
-    /// * Caller is required to verify that `sha512_hash`
-    ///   is the active field of `output`.
+    /// * Caller is required to verify that `sha512_hash` is the active field of `output`.
     unsafe fn digest(output: EfiHash2Output) -> Self::DigestType {
+        // SAFETY: The caller guarantees that `sha512_hash` is the active field of `output`.
         unsafe { output.sha512_hash }
     }
 }

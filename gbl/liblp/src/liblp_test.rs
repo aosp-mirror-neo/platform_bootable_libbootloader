@@ -34,18 +34,24 @@ mod tests {
     }
     impl HashOps for AvbHashOps {
         fn sha256_init(&mut self) {
+            // SAFETY: `&mut self.ctx` is a valid pointer to an `AvbSHA256Ctx` with exclusive
+            // access, which `avb_sha256_init()` initializes.
             unsafe {
                 avb_sha256_init(&mut self.ctx);
             }
         }
 
         fn sha256_update(&mut self, data: &[u8]) {
+            // SAFETY: `self.ctx` is an initialized `AvbSHA256Ctx` owned by `self`, and `&mut self`
+            // guarantees exclusive access. `data` is valid to read for `data.len()` bytes.
             unsafe {
                 avb_sha256_update(&mut self.ctx, data.as_ptr(), data.len());
             }
         }
 
         fn sha256_final(&mut self) -> [u8; 32] {
+            // SAFETY: `self.ctx` is an initialized `AvbSHA256Ctx` owned by `self`, and `&mut self`
+            // guarantees exclusive access.
             unsafe {
                 avb_sha256_final(&mut self.ctx);
             }

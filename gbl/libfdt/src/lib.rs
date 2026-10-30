@@ -299,17 +299,20 @@ impl FdtHeader {
     ///
     /// # Safety
     ///
-    /// Caller should guarantee that
-    ///   1. `ptr` contains a valid FDT.
-    ///   2. The buffer remains valid as long as the returned references are in use.
+    /// Caller must guarantee that
+    ///   1. `ptr` is valid to read for `FDT_HEADER_SIZE` bytes.
+    ///   2. If those bytes are a valid FDT header, `ptr` is valid to read for the header's
+    ///      `totalsize()` bytes.
+    ///   3. The buffer remains valid as long as the returned references are in use.
     pub unsafe fn from_raw(ptr: *const u8) -> Result<(&'static FdtHeader, &'static [u8])> {
-        // SAFETY: By safety requirement of this function, `ptr` points to a valid FDT and remains
-        // valid when in use.
-        unsafe {
-            let header_bytes = from_raw_parts(ptr, FDT_HEADER_SIZE);
-            let header = Self::from_bytes_ref(header_bytes)?;
-            Ok((header, from_raw_parts(ptr, header.totalsize())))
-        }
+        // SAFETY: By safety requirement of this function, `ptr` is valid to read for
+        // `FDT_HEADER_SIZE` bytes and remains valid while the returned references are in use.
+        let header_bytes = unsafe { from_raw_parts(ptr, FDT_HEADER_SIZE) };
+        let header = Self::from_bytes_ref(header_bytes)?;
+        // SAFETY: `header` is validated above, so by safety requirement of this function `ptr` is
+        // valid to read for `header.totalsize()` bytes and remains valid while the returned
+        // references are in use.
+        Ok((header, unsafe { from_raw_parts(ptr, header.totalsize()) }))
     }
 }
 
@@ -1144,8 +1147,12 @@ mod test {
 
     #[test]
     fn test_header_from_raw() {
+        // Generated from `base.dts` by `test/gen_test_dtb.sh`. Check the header in safe code too,
+        // so the safety argument below doesn't depend on the test data.
         let init = include_bytes!("../test/data/base.dtb").to_vec();
-        // Pointer points to `init`
+        assert_eq!(FdtHeader::from_bytes_ref(&init).unwrap().totalsize(), init.len());
+        // SAFETY: `init` is valid to read for its whole length, which is the header's `totalsize()`
+        // as checked above, and outlives the returned references.
         let (header, bytes) = unsafe { FdtHeader::from_raw(init.as_ptr()).unwrap() };
         assert_eq!(header.totalsize(), init.len());
         assert_eq!(bytes.to_vec(), init);
@@ -1153,9 +1160,13 @@ mod test {
 
     #[test]
     fn test_header_from_raw_invalid() {
-        let mut init = include_bytes!("../test/data/base.dtb").to_vec();
+        // Only provide the header bytes, with a zeroed magic. The header is rejected based on the
+        // magic alone, so no other fields are used and nothing past the header is read.
+        let mut init = include_bytes!("../test/data/base.dtb")[..FDT_HEADER_SIZE].to_vec();
         init[..4].fill(0);
-        // Pointer points to `init`
+        // SAFETY: `init` is valid to read for `FDT_HEADER_SIZE` bytes and outlives the returned
+        // references. Its magic is invalid, so the header is invalid and no further bytes must be
+        // readable.
         assert!(unsafe { FdtHeader::from_raw(init.as_ptr()).is_err() });
     }
 

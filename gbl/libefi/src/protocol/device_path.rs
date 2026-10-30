@@ -354,6 +354,7 @@ mod test {
             ]
             .concat()
             .concat();
+            // SAFETY: `buf` contains a valid, END-terminated device path that outlives `protocol`.
             let protocol = unsafe {
                 let efi_protocol = buf.as_mut_ptr() as *mut EfiDevicePathProtocol;
                 generate_protocol::<DevicePathProtocol>(&efi_entry, efi_protocol.as_mut().unwrap())
@@ -361,8 +362,10 @@ mod test {
 
             assert_eq!(size_of::<EfiDevicePathProtocol>(), 4);
             assert_eq!(size_of::<EfiGuid>(), 16);
+            // SAFETY: `protocol` points to the valid, END-terminated device path in `buf`.
+            let nodes = unsafe { EfiDevicePathNodeIter::new(protocol.interface_ptr()) };
             assert_eq!(
-                unsafe { EfiDevicePathNodeIter::new(protocol.interface_ptr()) }.collect::<Vec<_>>(),
+                nodes.collect::<Vec<_>>(),
                 vec![
                     (&dp1, dp1_data.as_ref()),
                     (&dp2, dp2_data.as_ref()),
@@ -410,6 +413,7 @@ mod test {
             ]
             .concat()
             .concat();
+            // SAFETY: `buf` contains a valid, END-terminated device path that outlives `protocol`.
             let protocol = unsafe {
                 let efi_protocol = buf.as_mut_ptr() as *mut EfiDevicePathProtocol;
                 generate_protocol::<DevicePathProtocol>(&efi_entry, efi_protocol.as_mut().unwrap())
@@ -435,6 +439,7 @@ mod test {
             };
 
             let mut buf = [dp1.as_bytes(), dp_end.as_bytes()].concat();
+            // SAFETY: `buf` contains a valid, END-terminated device path that outlives `protocol`.
             let protocol = unsafe {
                 let efi_protocol = buf.as_mut_ptr() as *mut EfiDevicePathProtocol;
                 generate_protocol::<DevicePathProtocol>(&efi_entry, efi_protocol.as_mut().unwrap())

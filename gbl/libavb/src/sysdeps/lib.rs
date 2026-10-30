@@ -33,9 +33,8 @@ pub extern "C" fn avb_abort() -> ! {
 #[inline(always)]
 #[allow(unused_attributes)]
 pub extern "C" fn avb_malloc_(size: usize) -> *mut c_void {
-    // SAFETY: libavb calls are compatible with libc counterparts, alignment the same as
-    // avb_free
-    unsafe { gbl_malloc(size, AVB_MALLOC_ALIGNMENT) }
+    // libavb calls are compatible with libc counterparts, alignment the same as avb_free.
+    gbl_malloc(size, AVB_MALLOC_ALIGNMENT)
 }
 
 /// Frees memory allocated by [avb_malloc_].

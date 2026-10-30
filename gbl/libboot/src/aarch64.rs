@@ -61,6 +61,8 @@ extern "C" {
 // TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
 /// Flush all data cache for the given buffer.
 pub fn flush_dcache_buffer(buf: &[u8]) {
+    // SAFETY: `flush_dcache_range()` only performs cache maintenance on the given range, which is
+    // a valid buffer borrowed for the duration of the call.
     unsafe { flush_dcache_range(buf.as_ptr() as usize, buf.len()) }
     // SAFETY: Assembly code for instruction synchronization.
     unsafe { asm!("isb") };

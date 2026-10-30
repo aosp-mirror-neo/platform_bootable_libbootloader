@@ -1891,6 +1891,7 @@ mod test {
     ) -> EfiStatus {
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().get_memory_map_trace;
+            // SAFETY: function safety docs require valid `memory_map_size`.
             trace.inputs.push_back((unsafe { *memory_map_size }, memory_map));
             let status = trace.statuses.pop_front().unwrap_or(EFI_STATUS_SUCCESS);
             // On EFI_BUFFER_TOO_SMALL the size written is the capacity the firmware needs.

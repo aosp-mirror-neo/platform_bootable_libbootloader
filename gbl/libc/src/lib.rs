@@ -133,12 +133,12 @@ impl PrefixData {
 /// Extended version of void *malloc(size_t size) with ptr alignment configuration support.
 /// Libraries may have a different alignment requirements.
 ///
-/// # Safety
+/// # Returns
 ///
-/// * Returns a valid pointer to a memory block of `size` bytes, aligned to `alignment`, or null
-///   on failure.
+/// * A valid pointer to a memory block of `size` bytes, aligned to `alignment`, or null on
+///   failure.
 #[no_mangle]
-pub unsafe extern "C" fn gbl_malloc(request_size: usize, alignment: usize) -> *mut c_void {
+pub extern "C" fn gbl_malloc(request_size: usize, alignment: usize) -> *mut c_void {
     (|| {
         let mut prefix = PrefixData::default();
 
@@ -235,7 +235,7 @@ pub unsafe extern "C" fn gbl_realloc(
     alignment: usize,
 ) -> *mut c_void {
     if ptr.is_null() {
-        return unsafe { gbl_malloc(new_size, alignment) };
+        return gbl_malloc(new_size, alignment);
     }
     if new_size == 0 {
         // SAFETY:
@@ -253,8 +253,7 @@ pub unsafe extern "C" fn gbl_realloc(
         return ptr;
     }
 
-    // SAFETY: checking for null return value
-    let new_ptr = unsafe { gbl_malloc(new_size, alignment) };
+    let new_ptr = gbl_malloc(new_size, alignment);
     if new_ptr.is_null() {
         return null_mut();
     }
@@ -348,8 +347,7 @@ mod tests {
 
     #[test]
     fn test_gbl_realloc_free() {
-        // SAFETY: checking returned value is not null before using.
-        let ptr = unsafe { gbl_malloc(100, 8) };
+        let ptr = gbl_malloc(100, 8);
         assert!(!ptr.is_null());
         // SAFETY: ptr is valid pointer not null after check.
         let new_ptr = unsafe { gbl_realloc(ptr, 0, 8) };
@@ -359,8 +357,7 @@ mod tests {
 
     #[test]
     fn test_gbl_realloc_grow() {
-        // SAFETY: checking returned value is not null before using.
-        let ptr = unsafe { gbl_malloc(10, 8) };
+        let ptr = gbl_malloc(10, 8);
         assert!(!ptr.is_null());
         // Fill with sequential data
         for i in 0..10 {
@@ -386,8 +383,7 @@ mod tests {
 
     #[test]
     fn test_gbl_realloc_shrink() {
-        // SAFETY: checking returned value is not null before using.
-        let ptr = unsafe { gbl_malloc(100, 8) };
+        let ptr = gbl_malloc(100, 8);
         assert!(!ptr.is_null());
         // Fill with sequential data
         for i in 0..100 {
@@ -416,8 +412,7 @@ mod tests {
         new_size: usize,
         new_align: usize,
     ) {
-        // SAFETY: checking returned value is not null before using.
-        let ptr = unsafe { gbl_malloc(old_size, old_align) };
+        let ptr = gbl_malloc(old_size, old_align);
         assert!(!ptr.is_null());
         // Fill with sequential data
         for i in 0..old_size {
