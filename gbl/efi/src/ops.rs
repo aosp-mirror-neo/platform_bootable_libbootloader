@@ -749,28 +749,32 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
                     .map(|component| dt_component_to_efi_dt(component))
                     .collect();
 
-                protocol.select_device_trees(&mut uefi_components[..])?;
+                match protocol.select_device_trees(&mut uefi_components[..]) {
+                    Ok(()) => {
+                        // Propagate selections to the components_registry.
+                        components_registry
+                            .components_mut()
+                            .zip(uefi_components.iter_mut())
+                            .enumerate()
+                            .for_each(|(index, (component, uefi_component))| {
+                                if uefi_component.selected {
+                                    efi_println!(
+                                        self.efi_entry,
+                                        "Device tree component at index {} got selected by UEFI \
+                                        call. Source: {}. Type: {}",
+                                        index,
+                                        component.source_metadata.source,
+                                        component.component_type,
+                                    );
+                                }
+                                component.selected = uefi_component.selected;
+                            });
 
-                // Propagate selections to the components_registry.
-                components_registry
-                    .components_mut()
-                    .zip(uefi_components.iter_mut())
-                    .enumerate()
-                    .for_each(|(index, (component, uefi_component))| {
-                        if uefi_component.selected {
-                            efi_println!(
-                                self.efi_entry,
-                                "Device tree component at index {} got selected by UEFI call. \
-                                Source: {}. Type: {}",
-                                index,
-                                component.source_metadata.source,
-                                component.component_type,
-                            );
-                        }
-                        component.selected = uefi_component.selected;
-                    });
-
-                Ok(())
+                        Ok(())
+                    }
+                    Err(Error::Unsupported) => components_registry.autoselect(),
+                    Err(e) => Err(e),
+                }
             }
             // Protocol is optional.
             Err(Error::NotFound) => components_registry.autoselect(),
@@ -2512,6 +2516,44 @@ mod test {
             .unwrap();
 
         assert_eq!(ops.select_device_trees(&mut registry), Ok(()));
+    }
+
+    #[test]
+    fn test_select_device_tree_protocol_unsupported() {
+        let base = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblOsConfigurationProtocol>()
+            .return_once(move || {
+                let mut os_configuration = GblOsConfigurationProtocol::default();
+
+                os_configuration
+                    .expect_select_device_trees()
+                    .return_once(move |_components| Err(Error::Unsupported));
+
+                Ok(os_configuration)
+            });
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+
+        let mut registry = DtComponentsRegistry::new();
+        let current_buffer = &mut buffer[..];
+        registry
+            .append(
+                &mut ops,
+                DtComponentSource::VendorBoot,
+                DtComponentType::BaseDt,
+                &base,
+                current_buffer,
+            )
+            .unwrap();
+
+        assert_eq!(ops.select_device_trees(&mut registry), Ok(()));
+        assert!(registry.components().all(|component| component.selected));
     }
 
     /// Helper for testing `DtFixupProtocol.fixup`
