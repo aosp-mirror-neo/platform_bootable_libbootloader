@@ -64,11 +64,12 @@ mod network_fastboot {
     pub(super) struct EfiFastbootTcpTransport<'a, 'b, 'c> {
         socket: &'c mut EfiTcpSocket<'a, 'b>,
         accept_new_state: AcceptNewState,
+        is_fuchsia: bool,
     }
 
     impl<'a, 'b, 'c> EfiFastbootTcpTransport<'a, 'b, 'c> {
-        pub(super) fn new(socket: &'c mut EfiTcpSocket<'a, 'b>) -> Self {
-            Self { socket, accept_new_state: AcceptNewState::None }
+        pub(super) fn new(socket: &'c mut EfiTcpSocket<'a, 'b>, is_fuchsia: bool) -> Self {
+            Self { socket, accept_new_state: AcceptNewState::None, is_fuchsia }
         }
     }
 
@@ -96,8 +97,9 @@ mod network_fastboot {
                         .listen(FASTBOOT_TCP_PORT)
                         .inspect_err(|e| efi_println!(efi_entry, "TCP listen error: {:?}", e));
 
-                    // TODO(b/368647237): Enable only in Fuchsia context.
-                    self.socket.broadcast_fuchsia_fastboot_mdns();
+                    if self.is_fuchsia {
+                        self.socket.broadcast_fuchsia_fastboot_mdns();
+                    }
                     AcceptNewState::Listening
                 }
                 AcceptNewState::Listening => {
@@ -116,8 +118,9 @@ mod network_fastboot {
                             .listen(FASTBOOT_TCP_PORT)
                             .inspect_err(|e| efi_println!(efi_entry, "TCP listen error: {:?}", e));
 
-                        // TODO(b/368647237): Enable only in Fuchsia context.
-                        self.socket.broadcast_fuchsia_fastboot_mdns();
+                        if self.is_fuchsia {
+                            self.socket.broadcast_fuchsia_fastboot_mdns();
+                        }
                         AcceptNewState::Listening
                     } else {
                         AcceptNewState::Listening
@@ -287,6 +290,7 @@ impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
 pub(crate) fn efi_gbl_fastboot_entry<'a, G: GblOps<'a>>(
     entry: &EfiEntry,
     fb: GblFastbootEntry<'_, G>,
+    #[cfg_attr(not(feature = "gbl_dev"), allow(unused_variables))] is_fuchsia: bool,
 ) {
     // Not expected to fail since this function is the only user of the buffer.
     let mut buffer = FastbootBuffer::new(entry).unwrap();
@@ -356,7 +360,7 @@ pub(crate) fn efi_gbl_fastboot_entry<'a, G: GblOps<'a>>(
         .inspect_err(|e| efi_println!(entry, "Failed to start EFI network. {:?}.", e))
         .ok();
     #[cfg(feature = "gbl_dev")]
-    let tcp = tcp.as_mut().map(EfiFastbootTcpTransport::new);
+    let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v, is_fuchsia));
 
     if !transport_protocols.is_empty() || tcp.is_some() {
         // LINT.IfChange

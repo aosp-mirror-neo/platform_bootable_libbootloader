@@ -70,7 +70,7 @@ pub fn is_fuchsia_gpt(disks: &[EfiGblDisk]) -> Result<()> {
 pub fn efi_fuchsia_load<'a>(ops: &mut Ops, load: &'a mut [u8]) -> Result<LoadedVerifiedZircon<'a>> {
     let entry = ops.efi_entry;
     gbl_println!(ops, "Try booting as Fuchsia/Zircon");
-    zircon_main(ops, load, |fb| efi_gbl_fastboot_entry(entry, fb))
+    zircon_main(ops, load, |fb| efi_gbl_fastboot_entry(entry, fb, true))
 }
 
 /// Exits boot services and boots loaded fuchsia images.
