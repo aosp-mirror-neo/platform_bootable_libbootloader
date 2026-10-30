@@ -1117,9 +1117,8 @@ mod test {
     use efi_mocks::{protocol::gbl_efi_avb::GblAvbProtocol, MockEfi};
     use libgbl::{
         device_tree::{DtComponentSourceMetadata, SelectedDtComponent, SelectedDtComponents},
-        gbl_avb::{Critical, Fdr, Verification},
+        gbl_avb::{Critical, Fdr, PartitionName, Verification},
     };
-    use libutils::cstr_buffer;
     use mockall::predicate::eq;
     use std::slice;
 
@@ -1276,19 +1275,19 @@ mod test {
     fn ops_avb_read_partition_attributes_raw_success() {
         let partitions = [
             SpecializedPartition {
-                name_buffer: cstr_buffer("boot"),
+                name: PartitionName::try_from("boot").unwrap(),
                 verification: Some(Verification::Required),
                 fdr: Fdr::No,
                 critical: Critical::No,
             },
             SpecializedPartition {
-                name_buffer: cstr_buffer("vendor_boot"),
+                name: PartitionName::try_from("vendor_boot").unwrap(),
                 verification: Some(Verification::IfExists),
                 fdr: Fdr::Yes,
                 critical: Critical::Yes,
             },
             SpecializedPartition {
-                name_buffer: cstr_buffer(&"a".repeat(28)),
+                name: PartitionName::try_from("a".repeat(28).as_str()).unwrap(),
                 verification: None,
                 fdr: Fdr::Yes,
                 critical: Critical::No,

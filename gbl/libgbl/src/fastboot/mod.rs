@@ -749,7 +749,7 @@ where
                     let (fdr, critical) = self
                         .gbl_ops
                         .avb_read_partition_attributes()?
-                        .find(|p| p.name_cstr().to_bytes() == basename.as_bytes())
+                        .find(|p| p.name.as_str() == basename)
                         .map(|p| (p.fdr, p.critical))
                         .unwrap_or((Fdr::No, Critical::No));
                     if critical == Critical::Yes {
@@ -1289,7 +1289,7 @@ where
         self.sync_tasks(responder, "Userdata wipe").await;
 
         for attribute in attributes.filter(|p| p.fdr == Fdr::Yes) {
-            let basename = attribute.name_cstr().to_str().unwrap();
+            let basename = attribute.name.as_str();
             let block_ids_and_parts = match self.resolve_slotted_partitions(
                 Some(basename),
                 None,
@@ -2126,7 +2126,7 @@ pub(crate) mod test {
             default_test_gbl_ops,
         },
         constants::{KiB, MiB, KERNEL_ALIGNMENT},
-        gbl_avb::{AvbDeviceStatus, LoadPartition, SpecializedPartition},
+        gbl_avb::{AvbDeviceStatus, LoadPartition, PartitionName, SpecializedPartition},
         misc::test::read_bootloader_message,
         ops::{
             test::{
@@ -2152,7 +2152,6 @@ pub(crate) mod test {
     use libbuild_number::BUILD_NUMBER;
     use liberror::Error;
     use libtestutils::AlignedBuffer;
-    use libutils::cstr_buffer;
     use spin::{Mutex, MutexGuard};
     use std::{
         cell::RefCell,
@@ -3103,7 +3102,7 @@ pub(crate) mod test {
         gbl_ops.current_slot = Some(Ok(1));
         // Mark the "critical" partition as critically-locked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -3153,7 +3152,7 @@ pub(crate) mod test {
         gbl_ops.current_slot = Some(Ok(1));
         // Mark the "critical" partition as critically-locked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -3219,7 +3218,7 @@ pub(crate) mod test {
         // If any partition is critically-locked - even partitions that don't currently exist
         // on disk - then raw disk access is critically-locked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -3513,7 +3512,7 @@ pub(crate) mod test {
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
         // Mark "userdata" as requiring FDR.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("userdata"),
+            name: PartitionName::try_from("userdata").unwrap(),
             fdr: Fdr::Yes,
             ..Default::default()
         }]));
@@ -3589,7 +3588,7 @@ pub(crate) mod test {
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
         // Mark "userdata" as requiring FDR.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("userdata"),
+            name: PartitionName::try_from("userdata").unwrap(),
             fdr: Fdr::Yes,
             ..Default::default()
         }]));
@@ -4725,7 +4724,7 @@ pub(crate) mod test {
         gbl_ops.avb_device_status.is_unlocked = true;
         gbl_ops.avb_device_status.is_unlocked_critical = false;
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -4778,7 +4777,7 @@ pub(crate) mod test {
         gbl_ops.avb_device_status.is_unlocked = true;
         gbl_ops.avb_device_status.is_unlocked_critical = true;
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -4832,7 +4831,7 @@ pub(crate) mod test {
         gbl_ops.avb_device_status.is_unlocked = true;
         gbl_ops.avb_device_status.is_unlocked_critical = false;
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -4876,7 +4875,7 @@ pub(crate) mod test {
         gbl_ops.avb_device_status.is_unlocked = true;
         gbl_ops.avb_device_status.is_unlocked_critical = true;
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("critical"),
+            name: PartitionName::try_from("critical").unwrap(),
             critical: Critical::Yes,
             ..Default::default()
         }]));
@@ -5791,7 +5790,7 @@ pub(crate) mod test {
         let mut fdr_handler = fdr_counter.handler();
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("userdata"),
+            name: PartitionName::try_from("userdata").unwrap(),
             fdr: Fdr::Yes,
             ..Default::default()
         }]));
@@ -5903,12 +5902,12 @@ pub(crate) mod test {
         // Mark "userdata" and "metadata" as FDR-linked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![
             SpecializedPartition {
-                name_buffer: cstr_buffer("userdata"),
+                name: PartitionName::try_from("userdata").unwrap(),
                 fdr: Fdr::Yes,
                 ..Default::default()
             },
             SpecializedPartition {
-                name_buffer: cstr_buffer("metadata"),
+                name: PartitionName::try_from("metadata").unwrap(),
                 fdr: Fdr::Yes,
                 ..Default::default()
             },
@@ -5972,7 +5971,7 @@ pub(crate) mod test {
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
         // Mark "userdata" as FDR-linked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
-            name_buffer: cstr_buffer("userdata"),
+            name: PartitionName::try_from("userdata").unwrap(),
             fdr: Fdr::Yes,
             ..Default::default()
         }]));

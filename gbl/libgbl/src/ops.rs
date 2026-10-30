@@ -21,7 +21,7 @@ use crate::{
     gbl_avb::{
         state::{KeyValidationStatus, VerificationStatus},
         ArrayMaxSpecializedParts, AvbDeviceStatus, AvbPartition, AvbProperty, Fdr, LoadPartition,
-        SpecializedPartition,
+        PartitionName, SpecializedPartition,
     },
     gbl_println,
     metrics::{FirmwareVersionMetrics, GblMetrics, GblTime},
@@ -42,7 +42,7 @@ use core::{
 use libprofile::ProfileBackend;
 #[cfg(feature = "fuchsia")]
 use libutils::aligned_subslice;
-use libutils::{buffer_pool::BufferPool, cstr_buffer};
+use libutils::buffer_pool::BufferPool;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
@@ -340,17 +340,17 @@ pub trait GblOps<'a> {
         // If these partitions aren't explicitly provided, they are added to the end.
         let mut default_partitions = ArrayVec::from([
             SpecializedPartition {
-                name_buffer: cstr_buffer("userdata"),
+                name: PartitionName::try_from("userdata").map_err(|_| AvbIoError::Io)?,
                 fdr: Fdr::Yes,
                 ..Default::default()
             },
             SpecializedPartition {
-                name_buffer: cstr_buffer("metadata"),
+                name: PartitionName::try_from("metadata").map_err(|_| AvbIoError::Io)?,
                 fdr: Fdr::Yes,
                 ..Default::default()
             },
         ]);
-        default_partitions.retain(|p| !attributes.iter().any(|a| a.name_cstr() == p.name_cstr()));
+        default_partitions.retain(|p| !attributes.iter().any(|a| a.name == p.name));
 
         Ok(attributes.into_iter().chain(default_partitions.into_iter()))
     }
@@ -2358,19 +2358,23 @@ pub(crate) mod test {
         assert!(gbl_ops.avb_read_partition_attributes_raw().unwrap().is_empty());
     }
 
-    const DEFAULT_USERDATA_ATTRIBUTES: SpecializedPartition = SpecializedPartition {
-        name_buffer: cstr_buffer("userdata"),
-        verification: None,
-        fdr: Fdr::Yes,
-        critical: Critical::No,
-    };
+    fn default_userdata_attributes() -> SpecializedPartition {
+        SpecializedPartition {
+            name: PartitionName::try_from("userdata").unwrap(),
+            verification: None,
+            fdr: Fdr::Yes,
+            critical: Critical::No,
+        }
+    }
 
-    const DEFAULT_METADATA_ATTRIBUTES: SpecializedPartition = SpecializedPartition {
-        name_buffer: cstr_buffer("metadata"),
-        verification: None,
-        fdr: Fdr::Yes,
-        critical: Critical::No,
-    };
+    fn default_metadata_attributes() -> SpecializedPartition {
+        SpecializedPartition {
+            name: PartitionName::try_from("metadata").unwrap(),
+            verification: None,
+            fdr: Fdr::Yes,
+            critical: Critical::No,
+        }
+    }
 
     #[test]
     fn avb_read_partition_attributes_not_implemented() {
@@ -2380,7 +2384,7 @@ pub(crate) mod test {
 
         assert_eq!(
             gbl_ops.avb_read_partition_attributes().unwrap().collect::<Vec<_>>(),
-            vec![DEFAULT_USERDATA_ATTRIBUTES, DEFAULT_METADATA_ATTRIBUTES]
+            vec![default_userdata_attributes(), default_metadata_attributes()]
         );
     }
 
@@ -2392,7 +2396,7 @@ pub(crate) mod test {
 
         assert_eq!(
             gbl_ops.avb_read_partition_attributes().unwrap().collect::<Vec<_>>(),
-            vec![DEFAULT_USERDATA_ATTRIBUTES, DEFAULT_METADATA_ATTRIBUTES]
+            vec![default_userdata_attributes(), default_metadata_attributes()]
         );
     }
 
@@ -2403,7 +2407,7 @@ pub(crate) mod test {
 
         // Unrelated partition attributes should be left in place.
         let other_attributes = SpecializedPartition {
-            name_buffer: cstr_buffer("other_partition"),
+            name: PartitionName::try_from("other_partition").unwrap(),
             verification: Some(Verification::Required),
             fdr: Fdr::Yes,
             critical: Critical::Yes,
@@ -2412,7 +2416,7 @@ pub(crate) mod test {
 
         assert_eq!(
             gbl_ops.avb_read_partition_attributes().unwrap().collect::<Vec<_>>(),
-            vec![other_attributes, DEFAULT_USERDATA_ATTRIBUTES, DEFAULT_METADATA_ATTRIBUTES]
+            vec![other_attributes, default_userdata_attributes(), default_metadata_attributes()]
         );
     }
 
@@ -2423,7 +2427,7 @@ pub(crate) mod test {
 
         // The device should be able to override the default FDR behavior.
         let modified_userdata_attributes = SpecializedPartition {
-            name_buffer: cstr_buffer("userdata"),
+            name: PartitionName::try_from("userdata").unwrap(),
             fdr: Fdr::No,
             ..Default::default()
         };
@@ -2432,7 +2436,7 @@ pub(crate) mod test {
 
         assert_eq!(
             gbl_ops.avb_read_partition_attributes().unwrap().collect::<Vec<_>>(),
-            vec![modified_userdata_attributes, DEFAULT_METADATA_ATTRIBUTES]
+            vec![modified_userdata_attributes, default_metadata_attributes()]
         );
     }
 }

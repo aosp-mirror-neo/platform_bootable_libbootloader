@@ -173,26 +173,6 @@ macro_rules! snprintf {
     };
 }
 
-/// Creates a byte buffer initialized with the given contents and a nul-terminator.
-///
-/// # Panics
-///
-/// Panics if the given buffer size can't contain the contents.
-pub const fn cstr_buffer<const N: usize>(contents: &str) -> [u8; N] {
-    let contents = contents.as_bytes();
-
-    // Must be enough space for `contents` and a nul-terminator.
-    assert!(contents.len() < N);
-
-    let mut buffer = [0; N];
-    let mut i = 0;
-    while i < contents.len() {
-        buffer[i] = contents[i];
-        i += 1;
-    }
-    buffer
-}
-
 /// Returns the stack pointer register
 pub fn get_sp() -> usize {
     let sp: usize;
@@ -363,29 +343,5 @@ mod test {
         let mut bytes = [0u8; 4];
         assert_eq!(snprintf!(bytes, "abcde"), "abcd");
         assert_eq!(&bytes, b"abcd");
-    }
-
-    #[test]
-    fn cstr_buffer_success() {
-        let buffer = cstr_buffer::<4>("foo");
-        assert_eq!(&buffer, b"foo\0");
-    }
-
-    #[test]
-    fn cstr_buffer_extra_space_success() {
-        let buffer = cstr_buffer::<6>("foo");
-        assert_eq!(&buffer, b"foo\0\0\0");
-    }
-
-    #[test]
-    #[should_panic]
-    fn cstr_buffer_overflow_panics() {
-        let _ = cstr_buffer::<2>("foo");
-    }
-
-    #[test]
-    #[should_panic]
-    fn cstr_buffer_overflow_terminator_panics() {
-        let _ = cstr_buffer::<3>("foo");
     }
 }

@@ -854,7 +854,7 @@ pub(crate) mod tests {
         fastboot::test::{make_expected_transport_out, SharedTestListener},
         gbl_avb::{
             state::{BootStateColor, KeyValidationStatus},
-            AvbPartition, AvbProperty, Critical, Fdr, SpecializedPartition,
+            AvbPartition, AvbProperty, Critical, Fdr, PartitionName, SpecializedPartition,
         },
         metrics::FirmwareVersion,
         misc::test::read_bootloader_message,
@@ -873,7 +873,6 @@ pub(crate) mod tests {
     use fdt::std_props;
     use libbuild_number::{BUILD_BRANCH, BUILD_NUMBER, BUILD_REVISION, VERSION};
     use libtestutils::AlignedBuffer;
-    use libutils::cstr_buffer;
     use std::{
         ascii::escape_default,
         cell::RefCell,
@@ -1280,7 +1279,7 @@ pub(crate) mod tests {
                     .filter(|p| p.verification == Some(Verification::Required))
                 {
                     assert!(
-                        partitions.iter().any(|p| p.name == specialized_part.name_cstr()),
+                        partitions.iter().any(|p| p.name == specialized_part.name.as_cstr()),
                         "Requested partition: {:?} isn't reported by handle_verification_result",
                         specialized_part
                     );
@@ -1451,7 +1450,7 @@ pub(crate) mod tests {
                 &partitions,
                 &[
                     SpecializedPartition {
-                        name_buffer: cstr_buffer("fw"),
+                        name: PartitionName::try_from("fw").unwrap(),
                         verification: Some(Verification::Required),
                         ..Default::default()
                     },
@@ -1462,17 +1461,17 @@ pub(crate) mod tests {
                     // separate tests just for this would require more boilerplate than it's worth
                     // so just leave it here for now.
                     SpecializedPartition {
-                        name_buffer: cstr_buffer("optional_and_not_present"),
+                        name: PartitionName::try_from("optional_and_not_present").unwrap(),
                         verification: Some(Verification::IfExists),
                         ..Default::default()
                     },
                     SpecializedPartition {
-                        name_buffer: cstr_buffer("fdr"),
+                        name: PartitionName::try_from("fdr").unwrap(),
                         fdr: Fdr::Yes,
                         ..Default::default()
                     },
                     SpecializedPartition {
-                        name_buffer: cstr_buffer("critical"),
+                        name: PartitionName::try_from("critical").unwrap(),
                         critical: Critical::Yes,
                         ..Default::default()
                     },
