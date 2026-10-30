@@ -19,9 +19,9 @@ use crate::{
     protocol::{Protocol, ProtocolInfo, Requirement},
     versioned_protocol,
 };
+use arrayvec::ArrayVec;
 use core::{
     ffi::{c_void, CStr},
-    ptr::null,
     slice::from_raw_parts,
     str::from_utf8,
 };
@@ -57,14 +57,14 @@ impl Protocol<'_, GblFastbootProtocol> {
     pub fn get_var<'a>(
         &self,
         var: &CStr,
-        args: impl Iterator<Item = &'a CStr> + Clone,
+        args: impl Iterator<Item = &'a CStr>,
         out: &mut [u8],
     ) -> Result<usize> {
-        let mut args_arr = [null(); MAX_ARGS];
-        let num_args = safemath::SafeNum::from(1) + args.clone().count();
-        let args_arr = args_arr.get_mut(..num_args.try_into()?).ok_or(Error::InvalidInput)?;
-        args_arr[0] = var.as_ptr();
-        args_arr[1..].iter_mut().zip(args).for_each(|(l, r)| *l = r.as_ptr());
+        let mut args_arr = ArrayVec::<_, MAX_ARGS>::new();
+        args_arr.try_push(var.as_ptr()).map_err(|_| Error::InvalidInput)?;
+        for arg in args {
+            args_arr.try_push(arg.as_ptr()).map_err(|_| Error::InvalidInput)?;
+        }
         let mut bufsize = out.len();
         // SAFETY:
         // `self.interface_ptr()` points to a valid object established by `Protocol::new()`.
@@ -167,15 +167,15 @@ impl Protocol<'_, GblFastbootProtocol> {
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.command_exec()`
     pub fn command_exec<'a>(
         &self,
-        args: impl Iterator<Item = &'a CStr> + Clone,
+        args: impl Iterator<Item = &'a CStr>,
         download: &mut [u8],
         download_used: usize,
         mut sender: impl FnMut(GblEfiFastbootMessageType, &str) -> Result<()>,
     ) -> Result<GblEfiFastbootCommandExecResult> {
-        // Consider using ArrayVec to simplify the logic and the Clone bound.
-        let mut args_arr = [null(); MAX_ARGS];
-        let args_arr = args_arr.get_mut(..args.clone().count()).ok_or(Error::InvalidInput)?;
-        args_arr.iter_mut().zip(args).for_each(|(l, r)| *l = r.as_ptr());
+        let mut args_arr = ArrayVec::<_, MAX_ARGS>::new();
+        for arg in args {
+            args_arr.try_push(arg.as_ptr()).map_err(|_| Error::InvalidInput)?;
+        }
         let mut out_impl = GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_DEFAULT_IMPL;
         struct SenderCtx<'a>(&'a mut dyn FnMut(GblEfiFastbootMessageType, &str) -> Result<()>);
 

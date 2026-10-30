@@ -260,7 +260,7 @@ impl<R: BlockIo> Provider<'_, EfiBlockIoProtocol, R> {
 mod test {
     use super::*;
     use crate::protocol::test::{buffer_range, TestProtocolTunnel};
-    use std::{iter::zip, mem::transmute};
+    use std::iter::zip;
 
     const TEST_REVISION: u64 = 0x1234;
 
@@ -348,15 +348,8 @@ mod test {
         let tunnel = TestProtocolTunnel::new(&mock);
 
         assert_eq!(tunnel.client().read_blocks(TEST_MEDIA_ID, TEST_LBA, &mut buffer), Ok(()));
-        // SAFETY:
-        // * `[MaybeUninit<u8>]` is safe to transmute to `u8` once the data has
-        //   been initialized
-        // * `read_blocks()` returning successfully means the buffer been fully
-        //   initialized
-        //
-        // TODO: use `MaybeUninit::array_assume_init()` instead of
-        // `mem::transmute()` once it has stabilized.
-        let buffer = unsafe { transmute::<[MaybeUninit<u8>; 8], [u8; 8]>(buffer) };
+        // SAFETY: `read_blocks()` returning `Ok(())` guarantees `buffer` has been initialized.
+        let buffer = buffer.map(|b| unsafe { b.assume_init() });
         assert_eq!(buffer, TEST_BUFFER);
     }
 

@@ -26,8 +26,13 @@
 #ifndef __LOAD_FILE2_PROTOCOL_H__
 #define __LOAD_FILE2_PROTOCOL_H__
 
+#include <uefi/gbl_protocol_utils.h>
 #include <uefi/protocols/device_path_protocol.h>
 #include <uefi/types.h>
+
+// {4006c0c1-fcb3-403e-996d-4a6c8724e06d}
+EFI_GUID(EFI_LOAD_FILE2_PROTOCOL_GUID, 0x4006c0c1, 0xfcb3, 0x403e, 0x99, 0x6d,
+         0x4a, 0x6c, 0x87, 0x24, 0xe0, 0x6d);
 
 typedef struct EfiLoadFile2Protocol {
   EfiStatus (*load_file)(struct EfiLoadFile2Protocol* self,
