@@ -128,16 +128,6 @@ additional memory for constructing commandline argument strings and loading
 vbmeta images from disk and any other vendor required partitions for
 verification. The memory is allocated via EFI memory allocation.
 
-### Hash2 Protocol Structures
-
-TODO(b/439659986): embed the protocol structures in AVB context structures.
-
-If the EFI Hash2 protocol is available, GBL uses the Hash2 protocol as part of
-AVB verification to calculate image digests. Data structures involved in the
-calculation are currently allocated dynamically to avoid problems with structure
-definitions between Rust and C. The memory is allocated via EFI memory
-allocation.
-
 [get_boot_buffer]:
   ./gbl_efi_boot_memory_protocol.md#gbl_efi_boot_memory_protocol_getbootbuffer
 [get_partition_buffer]:

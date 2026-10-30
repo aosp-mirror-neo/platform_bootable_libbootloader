@@ -24,20 +24,20 @@
 
 class EfiShaTraces {
  public:
-  explicit EfiShaTraces(void* h)
-      : hasher(h),
+  explicit EfiShaTraces(bool success)
+      : init_success(success),
         init_call_count(0),
         update_call_count(0),
         final_call_count(0) {}
 
-  EfiShaTraces() : EfiShaTraces(nullptr) {}
+  EfiShaTraces() : EfiShaTraces(false) {}
   EfiShaTraces(EfiShaTraces const&) = default;
   EfiShaTraces(EfiShaTraces&&) = default;
 
   EfiShaTraces& operator=(EfiShaTraces const&) = default;
   EfiShaTraces& operator=(EfiShaTraces&&) = default;
 
-  void* hasher;
+  bool init_success;
   uint32_t init_call_count;
 
   uint32_t update_call_count;
@@ -51,24 +51,26 @@ constexpr std::string_view MESSAGE =
 thread_local EfiShaTraces SHA256_TRACES;
 
 extern "C" {
-void* efi_sha256_init() {
+bool efi_sha256_init(EfiHasherStorage* hasher) {
   SHA256_TRACES.init_call_count++;
-  return SHA256_TRACES.hasher;
+  return SHA256_TRACES.init_success;
 }
 
-void efi_sha256_update(void* hasher, uint8_t const* data, size_t len) {
+void efi_sha256_update(EfiHasherStorage* hasher, uint8_t const* data,
+                       size_t len) {
   SHA256_TRACES.update_call_count++;
 }
 
-void efi_sha256_final(void** hasher, uint8_t out[AVB_SHA256_DIGEST_SIZE]) {
+void efi_sha256_final(EfiHasherStorage* hasher,
+                      uint8_t out[AVB_SHA256_DIGEST_SIZE]) {
   SHA256_TRACES.final_call_count++;
 }
 }
 
 TEST(EfiShaTest, Sha256Ssl) {
   AvbSHA256Ctx ctx;
-  // Passing a null ptr to the trace means that avb_sha256_init considers the
-  // attempt to make a Hasher has failed and falls back to a BoringSSL
+  // Returning false from efi_sha256_init means that avb_sha256_init considers
+  // the attempt to make a Hasher to have failed and falls back to a BoringSSL
   // implementation.
   SHA256_TRACES = EfiShaTraces();
   avb_sha256_init(&ctx);
@@ -92,11 +94,9 @@ TEST(EfiShaTest, Sha256Ssl) {
 
 TEST(EfiShaTest, Sha256Efi) {
   AvbSHA256Ctx ctx;
-  // Making efi_sha256_init return a non-null pointer means
-  // avb_sha256_init uses the Hasher based implementation.
-  // The test implementation only tracks calls,
-  // so the pointer can be any random value.
-  SHA256_TRACES = EfiShaTraces(reinterpret_cast<void*>(0xDEADBEEF));
+  // Making efi_sha256_init return true means avb_sha256_init uses the Hasher
+  // based implementation.
+  SHA256_TRACES = EfiShaTraces(true);
 
   avb_sha256_init(&ctx);
   avb_sha256_update(&ctx, reinterpret_cast<const uint8_t*>(MESSAGE.data()),
@@ -110,24 +110,26 @@ TEST(EfiShaTest, Sha256Efi) {
 
 thread_local EfiShaTraces SHA512_TRACES;
 extern "C" {
-void* efi_sha512_init() {
+bool efi_sha512_init(EfiHasherStorage* hasher) {
   SHA512_TRACES.init_call_count++;
-  return SHA512_TRACES.hasher;
+  return SHA512_TRACES.init_success;
 }
 
-void efi_sha512_update(void* hasher, uint8_t const* data, size_t len) {
+void efi_sha512_update(EfiHasherStorage* hasher, uint8_t const* data,
+                       size_t len) {
   SHA512_TRACES.update_call_count++;
 }
 
-void efi_sha512_final(void** hasher, uint8_t out[AVB_SHA512_DIGEST_SIZE]) {
+void efi_sha512_final(EfiHasherStorage* hasher,
+                      uint8_t out[AVB_SHA512_DIGEST_SIZE]) {
   SHA512_TRACES.final_call_count++;
 }
 }
 
 TEST(EfiShaTest, Sha512Ssl) {
   AvbSHA512Ctx ctx;
-  // Passing a null ptr to the trace means that avb_sha512_init considers the
-  // attempt to make a Hasher has failed and falls back to a BoringSSL
+  // Returning false from efi_sha512_init means that avb_sha512_init considers
+  // the attempt to make a Hasher to have failed and falls back to a BoringSSL
   // implementation.
   SHA512_TRACES = EfiShaTraces();
   avb_sha512_init(&ctx);
@@ -151,11 +153,9 @@ TEST(EfiShaTest, Sha512Ssl) {
 
 TEST(EfiShaTest, Sha512Efi) {
   AvbSHA512Ctx ctx;
-  // Making efi_sha512_init return a non-null pointer means
-  // avb_sha512_init uses the Hasher based implementation.
-  // The test implementation only tracks calls,
-  // so the pointer can be any random value.
-  SHA512_TRACES = EfiShaTraces(reinterpret_cast<void*>(0xDEADBEEF));
+  // Making efi_sha512_init return true means avb_sha512_init uses the Hasher
+  // based implementation.
+  SHA512_TRACES = EfiShaTraces(true);
 
   avb_sha512_init(&ctx);
   avb_sha512_update(&ctx, reinterpret_cast<const uint8_t*>(MESSAGE.data()),

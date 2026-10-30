@@ -16,6 +16,8 @@
 
 use crate::{efi_println, record_protocol, DeviceHandle, EfiEntry};
 use core::{
+    ffi::c_void,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::NonNull,
 };
@@ -376,6 +378,77 @@ impl<'a, T: ProtocolImpl> Protocol<'a, T> {
     /// Returns the reference to EFI entry.
     pub fn efi_entry(&self) -> &'a EfiEntry {
         self.efi_entry
+    }
+
+    /// Detaches this protocol from its `&'a EfiEntry` borrow for storage across C FFI call
+    /// boundaries.
+    pub(crate) fn into_raw(self) -> RawProtocol<T> {
+        let Self { device, interface, efi_entry: _ } = self;
+        RawProtocol { device, interface }
+    }
+
+    /// Reattaches a detached [`RawProtocol`] to a live `EfiEntry`.
+    ///
+    /// # Safety
+    ///
+    /// * `raw` must have been produced by [`Self::into_raw`] during the same active UEFI boot
+    ///   services session, and its underlying protocol interface must remain valid for `'a`.
+    pub(crate) unsafe fn from_raw(raw: RawProtocol<T>, efi_entry: &'a EfiEntry) -> Self {
+        Self { device: raw.device, interface: raw.interface, efi_entry }
+    }
+}
+
+/// Detached [`Protocol`] state without an `&EfiEntry` borrow.
+///
+/// Storing a `Protocol<'static, T>` in a C FFI context that lives across multiple calls would
+/// require handing out a `'static` reference to the global [`EfiEntry`]. If that context persists
+/// across [`exit_boot_services`](crate::exit_boot_services), any embedded `&'static EfiEntry`
+/// becomes a dangling reference to an [`EfiEntry`] across boot services exit.
+///
+/// `RawProtocol` strips the [`EfiEntry`] reference at the FFI boundary so only the raw device
+/// handle and protocol interface are stored between calls. Each subsequent FFI entry point
+/// re-acquires a scoped `&EfiEntry` via [`with_global_efi_entry`](crate::with_global_efi_entry)
+/// (which returns `Err(Error::InvalidState)` once boot services have exited) before reattaching via
+/// [`Protocol::from_raw`] or [`RawProtocol::as_protocol`].
+pub(crate) struct RawProtocol<T: ProtocolImpl> {
+    device: DeviceHandle,
+    interface: T::ImplType,
+}
+
+impl<T: ProtocolInfo> RawProtocol<T> {
+    /// Converts `self` into a pair of raw `(device, interface)` pointers, preserving provenance.
+    pub(crate) fn into_raw_ptrs(self) -> (*mut c_void, *mut c_void) {
+        (self.device.0 as *mut c_void, self.interface.as_ptr().cast::<c_void>())
+    }
+
+    /// Reconstructs a [`RawProtocol`] from a `(device, interface)` pair produced by
+    /// [`Self::into_raw_ptrs`], returning `None` if `interface` is null.
+    ///
+    /// # Safety
+    ///
+    /// * If `interface` is non-null, `(device, interface)` must have been produced by
+    ///   [`Self::into_raw_ptrs`] for `T` during the current UEFI boot services session.
+    pub(crate) unsafe fn from_raw_ptrs(
+        device: *mut c_void,
+        interface: *mut c_void,
+    ) -> Option<Self> {
+        Some(Self {
+            device: DeviceHandle(device),
+            interface: NonNull::new(interface.cast::<T::InterfaceType>())?,
+        })
+    }
+
+    /// Borrows `self` as a [`Protocol`] tied to `efi_entry` without transferring ownership.
+    ///
+    /// # Safety
+    ///
+    /// * `self` must have been produced by [`Protocol::into_raw`] during the same active UEFI boot
+    ///   services session, and its underlying protocol interface must remain valid for `'a`.
+    pub(crate) unsafe fn as_protocol<'a>(
+        &self,
+        efi_entry: &'a EfiEntry,
+    ) -> ManuallyDrop<Protocol<'a, T>> {
+        ManuallyDrop::new(Protocol { device: self.device, interface: self.interface, efi_entry })
     }
 }
 

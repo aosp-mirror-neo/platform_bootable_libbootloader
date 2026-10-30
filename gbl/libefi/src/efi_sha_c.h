@@ -18,51 +18,65 @@
 #ifndef __EFI_SHA_C_H__
 #define __EFI_SHA_C_H__
 
+#include <stdbool.h>
+
 #include "libavb/avb_sha.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/// Allocates and initializes a Hasher<Sha256> and returns its pointer.
-/// This is an opaque pointer for the caller.
-/// Ownership of the Hasher<Sha256> is passed to the caller.
-void* efi_sha256_init();
-
-/// Adds data to the Hasher<Sha256> context.
+/// Initializes a SHA-256 EFI hasher in-place in `hasher` and returns true on
+/// success. Ownership of the hasher is passed to the caller.
 ///
 /// Safety:
-/// * `hasher` points to a valid Hasher<Sha256> that has been initialized.
-/// * `data` is valid to read for `len` bytes.
-void efi_sha256_update(void* hasher, uint8_t const* data, size_t len);
+/// * `hasher` points to writable, properly aligned `EfiHasherStorage`.
+bool efi_sha256_init(EfiHasherStorage* hasher);
 
-/// Returns the digest from a Hasher<Sha256>.
+/// Adds data to an initialized SHA-256 `EfiHasherStorage` context.
 ///
 /// Safety:
-/// * `hasher_ptr` points to a pointer to a valid Hasher<Sha256> that has been
-/// initialized.
-/// * `out` is valid to write for 32 bytes.
-void efi_sha256_final(void** hasher, uint8_t out[AVB_SHA256_DIGEST_SIZE]);
+/// * `hasher` points to an `EfiHasherStorage` initialized by `efi_sha256_init`
+///   during the current boot services session and not yet finalized.
+/// * If `len != 0`, `data` is valid to read for `len` bytes.
+void efi_sha256_update(EfiHasherStorage* hasher, uint8_t const* data,
+                       size_t len);
 
-/// Allocates and initializes a Hasher<Sha512> and returns its pointer.
-/// This is an opaque pointer for the caller.
-/// Ownership of the Hasher<Sha512> is passed to the caller.
-void* efi_sha512_init();
-
-/// Adds data to the Hasher<Sha512> context.
+/// Consumes an initialized SHA-256 `EfiHasherStorage` and writes its digest to
+/// `out`.
 ///
 /// Safety:
-/// * `hasher` points to a valid Hasher<Sha512> that has been initialized.
-/// * `data` is valid to read for `len` bytes.
-void efi_sha512_update(void* hasher, uint8_t const* data, size_t len);
+/// * `hasher` points to an `EfiHasherStorage` initialized by `efi_sha256_init`
+///   during the current boot services session and not yet finalized.
+/// * `out` is valid to write for `AVB_SHA256_DIGEST_SIZE` (32) bytes.
+void efi_sha256_final(EfiHasherStorage* hasher,
+                      uint8_t out[AVB_SHA256_DIGEST_SIZE]);
 
-/// Returns the digest from a Hasher<Sha512>.
+/// Initializes a SHA-512 EFI hasher in-place in `hasher` and returns true on
+/// success. Ownership of the hasher is passed to the caller.
 ///
 /// Safety:
-/// * `hasher_ptr` points to a pointer to a valid Hasher<Sha512> that has been
-/// initialized.
-/// * `out` is valid to write for 32 bytes.
-void efi_sha512_final(void** hasher, uint8_t out[AVB_SHA512_DIGEST_SIZE]);
+/// * `hasher` points to writable, properly aligned `EfiHasherStorage`.
+bool efi_sha512_init(EfiHasherStorage* hasher);
+
+/// Adds data to an initialized SHA-512 `EfiHasherStorage` context.
+///
+/// Safety:
+/// * `hasher` points to an `EfiHasherStorage` initialized by `efi_sha512_init`
+///   during the current boot services session and not yet finalized.
+/// * If `len != 0`, `data` is valid to read for `len` bytes.
+void efi_sha512_update(EfiHasherStorage* hasher, uint8_t const* data,
+                       size_t len);
+
+/// Consumes an initialized SHA-512 `EfiHasherStorage` and writes its digest to
+/// `out`.
+///
+/// Safety:
+/// * `hasher` points to an `EfiHasherStorage` initialized by `efi_sha512_init`
+///   during the current boot services session and not yet finalized.
+/// * `out` is valid to write for `AVB_SHA512_DIGEST_SIZE` (64) bytes.
+void efi_sha512_final(EfiHasherStorage* hasher,
+                      uint8_t out[AVB_SHA512_DIGEST_SIZE]);
 
 #ifdef __cplusplus
 }

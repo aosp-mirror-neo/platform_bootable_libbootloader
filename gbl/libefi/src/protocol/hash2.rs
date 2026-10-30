@@ -21,12 +21,12 @@
 use crate::{
     efi_call,
     protocol::{
-        service_binding::{ProtocolBinder, ServiceBindingProtocolInfo},
+        service_binding::{ProtocolBinder, RawProtocolBinder, ServiceBindingProtocolInfo},
         MaybeVersioned, Protocol, ProtocolInfo, Requirement,
     },
     EfiEntry,
 };
-use core::marker::PhantomData;
+use core::{ffi::c_void, marker::PhantomData};
 use efi_types::{
     EfiGuid, EfiHash2Output, EfiHash2Protocol, EfiSha1Hash2, EfiSha256Hash2, EfiSha512Hash2,
     EFI_HASH2_PROTOCOL_GUID_U64_0, EFI_HASH2_PROTOCOL_GUID_U64_1,
@@ -268,6 +268,69 @@ impl<'a, H: HashAlgorithm> Hasher<'a, H> {
         // * In `hash_final`, the digest is zero initialized, so all bytes are valid.
         // * It is the responsibility of `H::digest` to return the right union field.
         self.binder.child_protocol().hash_final().map(|d| unsafe { H::digest(d) })
+    }
+
+    /// Detaches this `Hasher` from its `&'a EfiEntry` borrow for storage across C FFI call
+    /// boundaries.
+    pub(crate) fn into_raw(self) -> RawHasher<H> {
+        RawHasher { binder: self.binder.into_raw(), phantom: PhantomData }
+    }
+
+    /// Reattaches a [`RawHasher`] to a live `EfiEntry`, restoring `Drop` cleanup.
+    ///
+    /// # Safety
+    ///
+    /// * `raw` must have been produced by [`Self::into_raw`] during the same active UEFI boot
+    ///   services session, and its handles and protocol interfaces must remain valid for `'a`.
+    pub(crate) unsafe fn from_raw(raw: RawHasher<H>, entry: &'a EfiEntry) -> Self {
+        Self {
+            // SAFETY: Guaranteed by caller precondition.
+            binder: unsafe { ProtocolBinder::from_raw(raw.binder, entry) },
+            phantom: PhantomData,
+        }
+    }
+}
+
+/// Detached [`Hasher`] state without `&EfiEntry` borrows, for storing inline in C FFI contexts
+/// across call boundaries while boot services remain active.
+pub(crate) struct RawHasher<H: HashAlgorithm> {
+    binder: RawProtocolBinder<Hash2ServiceBindingProtocol>,
+    phantom: PhantomData<H>,
+}
+
+impl<H: HashAlgorithm> RawHasher<H> {
+    /// Converts `self` into four raw pointers suitable for storing in `EfiHasherStorage`,
+    /// preserving pointer provenance.
+    pub(crate) fn into_raw_ptrs(self) -> [*mut c_void; 4] {
+        self.binder.into_raw_ptrs()
+    }
+
+    /// Reconstructs a [`RawHasher`] from four raw pointers produced by [`Self::into_raw_ptrs`],
+    /// returning `None` if either protocol interface pointer is null.
+    ///
+    /// # Safety
+    ///
+    /// * If both interface pointers are non-null, `ptrs` must have been produced by
+    ///   [`Self::into_raw_ptrs`] for `H` during the current UEFI boot services session and not yet
+    ///   finalized.
+    pub(crate) unsafe fn from_raw_ptrs(ptrs: [*mut c_void; 4]) -> Option<Self> {
+        Some(Self {
+            // SAFETY: Guaranteed by caller precondition.
+            binder: unsafe { RawProtocolBinder::from_raw_ptrs(ptrs) }?,
+            phantom: PhantomData,
+        })
+    }
+
+    /// Incorporates `message` into the digest using a live `EfiEntry`.
+    ///
+    /// # Safety
+    ///
+    /// * `self` must have been produced by [`Hasher::into_raw`] during the same active UEFI boot
+    ///   services session, and its child protocol interface must remain valid for the duration of
+    ///   `entry`.
+    pub(crate) unsafe fn update(&mut self, entry: &EfiEntry, message: &[u8]) -> Result<()> {
+        // SAFETY: Guaranteed by caller precondition.
+        unsafe { self.binder.child_protocol(entry) }.hash_update(message)
     }
 }
 

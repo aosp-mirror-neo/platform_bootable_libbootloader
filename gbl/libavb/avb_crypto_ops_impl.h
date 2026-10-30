@@ -21,6 +21,7 @@
 #include <openssl/is_boringssl.h>
 #include <openssl/mldsa.h>
 #include <openssl/sha.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,11 +33,17 @@ typedef enum : uint8_t {
   AVB_HASH_EFI,
 } AVB_SHA_CTX_TAG;
 
+// Opaque storage for a detached Rust `RawHasher` (four raw UEFI pointers).
+// Using `void*` preserves pointer provenance across FFI without cross-type
+// pointer casts on the Rust side.
+typedef struct {
+  void* opaque[4];
+} EfiHasherStorage;
+
 typedef struct {
   union {
     SHA256_CTX ssl_ctx;
-    // TODO(b/439659986): store the hasher by value.
-    void* efi_hasher;
+    EfiHasherStorage efi_hasher;
   } state;
   AVB_SHA_CTX_TAG tag;
 } AvbSHA256ImplCtx;
@@ -44,8 +51,7 @@ typedef struct {
 typedef struct {
   union {
     SHA512_CTX ssl_ctx;
-    // TODO(b/439659986): store the hasher by value.
-    void* efi_hasher;
+    EfiHasherStorage efi_hasher;
   } state;
   AVB_SHA_CTX_TAG tag;
 } AvbSHA512ImplCtx;
