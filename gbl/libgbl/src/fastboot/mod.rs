@@ -2544,13 +2544,24 @@ pub(crate) mod test {
         let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
         let mut load_buffer = AlignedBuffer::new(MiB!(8), KERNEL_ALIGNMENT);
         let mut storage = FakeGblOpsStorage::default();
+        let fp_a = "google/cf_x86_64/vsoc_x86_64:15/MAIN/1001:userdebug/test-keys";
+        let fp_b = "google/cf_x86_64/vsoc_x86_64:15/MAIN/1002:userdebug/test-keys";
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
         storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
         storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
         storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
+        storage.add_raw_device(
+            c"vbmeta_a",
+            make_test_vbmeta_with_props(&[("com.android.build.system.fingerprint", fp_a)]),
+        );
+        storage.add_raw_device(
+            c"vbmeta_b",
+            make_test_vbmeta_with_props(&[("com.android.build.system.fingerprint", fp_b)]),
+        );
         let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_ops.rollbacks.insert(0, Ok(0));
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
         let mut gbl_fb = GblFastboot::new(
@@ -2575,13 +2586,16 @@ pub(crate) mod test {
                 "slot-successful:a: no",
                 "slot-unbootable:a: no",
                 "slot-retry-count:a: 7",
+                format!("fingerprint:system_a: {fp_a}").as_str(),
                 "slot-successful:b: no",
                 "slot-unbootable:b: no",
                 "slot-retry-count:b: 7",
+                format!("fingerprint:system_b: {fp_b}").as_str(),
                 "has-slot:boot: yes",
                 "has-slot:vendor_boot: yes",
                 "has-slot:raw_0: no",
                 "has-slot:raw_1: no",
+                "has-slot:vbmeta: yes",
                 "max-fetch-size: 0x20000000",
                 "block-device:0:total-blocks: 0x80",
                 "block-device:0:block-size: 0x200",
@@ -2595,6 +2609,10 @@ pub(crate) mod test {
                 "block-device:4:block-size: 0x1",
                 "block-device:5:total-blocks: 0x2000",
                 "block-device:5:block-size: 0x1",
+                "block-device:6:total-blocks: 0x1c0",
+                "block-device:6:block-size: 0x1",
+                "block-device:7:total-blocks: 0x1c0",
+                "block-device:7:block-size: 0x1",
                 "gbl-default-block: None",
                 "partition-start:boot_a: 0x4400",
                 "partition-size:boot_a: 0x2000",
@@ -2629,6 +2647,12 @@ pub(crate) mod test {
                 "partition-start:raw_1/5: 0x0",
                 "partition-size:raw_1/5: 0x2000",
                 "partition-type:raw_1/5: raw",
+                "partition-start:vbmeta_a: 0x0",
+                "partition-size:vbmeta_a: 0x1c0",
+                "partition-type:vbmeta_a: raw",
+                "partition-start:vbmeta_b: 0x0",
+                "partition-size:vbmeta_b: 0x1c0",
+                "partition-type:vbmeta_b: raw",
                 "stream-segment-size: 0x1000",
                 "unlocked: no",
                 "unlocked-critical: no",
@@ -2669,6 +2693,101 @@ pub(crate) mod test {
                 "stream-segment-size: 0x1000"
             ],
         );
+    }
+
+    /// Builds an unsigned vbmeta image containing the given `(key, value)` property descriptors.
+    fn make_test_vbmeta_with_props(props: &[(&str, &str)]) -> Vec<u8> {
+        use avb_bindgen::{AvbDescriptorTag, AvbVBMetaImageHeader};
+
+        let mut descriptors_buf = Vec::new();
+        for (key, val) in props {
+            let body_len = 16 + key.len() + 1 + val.len() + 1;
+            let descriptor_len_aligned = body_len.next_multiple_of(8);
+            for v in [
+                u64::from(AvbDescriptorTag::AVB_DESCRIPTOR_TAG_PROPERTY),
+                descriptor_len_aligned as u64,
+                key.len() as u64,
+                val.len() as u64,
+            ] {
+                descriptors_buf.extend_from_slice(&v.to_be_bytes());
+            }
+            descriptors_buf.extend_from_slice(key.as_bytes());
+            descriptors_buf.push(0);
+            descriptors_buf.extend_from_slice(val.as_bytes());
+            descriptors_buf.push(0);
+            descriptors_buf.resize(descriptors_buf.len().next_multiple_of(8), 0);
+        }
+
+        let aux_size = descriptors_buf.len().next_multiple_of(64);
+        let header = AvbVBMetaImageHeader {
+            magic: *b"AVB0",
+            required_libavb_version_major: 1u32.to_be(),
+            auxiliary_data_block_size: (aux_size as u64).to_be(),
+            descriptors_size: (descriptors_buf.len() as u64).to_be(),
+            ..Default::default()
+        };
+        let mut img = Vec::from(header.as_bytes());
+        img.extend_from_slice(&descriptors_buf);
+        img.resize(size_of_val(&header) + aux_size, 0);
+        img
+    }
+
+    #[test]
+    fn test_get_var_fingerprint() {
+        let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
+        let mut load_buffer = AlignedBuffer::new(MiB!(8), KERNEL_ALIGNMENT);
+        let mut storage = FakeGblOpsStorage::default();
+        let fp_a = "google/cf_x86_64/vsoc_x86_64:15/MAIN/1001:userdebug/test-keys";
+        let fp_b = "google/cf_x86_64/vsoc_x86_64:15/MAIN/1002:userdebug/test-keys";
+
+        // Slot a has system fingerprint in `vbmeta_a`.
+        storage.add_raw_device(
+            c"vbmeta_a",
+            make_test_vbmeta_with_props(&[
+                ("com.android.build.system.os_version", "15"),
+                ("com.android.build.system.fingerprint", fp_a),
+            ]),
+        );
+        // Slot b has `vbmeta_b` without system fingerprint, and `vbmeta_system_b` with it.
+        storage.add_raw_device(
+            c"vbmeta_b",
+            make_test_vbmeta_with_props(&[("com.android.build.boot.fingerprint", "boot_fp")]),
+        );
+        storage.add_raw_device(
+            c"vbmeta_system_b",
+            make_test_vbmeta_with_props(&[("com.android.build.system.fingerprint", fp_b)]),
+        );
+        // Slot c has a `vbmeta_c` that fails `avb_vbmeta_image_verify` (non-zero `algorithm_type`
+        // without a valid hash/signature).
+        let mut invalid_vbmeta =
+            make_test_vbmeta_with_props(&[("com.android.build.system.fingerprint", fp_a)]);
+        // `algorithm_type` is at byte offset 28 in `AvbVBMetaImageHeader`.
+        invalid_vbmeta[28..32].copy_from_slice(&1u32.to_be_bytes());
+        storage.add_raw_device(c"vbmeta_c", invalid_vbmeta);
+
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_ops.rollbacks.insert(0, Ok(0));
+        gbl_ops.slot_count = Some(Ok(3));
+        gbl_ops.slot_infos = vec![Ok(slot('a')), Ok(slot('b')), Ok(slot('c'))];
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(
+            &mut gbl_ops,
+            parts,
+            Task::run,
+            &tasks,
+            &dl_buffers,
+            GblFbData { boot_buffer: load_buffer.as_mut().into(), ..Default::default() },
+        );
+
+        check_var(&mut gbl_fb, "fingerprint", "system_a", fp_a);
+        check_var(&mut gbl_fb, "fingerprint", "system_b", fp_b);
+
+        check_var_failure(&mut gbl_fb, "fingerprint", "");
+        check_var_failure(&mut gbl_fb, "fingerprint", "system");
+        check_var_failure(&mut gbl_fb, "fingerprint", "system_c");
+        check_var_failure(&mut gbl_fb, "fingerprint", "system_d");
+        check_var_failure(&mut gbl_fb, "fingerprint", "boot_a");
     }
 
     #[test]

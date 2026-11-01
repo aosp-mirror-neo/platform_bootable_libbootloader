@@ -13,13 +13,18 @@
 // limitations under the License.
 
 use crate::{
-    android_boot::hasher::{Hasher, Sha256},
+    android_boot::{
+        hasher::{Hasher, Sha256},
+        vboot::into_verify_data,
+    },
     fastboot::{BufferPool, GblFastboot, PinFutContainerTyped, ResolveMode},
+    gbl_avb::ops::GblAvbOps,
     gbl_println,
     partition::{check_part_unique, split_partition_suffix, Partition, RawName},
     slots::{Bootability, Slot},
     GblOps,
 };
+use avb::{slot_verify, HashtreeErrorMode, SlotVerifyFlags, VbmetaVerifyError};
 use core::{
     ffi::CStr,
     future::Future,
@@ -47,6 +52,12 @@ const SLOT_SUCCESSFUL: &str = "slot-successful";
 const SLOT_UNBOOTABLE: &str = "slot-unbootable";
 const SLOT_RETRY_COUNT: &str = "slot-retry-count";
 const HAS_SLOT: &str = "has-slot";
+const FINGERPRINT: &str = "fingerprint";
+const SYSTEM_FINGERPRINT_KEY: &str = "com.android.build.system.fingerprint";
+// Maximum size of a `getvar` response buffer in `get_var_all_internal`. Currently sized for the
+// system fingerprint, which is bounded by Android's `PROP_VALUE_MAX` (92 bytes, including the null
+// terminator).
+const GETVAR_RESPONSE_MAX_SIZE: usize = 92;
 
 const MAX_FETCH_SIZE: &str = "max-fetch-size";
 // Limited by DATA message which only allows 8 hex digits.
@@ -81,6 +92,7 @@ pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
     SLOT_UNBOOTABLE,
     SLOT_RETRY_COUNT,
     HAS_SLOT,
+    FINGERPRINT,
     PARTITION_START,
     MAX_FETCH_SIZE,
     PARTITION_SIZE,
@@ -227,6 +239,7 @@ where
                 snprintf!(out, "{}", self.get_fastboot_slot_info(args_str)?.retry_count)
             }
             HAS_SLOT => self.get_var_has_slot(args_str, out).await?,
+            FINGERPRINT => self.get_var_fingerprint(args_str, out)?,
             MAX_FETCH_SIZE => snprintf!(out, "{}", MAX_FETCH_SIZE_VAL),
             PARTITION_START => self.get_var_partition_start(args_str, out)?,
             PARTITION_SIZE => self.get_var_partition_size(args_str, out)?,
@@ -251,7 +264,7 @@ where
         &mut self,
         send: &mut impl VarInfoSender,
     ) -> CommandResult<()> {
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; GETVAR_RESPONSE_MAX_SIZE];
         let dl_sz = snprintf!(buf, "{:#x}", self.max_download_size().await);
         send.send_var_info(MAX_DOWNLOAD_SIZE, [], dl_sz).await?;
         send.send_var_info(IS_USERSPACE, [], "no").await?;
@@ -280,6 +293,22 @@ where
                     send.send_var_info(SLOT_UNBOOTABLE, [suffix], unbootable).await?;
                     send.send_var_info(SLOT_RETRY_COUNT, [suffix], snprintf!(buf, "{retry_count}"))
                         .await?;
+                    match self.get_system_fingerprint_for_slot(suffix, &mut buf) {
+                        Ok(Some(fp)) => {
+                            let mut part_buf = [0u8; 16];
+                            send.send_var_info(
+                                FINGERPRINT,
+                                [snprintf!(part_buf, "system_{suffix}")],
+                                fp,
+                            )
+                            .await?;
+                        }
+                        Ok(None) => {}
+                        Err(e) => gbl_println!(
+                            self.gbl_ops,
+                            "Failed to get fingerprint for slot {suffix}: {e:?}"
+                        ),
+                    }
                 }
                 self.get_all_partition_has_slot(send).await?;
             }
@@ -767,5 +796,64 @@ where
                 .await?;
         }
         Ok(())
+    }
+
+    /// Looks up the system fingerprint for `slot_suffix` from `vbmeta_<slot>` or
+    /// `vbmeta_system_<slot>`.
+    fn get_system_fingerprint_for_slot<'s>(
+        &mut self,
+        slot_suffix: &str,
+        out: &'s mut [u8],
+    ) -> CommandResult<Option<&'s str>> {
+        self.get_fastboot_slot_info([slot_suffix].into_iter())?;
+        let mut part_buf = [0u8; 32];
+        for mid in ["", "_system"] {
+            let part_name = snprintf!(part_buf, "vbmeta{mid}_{slot_suffix}");
+            if self.gbl_ops.partition_size(part_name)?.is_none() {
+                continue;
+            }
+            let mut suffix_buf = [0u8; 16];
+            let ab_suffix_str = snprintf!(suffix_buf, "{mid}_{slot_suffix}\0");
+            let ab_suffix = CStr::from_bytes_with_nul(ab_suffix_str.as_bytes())
+                .map_err(|_| "Invalid slot suffix")?;
+            let mut avb_ops = GblAvbOps::new(self.gbl_ops, None, &mut [], false);
+            let res = slot_verify(
+                &mut avb_ops,
+                &[],
+                Some(ab_suffix),
+                SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
+                HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
+            );
+            let verify_data = into_verify_data(res)
+                .ok_or_else(|| CommandError::from(format_args!("Failed to verify {part_name}")))?;
+            for vbmeta in verify_data.vbmeta_data() {
+                if !matches!(vbmeta.verify_result(), Ok(()) | Err(VbmetaVerifyError::NotSigned)) {
+                    return Err(format_args!("Invalid {part_name}").into());
+                }
+                if let Some(val) = vbmeta.get_property_value(SYSTEM_FINGERPRINT_KEY) {
+                    let val = from_utf8(val)?;
+                    if val.len() > out.len() {
+                        return Err(format_args!("Fingerprint in {part_name} too long").into());
+                    }
+                    return Ok(Some(snprintf!(out, "{val}")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// "fastboot getvar fingerprint:<partition-name>"
+    /// Currently only supports system partition.
+    fn get_var_fingerprint<'t, 's>(
+        &mut self,
+        mut args: impl Iterator<Item = &'t str> + Clone,
+        out: &'s mut [u8],
+    ) -> CommandResult<&'s str> {
+        let suffix = args
+            .next()
+            .ok_or("Missing partition")?
+            .strip_prefix("system_")
+            .ok_or("Invalid partition")?;
+        Ok(self.get_system_fingerprint_for_slot(suffix, out)?.ok_or(Error::NotFound)?)
     }
 }
