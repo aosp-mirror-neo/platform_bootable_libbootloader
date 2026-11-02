@@ -202,17 +202,8 @@ pub mod simple_text_output {
 /// Mock RNG protocol
 pub mod random_number_generator {
     use super::*;
-
-    /// Requested random number generator algorithm.
-    ///
-    /// Re-definition of: libefi/src/protocol/random_number_generator.rs
-    pub enum RngAlgorithm {
-        /// No specific algorithm is required. Up to implementation to decide.
-        Default,
-        /// Entropy directly from the source, without it going through some deterministic
-        /// random bit generator.
-        Raw,
-    }
+    use crate::EfiEntry;
+    pub use efi::protocol::random_number_generator::RngAlgorithm;
 
     mock! {
         /// Mock [efi::RandomNumberGeneratorProtocol]
@@ -224,6 +215,19 @@ pub mod random_number_generator {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type RandomNumberGeneratorProtocol = MockRandomNumberGeneratorProtocol;
+
+    /// Mock `get_rng_bytes`.
+    pub fn get_rng_bytes(
+        entry: &EfiEntry,
+        algorithm: RngAlgorithm,
+        mut buffer: impl AsMut<[u8]>,
+    ) -> Result<()> {
+        entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<RandomNumberGeneratorProtocol>()?
+            .get_rng_bytes(algorithm, buffer.as_mut())
+    }
 }
 
 /// Mock timestamp protocol
