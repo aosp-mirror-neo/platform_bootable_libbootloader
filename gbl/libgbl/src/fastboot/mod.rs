@@ -30,7 +30,8 @@ use crate::{
     gbl_println,
     misc::{
         read_bootloader_message_to, read_virtual_ab_message, write_bootloader_message,
-        AndroidBootMode, MergeStatus, MISC_PARTITION,
+        write_virtual_ab_message, AndroidBootMode, MergeStatus, MiscVirtualAbMessage,
+        MISC_PARTITION,
     },
     ops::{CommandExecType, RambootOps},
     partition::{
@@ -989,12 +990,12 @@ where
         }
     }
 
-    /// Returns the current Virtual A/B snapshot merge status from `misc`, draining any pending
-    /// `misc` write task and polling background fastboot tasks while awaiting disk I/O.
-    pub(crate) async fn snapshot_merge_status(&mut self) -> CommandResult<MergeStatus> {
+    /// Reads the `MiscVirtualAbMessage` from `misc`, draining any pending `misc` write task and
+    /// polling background fastboot tasks while awaiting disk I/O.
+    async fn read_virtual_ab_msg(&mut self) -> Result<MiscVirtualAbMessage, Error> {
         self.wait_pending_misc_task().await;
         let tasks = self.tasks;
-        let msg = select(read_virtual_ab_message(self.gbl_ops), async {
+        select(read_virtual_ab_message(self.gbl_ops), async {
             loop {
                 yield_now().await;
                 tasks.borrow_mut().poll_all();
@@ -1002,8 +1003,36 @@ where
         })
         .await
         .0
-        .unwrap()?;
-        Ok(msg.merge_status())
+        .unwrap()
+    }
+
+    /// Returns the current Virtual A/B snapshot merge status from `misc`, draining any pending
+    /// `misc` write task and polling background fastboot tasks while awaiting disk I/O.
+    pub(crate) async fn snapshot_merge_status(&mut self) -> CommandResult<MergeStatus> {
+        Ok(self.read_virtual_ab_msg().await?.merge_status())
+    }
+
+    /// Cancels an in-progress Virtual A/B snapshot merge (`Snapshotted` or `Merging`) by setting
+    /// the merge status in `misc` to `MergeStatus::Cancelled`.
+    ///
+    /// If no snapshot merge is in progress, this is a no-op.
+    async fn cancel_snapshot_merge(&mut self) -> CommandResult<()> {
+        let mut msg = self.read_virtual_ab_msg().await?;
+        if matches!(msg.merge_status(), MergeStatus::Snapshotted | MergeStatus::Merging) {
+            msg.set_merge_status(MergeStatus::Cancelled);
+            self.wait_pending_misc_task().await;
+            let tasks = self.tasks;
+            select(write_virtual_ab_message(self.gbl_ops, msg), async {
+                loop {
+                    yield_now().await;
+                    tasks.borrow_mut().poll_all();
+                }
+            })
+            .await
+            .0
+            .unwrap()?;
+        }
+        Ok(())
     }
 
     /// Syncs all tasks and reboots.
@@ -1640,6 +1669,26 @@ where
         self.set_active_slot(slot_ch, &mut resp).await?;
         self.result.last_set_active_slot = Some(slot_ch);
         Ok(())
+    }
+
+    async fn snapshot_update(
+        &mut self,
+        cmd: &str,
+        mut responder: impl InfoSender,
+    ) -> CommandResult<()> {
+        self.sync_tasks(&mut responder, "snapshot-update").await;
+        match cmd.trim() {
+            "" => {
+                let status = self.snapshot_merge_status().await?;
+                responder.send_info(status.into()).await?;
+                Ok(())
+            }
+            "cancel" => {
+                self.check_unlocked()?;
+                self.cancel_snapshot_merge().await
+            }
+            _ => Err("Invalid parameter to snapshot-update".into()),
+        }
     }
 
     async fn oem(
@@ -7554,6 +7603,34 @@ pub(crate) mod test {
         block_on(write_virtual_ab_message(ops, msg)).unwrap();
     }
 
+    fn check_fastboot_commands<'a>(
+        gbl_ops: &mut impl GblOps<'a>,
+        commands: &[&[u8]],
+        expected: &[&[u8]],
+    ) -> GblFastbootResult {
+        let buffers = vec![Some(vec![0u8; KiB!(64)]); 2];
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        for cmd in commands {
+            listener.add_transport_input(cmd);
+        }
+        let mut general = vec![0u8; 1024];
+        let res = block_on(run_gbl_fastboot_stack::<2>(
+            gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            GblFbData { boot_buffer: (&mut general[..]).into(), ..Default::default() },
+        ));
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(expected),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+        res
+    }
+
     #[test]
     fn test_get_var_snapshot_update_status() {
         let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
@@ -7629,5 +7706,102 @@ pub(crate) mod test {
             "missing snapshot-update-status in getvar all: {:?}",
             logger.0
         );
+    }
+
+    #[test]
+    fn test_snapshot_update_command() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Snapshotted);
+
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"snapshot-update",
+                b"snapshot-update:",
+                b"snapshot-update:invalid",
+                b"snapshot-update:cancel",
+                b"snapshot-update:",
+                b"getvar:snapshot-update-status",
+                b"continue",
+            ],
+            &[
+                b"INFOsnapshotted",
+                b"OKAY",
+                b"INFOsnapshotted",
+                b"OKAY",
+                b"FAILInvalid parameter to snapshot-update",
+                b"OKAY",
+                b"INFOnone",
+                b"OKAY",
+                b"OKAYnone",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+
+        // Cancelling from Merging also transitions to Cancelled.
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Merging);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"snapshot-update", b"snapshot-update:cancel", b"snapshot-update", b"continue"],
+            &[b"INFOmerging", b"OKAY", b"OKAY", b"INFOnone", b"OKAY", b"OKAY"],
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+
+        // Cancelling when None is a no-op (remains None rather than writing Cancelled).
+        set_test_merge_status(&mut gbl_ops, MergeStatus::None);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"snapshot-update:cancel", b"continue"],
+            &[b"OKAY", b"OKAY"],
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::None
+        );
+    }
+
+    #[test]
+    fn test_snapshot_update_cancel_fail_when_locked() {
+        check_fastboot_locked(
+            &[b"snapshot-update:cancel", b"continue"],
+            &[b"FAILDevice is locked", b"OKAY"],
+        );
+    }
+
+    #[test]
+    fn test_snapshot_update_unavailable_misc() {
+        for (misc_size, expected_err) in [
+            (None, &b"FAILNotFound"[..]),
+            (Some(KiB!(4)), &b"FAILOutOfRange"[..]),
+            (Some(KiB!(64)), &b"FAILInvalidInput"[..]),
+        ] {
+            let mut storage = FakeGblOpsStorage::default();
+            if let Some(sz) = misc_size {
+                storage.add_raw_device(c"misc", vec![0u8; sz]);
+            }
+            let mut gbl_ops = FakeGblOps::new(&storage);
+            gbl_ops.avb_device_status.is_unlocked = true;
+
+            check_fastboot_commands(
+                &mut gbl_ops,
+                &[
+                    b"getvar:snapshot-update-status",
+                    b"snapshot-update",
+                    b"snapshot-update:cancel",
+                    b"continue",
+                ],
+                &[expected_err, expected_err, expected_err, b"OKAY"],
+            );
+        }
     }
 }
