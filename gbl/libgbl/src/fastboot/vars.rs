@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::{CommandResult, GblFastbootError};
 use crate::{
     android_boot::{
         hasher::{Hasher, Sha256},
@@ -32,7 +33,7 @@ use core::{
     ops::{Deref, DerefMut},
     str::from_utf8,
 };
-use fastboot::{CommandError, CommandResult, VarInfoSender};
+use fastboot::VarInfoSender;
 use gbl_async::{block_on, select, yield_now};
 use gbl_storage::BlockIo;
 use libbuild_number::BUILD_NUMBER;
@@ -381,13 +382,9 @@ where
         // Slotted partition-size only make sense if they are all the same. Because it may be used
         // to copy AVB footer.
         for (_, p) in &parts[1..] {
-            if p.size()? != parts[0].1.size()? {
-                return Err(format_args!(
-                    "{} and {} has different partition sizes",
-                    p.name().unwrap_or("?"),
-                    parts[0].1.name().unwrap_or("?")
-                )
-                .into());
+            let (size, expected) = (p.size()?, parts[0].1.size()?);
+            if size != expected {
+                return Err(GblFastbootError::PartitionSizeMismatch(expected, size));
             }
         }
         let (start, end) = parts[0].1.sub(off, sz)?;
@@ -446,10 +443,10 @@ where
     ) -> CommandResult<&'s str> {
         let (_, ptn) = args
             .next()
-            .ok_or(CommandError::from("Missing partition"))
+            .ok_or(GblFastbootError::from("Missing partition"))
             .and_then(|arg| self.parse_partition_arg(arg))
             .and_then(|(part, blk_id, _, _)| {
-                self.find_partition(part, blk_id).map_err(CommandError::from)
+                self.find_partition(part, blk_id).map_err(GblFastbootError::from)
             })?;
 
         Ok(snprintf!(out, "{:#x}", ptn.absolute_range()?.0))
@@ -514,7 +511,7 @@ where
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
         let id: usize = FromHexStr::try_parse_next(&mut args)
-            .map_err(|_| CommandError::from("Missing or invalid block device ID"))?;
+            .map_err(|_| GblFastbootError::from("Missing or invalid block device ID"))?;
         let val_type = next_arg(&mut args).ok_or("Missing value type")?;
         let blk = &self.disks.get(id).ok_or("Invalid block device ID")?;
         let info = blk.block_info();
@@ -802,7 +799,7 @@ where
     ) -> CommandResult<Option<&'s str>> {
         self.get_fastboot_slot_info([slot_suffix].into_iter())?;
         let mut part_buf = [0u8; 32];
-        for mid in ["", "_system"] {
+        for (mid, vbmeta_name) in [("", "vbmeta"), ("_system", "vbmeta_system")] {
             let part_name = snprintf!(part_buf, "vbmeta{mid}_{slot_suffix}");
             if self.gbl_ops.partition_size(part_name)?.is_none() {
                 continue;
@@ -819,16 +816,16 @@ where
                 SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
                 HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
             );
-            let verify_data = into_verify_data(res)
-                .ok_or_else(|| CommandError::from(format_args!("Failed to verify {part_name}")))?;
+            let verify_data =
+                into_verify_data(res).ok_or(GblFastbootError::VbmetaVerifyFailed(vbmeta_name))?;
             for vbmeta in verify_data.vbmeta_data() {
                 if !matches!(vbmeta.verify_result(), Ok(()) | Err(VbmetaVerifyError::NotSigned)) {
-                    return Err(format_args!("Invalid {part_name}").into());
+                    return Err(GblFastbootError::VbmetaInvalid(vbmeta_name));
                 }
                 if let Some(val) = vbmeta.get_property_value(SYSTEM_FINGERPRINT_KEY) {
                     let val = from_utf8(val)?;
                     if val.len() > out.len() {
-                        return Err(format_args!("Fingerprint in {part_name} too long").into());
+                        return Err(GblFastbootError::FingerprintTooLong(vbmeta_name));
                     }
                     return Ok(Some(snprintf!(out, "{val}")));
                 }

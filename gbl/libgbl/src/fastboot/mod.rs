@@ -54,10 +54,9 @@ use core::{
     str::from_utf8,
 };
 use fastboot::{
-    process_next_command, run_tcp_session, CommandError, CommandResult, DownloadBuilder,
-    Downloader, FailSender, FastbootImplementation, InfoSender, LockState, LockType, OkaySender,
-    RebootMode, StreamCommand, StreamOperation, Unlockability, UploadBuilder, Uploader,
-    VarInfoSender, MAX_COMMAND_SIZE,
+    process_next_command, run_tcp_session, DownloadBuilder, Downloader, FailSender,
+    FastbootImplementation, InfoSender, LockState, LockType, OkaySender, RebootMode, StreamCommand,
+    StreamOperation, Unlockability, UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
 };
 
 const ERR_DEVICE_LOCKED: &str = "Device is locked";
@@ -79,6 +78,9 @@ use trace::{gbl_trace_get_enable, TraceGuard};
 use zbi::{ZbiContainer, ZbiType};
 use zerocopy::IntoBytes;
 
+mod error;
+pub(crate) use error::CommandResult;
+pub use error::GblFastbootError;
 pub(crate) mod vars;
 
 pub(crate) mod sparse;
@@ -1137,9 +1139,7 @@ where
     fn boot_item_container(&mut self) -> CommandResult<&mut BootItemContainer<'b>> {
         let v = self.data.boot_buffer.boot_items();
         if v.check_valid().is_err() {
-            v.init().map_err(|e| {
-                CommandError::from(format_args!("Failed to initialize boot item container {e}"))
-            })?;
+            v.init().map_err(GblFastbootError::BootItemInit)?;
         }
         Ok(v)
     }
@@ -1147,7 +1147,7 @@ where
     /// Returns `Ok` if the device lock is unlocked.
     fn check_unlocked(&mut self) -> CommandResult<()> {
         match GblAvbOps::new(self.gbl_ops, None, &mut [], false).avb_read_device_status() {
-            Err(e) => Err(format_args!("Failed to read lock state: {e}").into()),
+            Err(e) => Err(GblFastbootError::LockState(e)),
             Ok(status) if status.is_unlocked => Ok(()),
             _ => Err(ERR_DEVICE_LOCKED.into()),
         }
@@ -1156,7 +1156,7 @@ where
     /// Returns `Ok` if the critical lock is unlocked.
     fn check_critical_unlocked(&mut self) -> CommandResult<()> {
         match GblAvbOps::new(self.gbl_ops, None, &mut [], false).avb_read_device_status() {
-            Err(e) => Err(format_args!("Failed to read lock state: {e}").into()),
+            Err(e) => Err(GblFastbootError::LockState(e)),
             Ok(status) if status.is_unlocked_critical => Ok(()),
             _ => Err(ERR_CRITICAL_LOCKED.into()),
         }
@@ -1205,7 +1205,7 @@ where
     fn get_load_result(&self) -> CommandResult<LoadedImages<'b>> {
         match self.data.load_result {
             None => Err("Images not loaded. Run \"oem gbl-pause-fastboot-after-load\"".into()),
-            Some(Err(e)) => Err(format_args!("Load didn't succeed: {e}").into()),
+            Some(Err(e)) => Err(GblFastbootError::LoadFailed(e.clone())),
             Some(Ok(v)) => Ok(v),
         }
     }
@@ -1363,6 +1363,8 @@ where
     C: PinFutContainerTyped<'c, F>,
     F: Future<Output = ()> + 'c,
 {
+    type Error = GblFastbootError;
+
     async fn get_var(
         &mut self,
         var: &CStr,
@@ -1443,9 +1445,7 @@ where
         let buf = &mut self.current_download_buffer.as_mut().unwrap()[..];
         let total = responder.total();
         if total > buf.len() {
-            return Err(
-                format_args!("Buffer too small {:#x}. Needs {:#x}", buf.len(), total).into()
-            );
+            return Err(GblFastbootError::BufferTooSmall { size: buf.len(), needed: total });
         }
 
         let mut downloader = responder.initiate_download().await?;
@@ -1472,12 +1472,9 @@ where
             }
             let actual = hasher.finalize();
             if actual != crc {
-                return Err(format_args!(
-                    "CRC check failed. expected: {crc:#x}, actual: {actual:#x}"
-                )
-                .into());
+                return Err(GblFastbootError::CrcMismatch { expected: crc, actual });
             }
-            Ok::<(), CommandError>(())
+            Ok::<(), GblFastbootError>(())
         };
 
         // Progress logging task.
@@ -1614,7 +1611,7 @@ where
                 // Longer term, if this feature is useful enough, it can be added to fastboot
                 // upstream, i.e. download:<size>:<crc>
                 let crc = FromHexStr::try_parse_next(&mut args)
-                    .map_err(|_| CommandError::from("Missing CRC32 value"))?;
+                    .map_err(|_| GblFastbootError::from("Missing CRC32 value"))?;
                 self.expected_download_crc = Some(crc);
                 Ok(())
             }
@@ -1628,7 +1625,7 @@ where
             }
             "gbl-set-default-block" => {
                 let id: usize = FromHexStr::try_parse_next(&mut args)
-                    .map_err(|_| CommandError::from("Missing block device ID"))?;
+                    .map_err(|_| GblFastbootError::from("Missing block device ID"))?;
                 self.disks.get(id).ok_or("Out of range")?;
                 self.default_block = Some(id);
                 responder
@@ -1706,11 +1703,7 @@ where
                 }
                 let actual = hasher.finalize();
                 if actual != checksum {
-                    return Err(format_args!(
-                        "Checksum mismatch: expected {:#x}, got {:#x}",
-                        checksum, actual
-                    )
-                    .into());
+                    return Err(GblFastbootError::ChecksumMismatch { expected: checksum, actual });
                 }
                 Task::new(TaskWorkload::Flash(io, download, size), |f| {
                     write!(
@@ -1753,7 +1746,7 @@ where
         // change the lock state or that the platform will reject.
         let status = GblAvbOps::new(self.gbl_ops, None, &mut [], false)
             .avb_read_device_status()
-            .map_err(|e| CommandError::from(format_args!("Failed to read lock state: {e}")))?;
+            .map_err(GblFastbootError::LockState)?;
         let is_unlocked = match lock_type {
             LockType::Device => status.is_unlocked,
             LockType::Critical => status.is_unlocked_critical,
@@ -2189,7 +2182,12 @@ pub(crate) mod test {
     }
 
     /// Helper to test fastboot variable value.
-    fn check_var(gbl_fb: &mut impl FastbootImplementation, var: &str, args: &str, expected: &str) {
+    fn check_var(
+        gbl_fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        var: &str,
+        args: &str,
+        expected: &str,
+    ) {
         let resp: TestResponder = Default::default();
         let args_c = args.split(':').map(|v| CString::new(v).unwrap()).collect::<Vec<_>>();
         let args_c = args_c.iter().map(|v| v.as_c_str());
@@ -2201,7 +2199,11 @@ pub(crate) mod test {
     }
 
     /// Helper to test fastboot variable failure.
-    fn check_var_failure(gbl_fb: &mut impl FastbootImplementation, var: &str, args: &str) {
+    fn check_var_failure(
+        gbl_fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        var: &str,
+        args: &str,
+    ) {
         let resp: TestResponder = Default::default();
         let args_c = args.split(':').map(|v| CString::new(v).unwrap()).collect::<Vec<_>>();
         let args_c = args_c.iter().map(|v| v.as_c_str());
@@ -2213,7 +2215,10 @@ pub(crate) mod test {
     }
 
     /// A helper to set the download content.
-    fn set_download(gbl_fb: &mut impl FastbootImplementation, data: &[u8]) {
+    fn set_download(
+        gbl_fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        data: &[u8],
+    ) {
         block_on(gbl_fb.set_download(data)).unwrap()
     }
 
@@ -2846,7 +2851,7 @@ pub(crate) mod test {
 
     /// A helper for fetching partition from a `GblFastboot`
     fn fetch<EOff: core::fmt::Debug, ESz: core::fmt::Debug>(
-        fb: &mut impl FastbootImplementation,
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
         part: String,
         off: impl TryInto<u64, Error = EOff>,
         size: impl TryInto<u32, Error = ESz>,
@@ -2894,7 +2899,7 @@ pub(crate) mod test {
     /// A helper for testing raw block upload. It verifies that data read from block device
     /// `blk_id` in range [`off`, `off`+`size`) is the same as `disk[off..][..size]`.
     fn check_upload(
-        fb: &mut impl FastbootImplementation,
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
         part_and_block_id: &str,
         off: u64,
         size: u64,
@@ -3015,7 +3020,11 @@ pub(crate) mod test {
     }
 
     /// A helper function to flash data to a partition
-    fn flash_part(fb: &mut impl FastbootImplementation, part: &str, data: &[u8]) {
+    fn flash_part(
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        part: &str,
+        data: &[u8],
+    ) {
         // Prepare a download buffer.
         let download = data.to_vec();
         let resp: TestResponder = Default::default();
@@ -3025,7 +3034,7 @@ pub(crate) mod test {
 
     /// A helper for testing multi partition flashing.
     fn check_flash_multi_part(
-        fb: &mut impl FastbootImplementation,
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
         part: &str,
         actual_parts: &[&str],
         expected: &[u8],
@@ -3044,7 +3053,11 @@ pub(crate) mod test {
     }
 
     /// A helper for testing single partition flashing.
-    fn check_flash_part(fb: &mut impl FastbootImplementation, part: &str, expected: &[u8]) {
+    fn check_flash_part(
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        part: &str,
+        expected: &[u8],
+    ) {
         check_flash_multi_part(fb, part, &[part], expected);
     }
 
@@ -3187,7 +3200,10 @@ pub(crate) mod test {
     const FAIL_MESSAGE_NOT_FOUND: &[u8] = b"FAILNotFound";
 
     /// Attempts to flash 4KiB of 0xAA to `part` and returns the response.
-    fn fb_flash(fb: &mut impl FastbootImplementation, part: &str) -> Vec<u8> {
+    fn fb_flash(
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+        part: &str,
+    ) -> Vec<u8> {
         set_download(fb, &[0xAAu8; KiB!(4)]);
 
         let listener: SharedTestListener = Default::default();
@@ -3197,7 +3213,9 @@ pub(crate) mod test {
     }
 
     /// Runs `fastboot flashing unlock_critical` and returns the response.
-    fn fb_unlock_critical(fb: &mut impl FastbootImplementation) -> Vec<u8> {
+    fn fb_unlock_critical(
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
+    ) -> Vec<u8> {
         let listener: SharedTestListener = Default::default();
         listener.add_transport_input(b"flashing unlock_critical");
         block_on(fastboot::process_next_command(&mut &listener, fb)).unwrap();
@@ -3355,7 +3373,7 @@ pub(crate) mod test {
     ///
     /// Returns the result and INFO strings.
     async fn oem(
-        fb: &mut impl FastbootImplementation,
+        fb: &mut impl FastbootImplementation<Error = GblFastbootError>,
         oem_cmd: &str,
         resp: impl InfoSender + OkaySender + FailSender,
     ) -> CommandResult<()> {
@@ -3852,7 +3870,7 @@ pub(crate) mod test {
         check_upload(&mut gbl_fb, "/1", off, size, Ok(&disk_dup[..]));
 
         // Fetching without storage ID should use default ID and thus the following should fail.
-        check_upload(&mut gbl_fb, "boot_a/", off, size, Err("NotFound".into()));
+        check_upload(&mut gbl_fb, "boot_a/", off, size, Err(Error::NotFound.into()));
 
         // Sets default block to #1 (unmodified `disk_dup`)
         block_on(oem(&mut gbl_fb, "gbl-set-default-block 1", &resp)).unwrap();
@@ -3864,8 +3882,8 @@ pub(crate) mod test {
         block_on(oem(&mut gbl_fb, "gbl-unset-default-block", &resp)).unwrap();
         check_var(&mut gbl_fb, "gbl-default-block", "", "None");
         // Fetching non-unique partitions should now fail.
-        check_upload(&mut gbl_fb, "raw/", off, size, Err("NotUnique".into()));
-        check_upload(&mut gbl_fb, "vendor_boot_a/", off, size, Err("NotUnique".into()));
+        check_upload(&mut gbl_fb, "raw/", off, size, Err(Error::NotUnique.into()));
+        check_upload(&mut gbl_fb, "vendor_boot_a/", off, size, Err(Error::NotUnique.into()));
         check_upload(&mut gbl_fb, "/", off, size, Err(Error::NotUnique.into()));
     }
 
@@ -6470,7 +6488,7 @@ pub(crate) mod test {
         assert_eq!(
             listener.transport_out_queue(),
             make_expected_transport_out(&[
-                b"FAILboot_b and boot_a has different partition sizes",
+                b"FAILSlotted partitions have different sizes: 0x2000 vs 0x3000",
                 b"OKAY0x1000",
                 b"OKAY0x3000",
                 b"OKAY",
@@ -6913,16 +6931,16 @@ pub(crate) mod test {
         let bad_checksum_cmd = "stream-flash:boot_a:0:0xDEADBEEF".try_into().unwrap();
         assert_eq!(
             block_on(gbl_fb.stream(bad_checksum_cmd, &resp)),
-            Err("Checksum mismatch: expected 0xdeadbeef, got 0xb47c63c1".into())
+            Err(GblFastbootError::ChecksumMismatch { expected: 0xdeadbeef, actual: 0xb47c63c1 })
         );
 
         set_download(&mut gbl_fb, img);
         let bad_offset_cmd = "stream-flash:boot_a:0xFFFFFF:0xb47c63c1".try_into().unwrap();
-        assert_eq!(block_on(gbl_fb.stream(bad_offset_cmd, &resp)), Err("OutOfRange".into()));
+        assert_eq!(block_on(gbl_fb.stream(bad_offset_cmd, &resp)), Err(Error::OutOfRange.into()));
 
         set_download(&mut gbl_fb, img);
         let bad_partition_cmd = "stream-flash:boot_d:0:0xb47c63c1".try_into().unwrap();
-        assert_eq!(block_on(gbl_fb.stream(bad_partition_cmd, &resp)), Err("NotFound".into()));
+        assert_eq!(block_on(gbl_fb.stream(bad_partition_cmd, &resp)), Err(Error::NotFound.into()));
     }
 
     fn gbl_stream_fill_test_helper(fill_size: usize, offset: usize) {
@@ -6969,7 +6987,7 @@ pub(crate) mod test {
         gbl_stream_fill_test_helper(KiB!(4), 512);
     }
 
-    fn gbl_stream_fill_error_test_helper(cmd: StreamCommand<&str>, err: CommandError) {
+    fn gbl_stream_fill_error_test_helper(cmd: StreamCommand<&str>, err: GblFastbootError) {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let buffers = vec![Some(vec![0u8; KiB!(2)]); 1].into();
@@ -6990,7 +7008,7 @@ pub(crate) mod test {
     fn test_gbl_stream_fill_bad_partition() {
         gbl_stream_fill_error_test_helper(
             "stream-fill:boot_d:0:1000:0xF005500F".try_into().unwrap(),
-            "NotFound".into(),
+            Error::NotFound.into(),
         );
     }
 
@@ -6998,7 +7016,7 @@ pub(crate) mod test {
     fn test_gbl_stream_fill_out_of_range() {
         gbl_stream_fill_error_test_helper(
             "stream-fill:boot_a:0:0x400000:0xF005500F".try_into().unwrap(),
-            "OutOfRange".into(),
+            Error::OutOfRange.into(),
         );
     }
 
@@ -7006,7 +7024,7 @@ pub(crate) mod test {
     fn test_gbl_stream_fill_bad_offset() {
         gbl_stream_fill_error_test_helper(
             "stream-fill:boot_a:0x400000:800:0xF005500F".try_into().unwrap(),
-            "OutOfRange".into(),
+            Error::OutOfRange.into(),
         )
     }
 
