@@ -36,7 +36,7 @@ use crate::{
         check_part_unique, split_partition_suffix, AccessMode, GblDisk, MultiPartitionIo,
         Partition, PartitionIo, ReadOnly, ReadWrite,
     },
-    slots::{slotted_part, Slot, Suffix},
+    slots::{slotted_part, Bootability, Slot, Suffix},
     GblOps, IntegrationError,
 };
 pub use abr::{mark_slot_active, set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
@@ -103,6 +103,9 @@ use boot_items::{BootItem, BootItemContainer};
 /// Reserved name for indicating flashing GPT.
 const FLASH_GPT_PART: &str = "gpt";
 
+/// Partition name for the Android dynamic partitions container.
+const SUPER_PARTITION: &str = "super";
+
 /// Maximum number of partitions for `MultiPartitionIo` in the fastboot context.
 /// This is determined by the maximum number slots supported.
 const MAX_IO_PARTS: usize = 2;
@@ -162,6 +165,19 @@ impl<'a, 'b, B: BlockIo, P2: BufferPool, P: BufferPool> TaskWorkload<'a, 'b, B, 
         *self = Self::None;
         res
     }
+}
+
+/// Virtual A/B snapshot cancellation action required before executing a partition write task.
+enum SnapshotMergeCancel {
+    /// No snapshot merge cancellation is required before scheduling the task.
+    None,
+    /// Target is `super`; read `misc` and cancel any active snapshot merge if present.
+    IfPresent,
+    /// Target modifies `userdata`, `metadata`, or another non-`misc` `Fdr::Yes` partition while
+    /// the currently booted slot matches `source_slot` on a `Snapshotted` record in `misc` (e.g.
+    /// after rolling back and rebooting into the pre-OTA slot); transition `msg` to `Cancelled` so
+    /// the wiped snapshot cannot be resurrected.
+    Message(MiscVirtualAbMessage),
 }
 
 /// Represents a GBL Fastboot async task.
@@ -728,13 +744,15 @@ where
     ///
     /// * The [MultiPartitionIo] for disk access
     /// * An [Fdr] indicating whether we need to FDR after modifying these partitions
+    /// * A [SnapshotMergeCancel] action to perform in [Self::schedule_task] before modifying disk
     ///
     /// If FDR is required, the caller must call [sync_tasks_and_fdr] after registering the I/O
     /// task to ensure proper sequencing and disk consistency.
     async fn parse_and_get_partition_io<'s, A: AccessMode>(
         &mut self,
         target: &'s str,
-    ) -> CommandResult<(MultiPartitionIo<'a, B, P2, MAX_IO_PARTS, A>, Fdr)> {
+    ) -> CommandResult<(MultiPartitionIo<'a, B, P2, MAX_IO_PARTS, A>, Fdr, SnapshotMergeCancel)>
+    {
         let (part, blk_id, off, sz) = self.parse_partition_arg(target)?;
 
         // Currently raw disk access is only allowed for:
@@ -747,10 +765,11 @@ where
         let (basename, block_ids_and_parts) =
             self.resolve_slotted_partitions(part, blk_id, ResolveMode::CurrentSlot)?;
 
-        // Determine if we need to FDR and check critical lock protection.
-        let fdr = if A::IS_READ_ONLY {
-            // Read-only access never requires FDR or critical lock.
-            Fdr::No
+        // Determine if we need to FDR, check critical lock protection, and enforce Virtual A/B
+        // write guards.
+        let (fdr, snapshot_cancel) = if A::IS_READ_ONLY {
+            // Read-only access never requires FDR, critical lock, or snapshot cancellation.
+            (Fdr::No, SnapshotMergeCancel::None)
         } else {
             match basename {
                 // Named partition access.
@@ -765,10 +784,59 @@ where
                     if critical == Critical::Yes {
                         self.check_critical_unlocked()?
                     }
+                    // During an unmerged Virtual A/B OTA, `userdata` holds the COW snapshot files,
+                    // `metadata` holds `libsnapshot` state and COW block mappings, and `misc` holds
+                    // `MiscVirtualAbMessage`. Overwriting or erasing any of them (or any partition
+                    // configured with `Fdr::Yes`, such as `cache`, whose modification triggers
+                    // `factory_data_reset()` and cryptographically shreds `userdata`) while leaving
+                    // `super` untouched or half-merged breaks the COW state needed to mount or
+                    // finish merging `super`.
+                    //
+                    // `userdata`, `metadata`, and `misc` are fixed Android platform requirements
+                    // (mandated by the Virtual A/B spec, `fastbootd`, and `first_stage_init`, and
+                    // already assumed by GBL for `MISC_PARTITION` and default FDR attributes)
+                    // rather than device-specific names configured via `GBL_EFI_AVB_PROTOCOL`.
+                    let snapshot_cancel = if basename == SUPER_PARTITION {
+                        // Defer reading/canceling `misc` to `schedule_task` so download, range, and
+                        // stream CRC checks run before mutating `misc`.
+                        SnapshotMergeCancel::IfPresent
+                    } else if matches!(basename, "userdata" | "misc" | "metadata")
+                        || fdr == Fdr::Yes
+                    {
+                        match self.read_virtual_ab_msg_if_present().await? {
+                            Some(msg)
+                                if matches!(
+                                    self.effective_merge_status(&msg)?,
+                                    MergeStatus::Snapshotted | MergeStatus::Merging
+                                ) =>
+                            {
+                                return Err(
+                                    "Cannot flash/erase partition while a snapshot update is in \
+                                    progress"
+                                        .into(),
+                                );
+                            }
+                            Some(msg)
+                                if msg.merge_status() == MergeStatus::Snapshotted
+                                    && basename != MISC_PARTITION =>
+                            {
+                                // Currently booted slot matches `source_slot` (e.g. after rolling
+                                // back and rebooting into the pre-OTA slot), permitting writes to
+                                // `userdata`, `metadata`, and `Fdr::Yes` partitions. Wiping them
+                                // destroys the COW backing files and `/metadata/ota` rollback
+                                // markers, so transition `misc` to `Cancelled` once the write task
+                                // is scheduled.
+                                SnapshotMergeCancel::Message(msg)
+                            }
+                            _ => SnapshotMergeCancel::None,
+                        }
+                    } else {
+                        SnapshotMergeCancel::None
+                    };
                     if basename == MISC_PARTITION {
                         self.pending_misc_task = true;
                     }
-                    fdr
+                    (fdr, snapshot_cancel)
                 }
                 // Raw disk access.
                 None => {
@@ -785,14 +853,14 @@ where
                     // Raw disk access is advanced usage, it's up the caller to know if they're
                     // messing with userdata or not, and auto-triggering FDR on non-secure disk
                     // modification is a developer convenience, not security load-bearing.
-                    Fdr::No
+                    (Fdr::No, SnapshotMergeCancel::None)
                 }
             }
         };
 
         // We've checked locking and FDR requirements, we can grab the I/O now.
         let part_io = self.get_partition_io_unchecked::<A>(block_ids_and_parts, off, sz).await?;
-        Ok((part_io, fdr))
+        Ok((part_io, fdr, snapshot_cancel))
     }
 
     /// Creates a [MultiPartitionIo] from resolved partitions.
@@ -852,20 +920,30 @@ where
         }
     }
 
-    /// Helper for scheduling an async task.
-    ///
-    /// If `Self::enable_async_task` is true, the method will add the task to the background task
-    /// list. Otherwise it simply runs the task.
+    /// Schedules a partition write [Task] after performing any required `misc` Virtual A/B
+    /// snapshot cancellation (`snapshot_cancel`). If `Self::enable_async_task` is true, adds
+    /// `task` to the background task list; otherwise executes `task` directly.
     ///
     /// # Arguments
     ///
-    /// * `task`:  the [Task] to run
+    /// * `task`: the [Task] to run
+    /// * `snapshot_cancel`: Virtual A/B `misc` cancellation action computed for this write target
     /// * `responder`: an object to send `INFO` messages back to the host with
     async fn schedule_task(
         &mut self,
         task: &mut Task<'a, 'b, B, P2, P>,
+        snapshot_cancel: SnapshotMergeCancel,
         responder: &mut impl InfoSender,
     ) -> CommandResult<()> {
+        match snapshot_cancel {
+            SnapshotMergeCancel::None => {}
+            SnapshotMergeCancel::IfPresent => {
+                self.cancel_active_snapshot_merge_if_present().await?;
+            }
+            SnapshotMergeCancel::Message(msg) => {
+                self.write_cancelled_virtual_ab_msg(msg).await?;
+            }
+        }
         match self.enable_async_task {
             true => {
                 // `add_with` requires that the closure is lazily evaluated. If task cannot be
@@ -994,18 +1072,83 @@ where
         .unwrap()
     }
 
+    /// Reads the `MiscVirtualAbMessage` from `misc` if Virtual A/B metadata is present and
+    /// initialized.
+    ///
+    /// Returns `Ok(None)` silently when the target OS does not use Android `misc`
+    /// (`Error::Unsupported`). When `misc` is absent (`Error::NotFound`), smaller than system space
+    /// (`Error::OutOfRange`), or lacks a valid `MiscVirtualAbMessage` header at `misc` + 32 KiB
+    /// (`Error::InvalidInput`), logs a console warning (so non-standard Boot Control HALs surface
+    /// during bring-up) and returns `Ok(None)`. Propagates genuine storage/device I/O errors.
+    async fn read_virtual_ab_msg_if_present(
+        &mut self,
+    ) -> CommandResult<Option<MiscVirtualAbMessage>> {
+        match self.read_virtual_ab_msg().await {
+            Ok(msg) => Ok(Some(msg)),
+            Err(Error::Unsupported) => Ok(None),
+            Err(e @ (Error::NotFound | Error::OutOfRange | Error::InvalidInput)) => {
+                gbl_println!(
+                    self.gbl_ops,
+                    "Warning: unusable Virtual A/B metadata in misc ({e}); skipping Virtual A/B \
+                    guards"
+                );
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Resolves the 0-based index and metadata of the currently booted slot reported by
+    /// `GblOps::get_current_slot` (`GBL_EFI_BOOT_CONTROL_PROTOCOL.GetCurrentSlot()`), or
+    /// `Ok(None)` if slotting is unsupported or no current slot is reported.
+    fn current_slot_with_index(&mut self) -> Result<Option<(u8, Slot)>, Error> {
+        let cur = match self.gbl_ops.get_current_slot() {
+            Ok(slot) => slot,
+            Err(Error::Unsupported | Error::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let count = match self.gbl_ops.get_slot_count() {
+            Ok(count) => count,
+            Err(Error::Unsupported | Error::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        for idx in 0..count {
+            if self.gbl_ops.get_slot_info(idx)?.suffix == cur.suffix {
+                return Ok(Some((idx, cur)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Computes the effective Virtual A/B snapshot merge status from `msg`.
+    ///
+    /// Matches AOSP `libboot_control` (`GetMiscVirtualAbMergeStatus`): if `msg` records
+    /// `MergeStatus::Snapshotted` and the currently booted slot (`GetCurrentSlot()`) matches
+    /// `msg.source_slot()` (e.g. after rolling back and rebooting into the pre-OTA slot),
+    /// `first_stage_init` will discard the snapshot on boot, so report `MergeStatus::None`.
+    fn effective_merge_status(&mut self, msg: &MiscVirtualAbMessage) -> Result<MergeStatus, Error> {
+        let status = msg.merge_status();
+        if status == MergeStatus::Snapshotted
+            && self.current_slot_with_index()?.map(|(idx, _)| idx) == Some(msg.source_slot())
+        {
+            return Ok(MergeStatus::None);
+        }
+        Ok(status)
+    }
+
     /// Returns the current Virtual A/B snapshot merge status from `misc`, draining any pending
     /// `misc` write task and polling background fastboot tasks while awaiting disk I/O.
     pub(crate) async fn snapshot_merge_status(&mut self) -> CommandResult<MergeStatus> {
-        Ok(self.read_virtual_ab_msg().await?.merge_status())
+        let msg = self.read_virtual_ab_msg().await?;
+        Ok(self.effective_merge_status(&msg)?)
     }
 
-    /// Cancels an in-progress Virtual A/B snapshot merge (`Snapshotted` or `Merging`) by setting
-    /// the merge status in `misc` to `MergeStatus::Cancelled`.
-    ///
-    /// If no snapshot merge is in progress, this is a no-op.
-    async fn cancel_snapshot_merge(&mut self) -> CommandResult<()> {
-        let mut msg = self.read_virtual_ab_msg().await?;
+    /// Transitions `msg` in `misc` to `MergeStatus::Cancelled` if it represents an in-progress
+    /// snapshot merge (`Snapshotted` or `Merging`).
+    async fn write_cancelled_virtual_ab_msg(
+        &mut self,
+        mut msg: MiscVirtualAbMessage,
+    ) -> CommandResult<()> {
         if matches!(msg.merge_status(), MergeStatus::Snapshotted | MergeStatus::Merging) {
             msg.set_merge_status(MergeStatus::Cancelled);
             self.wait_pending_misc_task().await;
@@ -1019,6 +1162,26 @@ where
             .await
             .0
             .unwrap()?;
+        }
+        Ok(())
+    }
+
+    /// Cancels an in-progress Virtual A/B snapshot merge (`Snapshotted` or `Merging`) by setting
+    /// the merge status in `misc` to `MergeStatus::Cancelled`.
+    ///
+    /// If no snapshot merge is in progress, this is a no-op. Fails if `misc` is unavailable or
+    /// uninitialized.
+    async fn cancel_snapshot_merge(&mut self) -> CommandResult<()> {
+        let msg = self.read_virtual_ab_msg().await?;
+        self.write_cancelled_virtual_ab_msg(msg).await
+    }
+
+    /// Cancels an in-progress Virtual A/B snapshot merge if Virtual A/B metadata is present and
+    /// active in `misc`, no-oping when `misc` is missing, undersized, uninitialized, or
+    /// non-Android.
+    async fn cancel_active_snapshot_merge_if_present(&mut self) -> CommandResult<()> {
+        if let Some(msg) = self.read_virtual_ab_msg_if_present().await? {
+            self.write_cancelled_virtual_ab_msg(msg).await?;
         }
         Ok(())
     }
@@ -1120,14 +1283,90 @@ where
             )?);
         }
 
-        let idx = self
-            .slots_iter()?
-            .position(|slot| match slot {
-                Ok(slot) => slot.suffix.as_char() == suffix,
-                _ => false,
-            })
-            .ok_or("Invalid slot")?;
-        Ok(self.gbl_ops.set_active_slot(idx as _)?)
+        let mut target_slot = None;
+        for (idx, slot) in self.slots_iter()?.enumerate() {
+            if let Ok(slot) = slot
+                && slot.suffix.as_char() == suffix
+            {
+                target_slot = Some((idx, slot));
+                break;
+            }
+        }
+        let (idx, target_slot) = target_slot.ok_or("Invalid slot")?;
+        let idx = u8::try_from(idx)?;
+
+        // Switching slots is unsafe during `Merging` (when COW blocks are actively overwriting the
+        // old slot's base extents in `super`), whereas `Snapshotted` has not modified the old slot
+        // yet and still permits slot rollback. Re-selecting the merging slot itself remains
+        // permitted during `Merging` (e.g. `fastboot flashall` runs `set_active` before canceling
+        // snapshots):
+        // - Identify the merging slot from `MiscVirtualAbMessage::source_slot`, which Android
+        //   writes as the booted target slot when setting `MergeStatus::Merging` (remaining
+        //   accurate even if that slot later exhausts its tries and vendor firmware boots the
+        //   other slot or returns `NotFound` from `get_current_slot`), and log a console warning
+        //   if `source_slot` disagrees with a bootable `get_current_slot` so custom Boot Control
+        //   HALs that leave `source_slot` stale surface during bring-up.
+        // - Skip `GblOps::set_active_slot` (which clears `Successful` with no protocol method to
+        //   re-mark it) only when the merging slot is already the currently booted slot, is
+        //   `Successful`, and all other bootable slots have lower priority.
+        if let Some(msg) = self.read_virtual_ab_msg_if_present().await?
+            && msg.merge_status() == MergeStatus::Merging
+        {
+            let current_slot = self.current_slot_with_index()?;
+            let slot_count = self.gbl_ops.get_slot_count()?;
+            let merging_slot_idx = if msg.source_slot() < slot_count {
+                if let Some((cur_idx, cur)) = current_slot
+                    && cur_idx != msg.source_slot()
+                    && !matches!(cur.bootability, Bootability::Unbootable(_))
+                {
+                    gbl_println!(
+                        self.gbl_ops,
+                        "Warning: Virtual A/B source_slot ({}) differs from bootable current \
+                        slot '{}' (index {}) during Merging",
+                        msg.source_slot(),
+                        cur.suffix.as_char(),
+                        cur_idx,
+                    );
+                }
+                Some(msg.source_slot())
+            } else {
+                gbl_println!(
+                    self.gbl_ops,
+                    "Warning: Virtual A/B source_slot ({}) out of range (slot_count={}) during \
+                    Merging; falling back to current slot",
+                    msg.source_slot(),
+                    slot_count,
+                );
+                current_slot.map(|(cur_idx, _)| cur_idx)
+            };
+            if merging_slot_idx != Some(idx) {
+                return Err("Cannot change slots while a snapshot update is in progress".into());
+            }
+            if current_slot.map(|(cur_idx, _)| cur_idx) == Some(idx)
+                && matches!(target_slot.bootability, Bootability::Successful(_))
+            {
+                let mut highest_priority = true;
+                for other_idx in 0..slot_count {
+                    if other_idx != idx {
+                        let other = self.gbl_ops.get_slot_info(other_idx)?;
+                        if !matches!(other.bootability, Bootability::Unbootable(_))
+                            && other.priority >= target_slot.priority
+                        {
+                            highest_priority = false;
+                            break;
+                        }
+                    }
+                }
+                if highest_priority {
+                    let info = "Skipping set_active reset of current slot during snapshot merge";
+                    gbl_println!(self.gbl_ops, "{info}");
+                    responder.send_info(info).await?;
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(self.gbl_ops.set_active_slot(idx)?)
     }
 
     /// Helper for "fastboot boot" in Android image.
@@ -1347,6 +1586,22 @@ where
     ///
     /// Callers are expected to always FDR following this.
     async fn wipe_fdr_partitions(&mut self, responder: &mut impl InfoSender) {
+        // Wait for any async disk I/O to complete.
+        self.sync_tasks(responder, "Userdata wipe").await;
+
+        // Pre-FDR wipe and the subsequent FDR destroy `userdata` and `metadata` (where Virtual A/B
+        // COW snapshot files and `libsnapshot` state live) without going through
+        // `parse_and_get_partition_io`. Best-effort cancel any active snapshot merge in `misc` so
+        // subsequent fastboot commands and `IBootControl` clients do not observe a stale
+        // `Snapshotted` or `Merging` status after lock or unlock.
+        if let Err(e) = self.cancel_active_snapshot_merge_if_present().await {
+            gbl_println!(
+                self.gbl_ops,
+                "Failed to cancel snapshot merge during pre-FDR wipe ({:?})",
+                e
+            );
+        }
+
         let attributes = match self.gbl_ops.avb_read_partition_attributes() {
             Ok(attributes) => attributes,
             Err(e) => {
@@ -1358,9 +1613,6 @@ where
                 return;
             }
         };
-
-        // Wait for any async disk I/O to complete.
-        self.sync_tasks(responder, "Userdata wipe").await;
 
         for attribute in attributes.filter(|p| p.fdr == Fdr::Yes) {
             let basename = attribute.name.as_str();
@@ -1413,7 +1665,9 @@ where
                 |f| write!(f, "erase:{basename}"),
             );
 
-            if let Err(e) = self.schedule_task(&mut task, responder).await {
+            if let Err(e) =
+                self.schedule_task(&mut task, SnapshotMergeCancel::None, responder).await
+            {
                 gbl_println!(
                     self.gbl_ops,
                     "Failed to erase partition '{}', skipping pre-FDR wipe ({:?})",
@@ -1469,7 +1723,8 @@ where
             };
         }
 
-        let (part_io, fdr) = self.parse_and_get_partition_io::<ReadWrite>(part).await?;
+        let (part_io, fdr, snapshot_cancel) =
+            self.parse_and_get_partition_io::<ReadWrite>(part).await?;
         let (data, sz) = self.take_download().ok_or("No download")?;
         let mut task = Task::new(
             match is_sparse_image(&data) {
@@ -1478,7 +1733,7 @@ where
             },
             |f| write!(f, "flash:{part}"),
         );
-        self.schedule_task(&mut task, &mut responder).await?;
+        self.schedule_task(&mut task, snapshot_cancel, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
         }
@@ -1499,12 +1754,13 @@ where
             };
         }
 
-        let (part_io, fdr) = self.parse_and_get_partition_io::<ReadWrite>(part).await?;
+        let (part_io, fdr, snapshot_cancel) =
+            self.parse_and_get_partition_io::<ReadWrite>(part).await?;
         let mut task = Task::new(
             TaskWorkload::Erase(part_io, self.take_or_allocate_download_buffer().await),
             |f| write!(f, "erase:{part}"),
         );
-        self.schedule_task(&mut task, &mut responder).await?;
+        self.schedule_task(&mut task, snapshot_cancel, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
         }
@@ -1605,10 +1861,12 @@ where
         mut responder: impl UploadBuilder + InfoSender,
     ) -> CommandResult<()> {
         self.check_unlocked()?;
-        let (part_io, fdr) = self.parse_and_get_partition_io::<ReadOnly>(part).await?;
-        // FDR should never be required for read-only - this would indicate a bug in GBL.
-        if fdr != Fdr::No {
-            return Err("Internal error: FDR requested during fetch".into());
+        let (part_io, fdr, snapshot_cancel) =
+            self.parse_and_get_partition_io::<ReadOnly>(part).await?;
+        // FDR or snapshot cancellation should never be requested for read-only - this would
+        // indicate a bug in GBL.
+        if fdr != Fdr::No || !matches!(snapshot_cancel, SnapshotMergeCancel::None) {
+            return Err("Internal error: write side-effects requested during fetch".into());
         }
         let buffer = self.get_download_buffer().await;
         // 4MB batches (chosen empirically) or as large as the download buffer permits.
@@ -1800,7 +2058,7 @@ where
         mut responder: impl InfoSender,
     ) -> CommandResult<()> {
         self.check_unlocked()?;
-        let (part_io, fdr) =
+        let (part_io, fdr, snapshot_cancel) =
             self.parse_and_get_partition_io::<ReadWrite>(command.partition.as_ref()).await?;
         let mut task = match command.operation {
             StreamOperation::Fill { size, payload } => {
@@ -1832,7 +2090,7 @@ where
             }
         };
 
-        self.schedule_task(&mut task, &mut responder).await?;
+        self.schedule_task(&mut task, snapshot_cancel, &mut responder).await?;
         if fdr == Fdr::Yes {
             self.sync_tasks_and_fdr(&mut responder).await?;
         }
@@ -2231,7 +2489,10 @@ pub(crate) mod test {
         },
         constants::{KiB, MiB, KERNEL_ALIGNMENT},
         gbl_avb::{AvbDeviceStatus, LoadPartition, PartitionName, SpecializedPartition},
-        misc::{test::read_bootloader_message, write_virtual_ab_message, MiscVirtualAbMessage},
+        misc::{
+            test::read_bootloader_message, write_virtual_ab_message, MiscVirtualAbMessage,
+            SYSTEM_SPACE_OFFSET_IN_MISC,
+        },
         ops::{
             test::{
                 into_refmut_bytes, slot, slot_successful, slot_unbootable, CounterCallback,
@@ -2239,6 +2500,7 @@ pub(crate) mod test {
             },
             FastbootPartitionType, PartitionBuffer,
         },
+        slots::{Priority, Tries},
         tests::read_test_data,
         Os,
     };
@@ -7682,10 +7944,27 @@ pub(crate) mod test {
         );
     }
 
-    fn set_test_merge_status<'a>(ops: &mut impl GblOps<'a>, status: MergeStatus) {
+    fn set_test_virtual_ab_msg<'a>(
+        ops: &mut impl GblOps<'a>,
+        status: MergeStatus,
+        source_slot: u8,
+    ) {
         let mut msg = MiscVirtualAbMessage::default();
         msg.set_merge_status(status);
+        msg.set_source_slot(source_slot);
         block_on(write_virtual_ab_message(ops, msg)).unwrap();
+    }
+
+    fn set_test_merge_status<'a>(ops: &mut impl GblOps<'a>, status: MergeStatus) {
+        // Mirror Android `libboot_control` (`SetMiscVirtualAbMergeStatus`): `Snapshotted` is
+        // written from the pre-OTA slot (distinct from the newly active target slot), whereas
+        // `Merging` is written after booting into the target slot (`source_slot == current_slot`).
+        let cur_is_b = matches!(ops.get_current_slot(), Ok(cur) if cur.suffix.as_char() == 'b');
+        let source_slot = match status {
+            MergeStatus::Snapshotted => u8::from(!cur_is_b),
+            _ => u8::from(cur_is_b),
+        };
+        set_test_virtual_ab_msg(ops, status, source_slot);
     }
 
     fn check_fastboot_commands<'a>(
@@ -7745,6 +8024,14 @@ pub(crate) mod test {
                 "unexpected snapshot-update-status in getvar all: {:?}",
                 logger.0
             );
+            let expected_err = if has_small_misc { "OutOfRange" } else { "NotFound" };
+            assert!(
+                gbl_ops
+                    .console_logs
+                    .contains(&format!("snapshot-update-status unavailable: {expected_err}")),
+                "missing getvar all error log for has_small_misc={has_small_misc}: {:?}",
+                gbl_ops.console_logs
+            );
         }
 
         let mut storage = FakeGblOpsStorage::default();
@@ -7770,6 +8057,14 @@ pub(crate) mod test {
             "unexpected snapshot-update-status in getvar all: {:?}",
             logger.0
         );
+        assert!(
+            gbl_fb
+                .gbl_ops
+                .console_logs
+                .contains("snapshot-update-status unavailable: InvalidInput"),
+            "missing getvar all error log for uninitialized misc: {:?}",
+            gbl_fb.gbl_ops.console_logs
+        );
 
         for (status, expected) in [
             (MergeStatus::None, "none"),
@@ -7784,12 +8079,18 @@ pub(crate) mod test {
 
         // Verify getvar:all also includes snapshot-update-status when misc has a valid message.
         set_test_merge_status(gbl_fb.gbl_ops, MergeStatus::Snapshotted);
+        gbl_fb.gbl_ops.console_logs.clear();
         let mut logger = TestVarSender(vec![]);
         block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
         assert!(
             logger.0.contains(&"snapshot-update-status: snapshotted".to_string()),
             "missing snapshot-update-status in getvar all: {:?}",
             logger.0
+        );
+        assert!(
+            !gbl_fb.gbl_ops.console_logs.contains("snapshot-update-status unavailable:"),
+            "unexpected getvar all error log with valid misc: {:?}",
+            gbl_fb.gbl_ops.console_logs
         );
     }
 
@@ -7888,5 +8189,872 @@ pub(crate) mod test {
                 &[expected_err, expected_err, expected_err, b"OKAY"],
             );
         }
+    }
+
+    #[test]
+    fn test_snapshot_update_blocks_userdata_misc_metadata() {
+        for status in [MergeStatus::Snapshotted, MergeStatus::Merging] {
+            let mut storage = FakeGblOpsStorage::default();
+            storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+            storage.add_raw_device(c"userdata", [0xaa; KiB!(4)]);
+            storage.add_raw_device(c"metadata", [0u8; KiB!(4)]);
+            storage.add_raw_device(c"cache", [0u8; KiB!(4)]);
+            storage.add_raw_device(c"boot_a", [0u8; KiB!(4)]);
+            let mut gbl_ops = FakeGblOps::new(&storage);
+            gbl_ops.avb_device_status.is_unlocked = true;
+            let fdr_counter = CounterCallback::new();
+            let mut fdr_handler = fdr_counter.handler();
+            gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
+            gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
+                name: PartitionName::try_from("cache").unwrap(),
+                fdr: Fdr::Yes,
+                ..Default::default()
+            }]));
+            set_test_merge_status(&mut gbl_ops, status);
+
+            check_fastboot_commands(
+                &mut gbl_ops,
+                &[
+                    b"download:0x4",
+                    b"test",
+                    b"flash:userdata",
+                    b"flash:misc",
+                    b"flash:metadata",
+                    b"flash:cache",
+                    b"erase:userdata",
+                    b"erase:misc",
+                    b"erase:metadata",
+                    b"erase:cache",
+                    b"erase:userdata/1/0/0x4",
+                    b"stream-fill:userdata:0:0x4:0x12345678",
+                    b"stream-fill:cache:0:0x4:0x12345678",
+                    // Read-only fetch and flashing other partitions remain allowed.
+                    b"fetch:userdata:0:0x4",
+                    b"flash:boot_a",
+                    // Canceling the snapshot merge unblocks userdata/metadata/misc/FDR partitions.
+                    b"snapshot-update:cancel",
+                    b"erase:userdata",
+                    b"erase:metadata",
+                    b"erase:cache",
+                    b"erase:misc",
+                    b"continue",
+                ],
+                &[
+                    b"DATA00000004",
+                    b"OKAY",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                    b"INFOUploading 4 bytes...",
+                    b"DATA00000004",
+                    &[0xaa; 4],
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAY",
+                ],
+            );
+            // `userdata`, `metadata` (default `Fdr::Yes`), and `cache` (explicit `Fdr::Yes`)
+            // were all blocked before `snapshot-update:cancel` and each triggered FDR once after.
+            assert_eq!(fdr_counter.count(), 3);
+        }
+    }
+
+    #[test]
+    fn test_snapshot_update_super_auto_cancels_merge() {
+        for status in [MergeStatus::Snapshotted, MergeStatus::Merging] {
+            let mut storage = FakeGblOpsStorage::default();
+            storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+            storage.add_raw_device(c"super", [0u8; KiB!(4)]);
+            let mut gbl_ops = FakeGblOps::new(&storage);
+            gbl_ops.avb_device_status.is_unlocked = true;
+
+            // 1. Failed flash/stream on super must not cancel an active merge; valid flash cancels.
+            set_test_merge_status(&mut gbl_ops, status);
+            let expected_active = format!("OKAY{status}");
+            check_fastboot_commands(
+                &mut gbl_ops,
+                &[
+                    b"flash:super",
+                    b"stream-fill:super:0:0x2000:0x11223344",
+                    b"download:0x4",
+                    b"test",
+                    b"stream-flash:super:0:0xdeadbeef",
+                    b"getvar:snapshot-update-status",
+                    b"download:0x4",
+                    b"test",
+                    b"flash:super",
+                    b"getvar:snapshot-update-status",
+                    b"continue",
+                ],
+                &[
+                    b"FAILNo download",
+                    b"FAILOutOfRange",
+                    b"DATA00000004",
+                    b"OKAY",
+                    b"FAILChecksum mismatch: expected 0xdeadbeef, got 0xd87f7e0c",
+                    expected_active.as_bytes(),
+                    b"DATA00000004",
+                    b"OKAY",
+                    b"OKAY",
+                    b"OKAYnone",
+                    b"OKAY",
+                ],
+            );
+            assert_eq!(
+                block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+                MergeStatus::Cancelled
+            );
+
+            // 2. Erase, ranged erase, and stream-fill on super auto-cancel merge.
+            for cmd in [
+                b"erase:super".as_slice(),
+                b"erase:super/1/0/0x4".as_slice(),
+                b"stream-fill:super:0:0x4:0x11223344".as_slice(),
+            ] {
+                set_test_merge_status(&mut gbl_ops, status);
+                check_fastboot_commands(
+                    &mut gbl_ops,
+                    &[cmd, b"getvar:snapshot-update-status", b"continue"],
+                    &[b"OKAY", b"OKAYnone", b"OKAY"],
+                );
+                assert_eq!(
+                    block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+                    MergeStatus::Cancelled
+                );
+            }
+
+            // 3. Modifying super when status is None leaves status as None.
+            set_test_merge_status(&mut gbl_ops, MergeStatus::None);
+            check_fastboot_commands(
+                &mut gbl_ops,
+                &[b"erase:super", b"continue"],
+                &[b"OKAY", b"OKAY"],
+            );
+            assert_eq!(
+                block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+                MergeStatus::None
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_update_fdr_lock_unlock_cancels_merge() {
+        const USERDATA_INIT: [u8; KiB!(4)] = [0x11; KiB!(4)];
+        const METADATA_INIT: [u8; KiB!(4)] = [0x22; KiB!(4)];
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"userdata", USERDATA_INIT);
+        storage.add_raw_device(c"metadata", METADATA_INIT);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
+        let fdr_counter = CounterCallback::new();
+        let mut fdr_handler = fdr_counter.handler();
+        gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
+
+        // No-op `flashing unlock` when already unlocked fails without canceling the snapshot merge.
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Snapshotted);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"flashing unlock", b"getvar:snapshot-update-status", b"continue"],
+            &[b"FAILAlready unlocked", b"OKAYsnapshotted", b"OKAY"],
+        );
+        assert_eq!(fdr_counter.count(), 0);
+
+        // `flashing lock` wipes userdata/metadata, runs FDR, and cancels the Snapshotted merge.
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"flashing lock", b"getvar:snapshot-update-status", b"continue"],
+            &[b"OKAY", b"OKAYnone", b"OKAY"],
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+        assert_eq!(
+            storage[1].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &[0xee; KiB!(4)]
+        );
+        assert_eq!(
+            storage[2].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &[0xdd; KiB!(4)]
+        );
+        assert_eq!(fdr_counter.count(), 1);
+        assert!(!gbl_ops.avb_device_status.is_unlocked, "device should be locked after lock");
+
+        // `flashing unlock` wipes userdata/metadata, runs FDR, and cancels a Merging snapshot.
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Merging);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"flashing unlock", b"getvar:snapshot-update-status", b"continue"],
+            &[b"OKAY", b"OKAYnone", b"OKAY"],
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+        assert_eq!(fdr_counter.count(), 2);
+        assert!(gbl_ops.avb_device_status.is_unlocked, "device should be unlocked after unlock");
+    }
+
+    #[test]
+    fn test_set_active_blocked_only_when_merging() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"userdata", [0u8; KiB!(4)]);
+        storage.add_raw_device(c"metadata", [0u8; KiB!(4)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.slot_count = Some(Ok(2));
+        gbl_ops.slot_infos = vec![Ok(slot('a')), Ok(slot('b'))];
+        gbl_ops.current_slot = Some(Ok(1));
+
+        // Simulate an unmerged OTA from slot `a` (`source_slot = 0`) to booted slot `b` (`1`):
+        // - While booted on slot `b`, status is `snapshotted` and `userdata` writes are blocked.
+        // - `set_active:a` is permitted for rollback. Note that `FakeGblOps::set_active_slot`
+        //   updates `current_slot` eagerly, whereas
+        //   `GBL_EFI_BOOT_CONTROL_PROTOCOL.GetCurrentSlot()` reports the currently booted slot
+        //   (`b`) until reboot: verify that while still booted on `b` (`current_slot = Ok(1)`),
+        //   status remains `snapshotted` and `userdata` writes stay blocked.
+        // - Once rebooted into rolled-back slot `a` (`current_slot = Ok(0)`), `GetCurrentSlot()`
+        //   matches `source_slot`, so status reports `none`; a failed `flash:userdata` (no
+        //   download) leaves `misc` untouched, so rebooting back into slot `b` (`current_slot =
+        //   Ok(1)`) without wiping resumes `snapshotted`.
+        // - Rebooting into rolled-back slot `a` (`current_slot = Ok(0)`) permits
+        //   `userdata`/`metadata` erases (matching `libboot_control` and `fastbootd`), and wiping
+        //   snapshot backing state transitions the reverted `Snapshotted` record in `misc` to
+        //   `Cancelled` so rebooting back into slot `b` (`current_slot = Ok(1)`) cannot resurrect a
+        //   wiped snapshot.
+        set_test_virtual_ab_msg(&mut gbl_ops, MergeStatus::Snapshotted, 0);
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"erase:userdata", b"set_active:a", b"continue"],
+            &[
+                b"OKAYsnapshotted",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(res.last_set_active_slot, Some('a'));
+
+        // Before rebooting, `GetCurrentSlot()` on booted-slot firmware still reports `b` (`1`).
+        gbl_ops.current_slot = Some(Ok(1));
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"erase:userdata", b"continue"],
+            &[
+                b"OKAYsnapshotted",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+            ],
+        );
+
+        // Simulate rebooting into rolled-back slot `a` (`current_slot = Ok(0)`): failed
+        // `flash:userdata` leaves `misc` untouched, and `set_active:b` schedules booting back into
+        // `b` without changing the booted slot mid-session.
+        gbl_ops.current_slot = Some(Ok(0));
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"getvar:snapshot-update-status",
+                b"snapshot-update",
+                b"flash:userdata",
+                b"set_active:b",
+                b"continue",
+            ],
+            &[b"OKAYnone", b"INFOnone", b"OKAY", b"FAILNo download", b"OKAY", b"OKAY"],
+        );
+        assert_eq!(res.last_set_active_slot, Some('b'));
+
+        // Before rebooting into `b`, `GetCurrentSlot()` still reports booted slot `a` (`0`).
+        gbl_ops.current_slot = Some(Ok(0));
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"continue"],
+            &[b"OKAYnone", b"OKAY"],
+        );
+
+        // Simulate rebooting back into slot `b` (`current_slot = Ok(1)`): `snapshotted` resumes
+        // because neither boot nor wipe consumed the snapshot; roll back to `a` again.
+        gbl_ops.current_slot = Some(Ok(1));
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"erase:userdata", b"set_active:a", b"continue"],
+            &[
+                b"OKAYsnapshotted",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(res.last_set_active_slot, Some('a'));
+
+        // Simulate rebooting into rolled-back slot `a` (`current_slot = Ok(0)`): `erase:metadata`
+        // succeeds and cancels the reverted `Snapshotted` record in `misc`.
+        gbl_ops.current_slot = Some(Ok(0));
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"erase:metadata", b"set_active:b", b"continue"],
+            &[b"OKAY", b"OKAY", b"OKAY"],
+        );
+        assert_eq!(res.last_set_active_slot, Some('b'));
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+
+        // Simulate rebooting back into slot `b` (`current_slot = Ok(1)`): canceled record stays
+        // `none` and `erase:userdata` is permitted.
+        gbl_ops.current_slot = Some(Ok(1));
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"erase:userdata", b"continue"],
+            &[b"OKAYnone", b"OKAY", b"OKAY"],
+        );
+
+        // Slotless platforms (`get_current_slot` returning `Unsupported`) keep `Snapshotted`
+        // active regardless of `source_slot`.
+        gbl_ops.current_slot = Some(Err(Error::Unsupported));
+        set_test_virtual_ab_msg(&mut gbl_ops, MergeStatus::Snapshotted, 0);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"getvar:snapshot-update-status", b"erase:userdata", b"continue"],
+            &[
+                b"OKAYsnapshotted",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+            ],
+        );
+        gbl_ops.current_slot = Some(Ok(1));
+
+        // Mark booted slot `b` (`index = 1`) as highest-priority `Successful` (`15 > 14`) during
+        // `Merging` (`source_slot = 1`, written on the target slot and never treated as reverted):
+        // - Invalid slots still fail with `Invalid slot`.
+        // - Switching to a different slot (`a`) is rejected.
+        // - Re-selecting the already-booted highest-priority `Successful` slot (`b`) emits an
+        //   `INFO` + console log and succeeds without clearing `Successful`.
+        gbl_ops.slot_infos[0] = Ok(Slot { priority: Priority::from(14u8), ..slot('a') });
+        gbl_ops.slot_infos[1] = Ok(Slot { priority: Priority::from(15u8), ..slot_successful('b') });
+        gbl_ops.console_logs.clear();
+        set_test_virtual_ab_msg(&mut gbl_ops, MergeStatus::Merging, 1);
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"getvar:snapshot-update-status",
+                b"set_active:z",
+                b"set_active:a",
+                b"set_active:b",
+                b"getvar:slot-successful:b",
+                b"continue",
+            ],
+            &[
+                b"OKAYmerging",
+                b"FAILInvalid slot",
+                b"FAILCannot change slots while a snapshot update is in progress",
+                b"INFOSkipping set_active reset of current slot during snapshot merge",
+                b"OKAY",
+                b"OKAYyes",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(res.last_set_active_slot, Some('b'));
+        assert!(
+            gbl_ops
+                .console_logs
+                .contains("Skipping set_active reset of current slot during snapshot merge"),
+            "missing console log when skipping set_active reset during Merging: {:?}",
+            gbl_ops.console_logs
+        );
+        assert!(
+            matches!(
+                gbl_ops.slot_infos[1],
+                Ok(Slot { bootability: Bootability::Successful(_), .. })
+            ),
+            "set_active on already-booted Successful slot during Merging must preserve Successful"
+        );
+
+        // If another tool raised bootable slot `a` to tie or exceed merging slot `b`'s priority
+        // (`15 >= 15`, where slot selectors tie-break to slot `a`) without clearing `b`'s
+        // `Successful` flag while still booted on `b`, `set_active:b` must invoke
+        // `GblOps::set_active_slot` rather than skipping the call.
+        gbl_ops.slot_infos[0] = Ok(Slot { priority: Priority::from(15u8), ..slot('a') });
+        gbl_ops.slot_infos[1] = Ok(Slot { priority: Priority::from(15u8), ..slot_successful('b') });
+        gbl_ops.console_logs.clear();
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"set_active:b", b"getvar:slot-successful:b", b"continue"],
+            &[b"OKAY", b"OKAYno", b"OKAY"],
+        );
+        assert!(
+            !gbl_ops
+                .console_logs
+                .contains("Skipping set_active reset of current slot during snapshot merge"),
+            "unexpected skip when another bootable slot did not have lower priority: {:?}",
+            gbl_ops.console_logs
+        );
+        gbl_ops.slot_infos[0] = Ok(Slot { priority: Priority::from(14u8), ..slot('a') });
+        gbl_ops.slot_infos[1] = Ok(Slot { priority: Priority::from(15u8), ..slot_successful('b') });
+
+        // If `GetCurrentSlot()` reports bootable slot `a` (`Ok(0)`) while `misc` says `source_slot
+        // = 1` is `Merging` (e.g. another tool switched priority and rebooted, or a custom HAL
+        // left `source_slot` mismatched), `set_active` logs a console warning, rejects `a`, and
+        // invokes `GblOps::set_active_slot` on `b` rather than skipping.
+        gbl_ops.current_slot = Some(Ok(0));
+        gbl_ops.console_logs.clear();
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"getvar:current-slot",
+                b"getvar:slot-successful:b",
+                b"set_active:a",
+                b"set_active:b",
+                b"getvar:slot-successful:b",
+                b"continue",
+            ],
+            &[
+                b"OKAYa",
+                b"OKAYyes",
+                b"FAILCannot change slots while a snapshot update is in progress",
+                b"OKAY",
+                b"OKAYno",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(res.last_set_active_slot, Some('b'));
+        assert!(
+            gbl_ops.console_logs.contains(
+                "Warning: Virtual A/B source_slot (1) differs from bootable current slot 'a' \
+                (index 0) during Merging"
+            ),
+            "missing source_slot mismatch warning during Merging: {:?}",
+            gbl_ops.console_logs
+        );
+        assert!(
+            !gbl_ops
+                .console_logs
+                .contains("Skipping set_active reset of current slot during snapshot merge"),
+            "unexpected skip when merging slot was not current: {:?}",
+            gbl_ops.console_logs
+        );
+
+        // If the merging slot (`b`) is `Retriable` with depleted tries (`2`), `set_active:b` calls
+        // `GblOps::set_active_slot` and resets `slot-retry-count` back to default (`7`).
+        gbl_ops.slot_infos[1] = Ok(Slot {
+            suffix: 'b'.try_into().unwrap(),
+            bootability: Bootability::Retriable(Tries::from(2u8)),
+            ..Default::default()
+        });
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"getvar:slot-retry-count:b",
+                b"set_active:b",
+                b"getvar:slot-retry-count:b",
+                b"continue",
+            ],
+            &[b"OKAY2", b"OKAY", b"OKAY7", b"OKAY"],
+        );
+
+        // If `source_slot` is out of range, `set_active` logs a warning, falls back to
+        // `get_current_slot`, and propagates underlying `GblOps` errors rather than masking them.
+        set_test_virtual_ab_msg(&mut gbl_ops, MergeStatus::Merging, 99);
+        gbl_ops.console_logs.clear();
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"set_active:a", b"continue"],
+            &[b"FAILCannot change slots while a snapshot update is in progress", b"OKAY"],
+        );
+        assert!(
+            gbl_ops.console_logs.contains(
+                "Warning: Virtual A/B source_slot (99) out of range (slot_count=2) during \
+                Merging; falling back to current slot"
+            ),
+            "missing out-of-range source_slot warning: {:?}",
+            gbl_ops.console_logs
+        );
+        gbl_ops.current_slot = Some(Err(Error::DeviceError));
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"set_active:a", b"continue"],
+            &[b"FAILDeviceError", b"OKAY"],
+        );
+        set_test_virtual_ab_msg(&mut gbl_ops, MergeStatus::Merging, 1);
+
+        // When the merging slot (`b`, `source_slot = 1`) exhausts its tries (`Unbootable`), vendor
+        // firmware may fall back to booting the other slot (`a`, `GetCurrentSlot() => Ok(0)`) — or
+        // on firmware that derives `GetCurrentSlot()` from bootable slot metadata, return
+        // `Err(Error::NotFound)` if no slot is bootable. In both cases, `set_active:a` must remain
+        // blocked while `set_active:b` clears `slot-unbootable` on the merging slot (`fastboot
+        // flashall` recovery).
+        for fallback_current in [Ok(0), Err(Error::NotFound)] {
+            gbl_ops.slot_infos[1] = Ok(slot_unbootable('b'));
+            gbl_ops.current_slot = Some(fallback_current);
+            check_fastboot_commands(
+                &mut gbl_ops,
+                &[
+                    b"getvar:slot-unbootable:b",
+                    b"set_active:a",
+                    b"set_active:b",
+                    b"getvar:slot-unbootable:b",
+                    b"continue",
+                ],
+                &[
+                    b"OKAYyes",
+                    b"FAILCannot change slots while a snapshot update is in progress",
+                    b"OKAY",
+                    b"OKAYno",
+                    b"OKAY",
+                ],
+            );
+        }
+
+        let res = check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"snapshot-update:cancel", b"set_active:a", b"continue"],
+            &[b"OKAY", b"OKAY", b"OKAY"],
+        );
+        assert_eq!(res.last_set_active_slot, Some('a'));
+    }
+
+    #[test]
+    fn test_snapshot_update_guards_allow_unavailable_or_uninitialized_misc() {
+        for (misc_size, expected_err) in
+            [(None, "NotFound"), (Some(KiB!(4)), "OutOfRange"), (Some(KiB!(64)), "InvalidInput")]
+        {
+            let mut storage = FakeGblOpsStorage::default();
+            if let Some(sz) = misc_size {
+                storage.add_raw_device(c"misc", vec![0u8; sz]);
+            }
+            storage.add_raw_device(c"userdata", [0u8; KiB!(4)]);
+            storage.add_raw_device(c"metadata", [0u8; KiB!(4)]);
+            storage.add_raw_device(c"super", [0u8; KiB!(4)]);
+            let mut gbl_ops = FakeGblOps::new(&storage);
+            gbl_ops.avb_device_status.is_unlocked = true;
+            gbl_ops.slot_count = Some(Ok(2));
+            gbl_ops.slot_infos = vec![Ok(slot('a')), Ok(slot('b'))];
+
+            let mut cmds = vec![
+                b"download:0x4".as_slice(),
+                b"test".as_slice(),
+                b"flash:userdata".as_slice(),
+                b"erase:metadata".as_slice(),
+                b"erase:super".as_slice(),
+                b"set_active:b".as_slice(),
+            ];
+            let mut expected = vec![
+                b"DATA00000004".as_slice(),
+                b"OKAY".as_slice(),
+                b"OKAY".as_slice(),
+                b"OKAY".as_slice(),
+                b"OKAY".as_slice(),
+                b"OKAY".as_slice(),
+            ];
+            let expected_warnings = if misc_size.is_some() {
+                cmds.push(b"erase:misc");
+                expected.push(b"OKAY");
+                5
+            } else {
+                4
+            };
+            cmds.push(b"continue");
+            expected.push(b"OKAY");
+            let res = check_fastboot_commands(&mut gbl_ops, &cmds, &expected);
+            assert_eq!(res.last_set_active_slot, Some('b'));
+            let expected_warning = format!(
+                "Warning: unusable Virtual A/B metadata in misc ({expected_err}); \
+                skipping Virtual A/B guards"
+            );
+            assert_eq!(
+                gbl_ops.console_logs.matches(&expected_warning).count(),
+                expected_warnings,
+                "unexpected Virtual A/B guard warning count ({expected_err}): {:?}",
+                gbl_ops.console_logs
+            );
+        }
+
+        // Valid `misc` does not emit the unusable-metadata warning when guards run.
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"userdata", [0u8; KiB!(4)]);
+        storage.add_raw_device(c"super", [0u8; KiB!(4)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        set_test_merge_status(&mut gbl_ops, MergeStatus::None);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"erase:userdata", b"erase:super", b"continue"],
+            &[b"OKAY", b"OKAY", b"OKAY"],
+        );
+        assert!(
+            !gbl_ops.console_logs.contains("Warning: unusable Virtual A/B metadata in misc"),
+            "unexpected Virtual A/B guard warning with valid misc: {:?}",
+            gbl_ops.console_logs
+        );
+
+        // Genuine errors looking up `misc` (e.g., duplicate `misc` partitions -> `NotUnique`) still
+        // propagate from normal command guards, while `flashing lock` remains best-effort.
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"userdata", [0u8; KiB!(4)]);
+        storage.add_raw_device(c"super", [0u8; KiB!(4)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
+        gbl_ops.slot_count = Some(Ok(2));
+        gbl_ops.slot_infos = vec![Ok(slot('a')), Ok(slot('b'))];
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"erase:userdata", b"erase:super", b"set_active:b", b"flashing lock", b"continue"],
+            &[b"FAILNotUnique", b"FAILNotUnique", b"FAILNotUnique", b"OKAY", b"OKAY"],
+        );
+        assert!(!gbl_ops.avb_device_status.is_unlocked, "device should be locked after lock");
+    }
+
+    #[test]
+    fn test_snapshot_update_async_scratch_exhaustion_and_misc_race() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.0.push(TestGblDisk::new_gpt(
+            Disk::new_ram_alloc(512, 512, vec![0u8; KiB!(256)]).unwrap(),
+            new_gpt_max(),
+        ));
+        let mut builder = storage[0].gpt_builder().unwrap();
+        for (idx, (name, size)) in [
+            ("boot_a", KiB!(4)),
+            ("boot_b", KiB!(4)),
+            ("userdata", KiB!(4)),
+            ("super", KiB!(16)),
+            ("misc", KiB!(64)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uid = [u8::try_from(idx + 1).unwrap(); GPT_GUID_LEN];
+            builder.add(name, [1u8; GPT_GUID_LEN], uid, 0, Some(size as u64)).unwrap();
+        }
+        block_on(builder.persist()).unwrap();
+        storage[0].get_blk_io().set_blocking(true);
+
+        // 1. Direct `GblFastboot` calls while 2 async tasks hold both disk scratch buffers on the
+        //    same GPT disk.
+        {
+            let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(64)]); 4]);
+            let mut gbl_ops = FakeGblOps::new(&storage);
+            gbl_ops.avb_device_status.is_unlocked = true;
+            set_test_merge_status(&mut gbl_ops, MergeStatus::Snapshotted);
+
+            let tasks = vec![].into();
+            let parts = gbl_ops.disks();
+            let mut gbl_fb = GblFastboot::new(
+                &mut gbl_ops,
+                parts,
+                Task::run,
+                &tasks,
+                &dl_buffers,
+                Default::default(),
+            );
+            let resp: TestResponder = Default::default();
+            gbl_fb.enable_async_task = true;
+
+            block_on(gbl_fb.erase("boot_a", &resp)).unwrap();
+            block_on(gbl_fb.erase("boot_b", &resp)).unwrap();
+            assert_eq!(tasks.borrow().len(), 2);
+
+            check_var(&mut gbl_fb, "snapshot-update-status", "", "snapshotted");
+            let mut logger = TestVarSender(vec![]);
+            block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
+            assert!(
+                logger.0.contains(&"snapshot-update-status: snapshotted".to_string()),
+                "missing snapshot-update-status in getvar all: {:?}",
+                logger.0
+            );
+
+            // `super` stream chunk cancels active merge in `misc` even while sibling tasks are
+            // queued on the same GPT disk.
+            block_on(gbl_fb.stream(
+                StreamCommand {
+                    partition: "super",
+                    offset: 0,
+                    operation: StreamOperation::Fill { size: 4, payload: 0x11223344 },
+                },
+                &resp,
+            ))
+            .unwrap();
+            block_on(gbl_fb.oem_sync_tasks(&mut (&resp))).unwrap();
+            check_var(&mut gbl_fb, "snapshot-update-status", "", "none");
+
+            // Async `flash:misc` with `Snapshotted` drains before subsequent `super` stream chunk.
+            let mut snap_msg = MiscVirtualAbMessage::default();
+            snap_msg.set_merge_status(MergeStatus::Snapshotted);
+            snap_msg.set_source_slot(1);
+            let snap_bytes: [u8; MiscVirtualAbMessage::SIZE_BYTES] = snap_msg.into();
+            let mut misc_img = vec![0u8; KiB!(64)];
+            misc_img[SYSTEM_SPACE_OFFSET_IN_MISC..][..MiscVirtualAbMessage::SIZE_BYTES]
+                .copy_from_slice(&snap_bytes);
+            set_download(&mut gbl_fb, &misc_img);
+            block_on(gbl_fb.flash("misc", &resp)).unwrap();
+            block_on(gbl_fb.stream(
+                StreamCommand {
+                    partition: "super",
+                    offset: 4,
+                    operation: StreamOperation::Fill { size: 4, payload: 0x11223344 },
+                },
+                &resp,
+            ))
+            .unwrap();
+            block_on(gbl_fb.oem_sync_tasks(&mut (&resp))).unwrap();
+            check_var(&mut gbl_fb, "snapshot-update-status", "", "none");
+        }
+
+        // 2. Full `run_gbl_fastboot_stack::<2>` under 2-task scratch buffer exhaustion and async
+        //    `erase:misc` / `flash:misc` pipelining.
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Snapshotted);
+
+        let mut snap_msg = MiscVirtualAbMessage::default();
+        snap_msg.set_merge_status(MergeStatus::Snapshotted);
+        snap_msg.set_source_slot(1);
+        let snap_bytes: [u8; MiscVirtualAbMessage::SIZE_BYTES] = snap_msg.into();
+        let mut misc_img = vec![0u8; KiB!(64)];
+        misc_img[SYSTEM_SPACE_OFFSET_IN_MISC..][..MiscVirtualAbMessage::SIZE_BYTES]
+            .copy_from_slice(&snap_bytes);
+
+        let buffers = vec![Some(vec![0u8; KiB!(64)]); 4];
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        for cmd in [
+            b"oem gbl-enable-async-task".as_slice(),
+            b"erase:boot_a",
+            b"erase:boot_b",
+            b"getvar:snapshot-update-status",
+            b"erase:userdata",
+            b"stream-fill:super:0:0x4:0x11223344",
+            b"stream-fill:super:0x4:0x4:0x11223344",
+            b"getvar:snapshot-update-status",
+            // `misc` is now `Cancelled` (`none`); async `erase:misc` must drain before `getvar`.
+            b"erase:misc",
+            b"getvar:snapshot-update-status",
+            // Async `flash:misc` with `Snapshotted` must drain before `erase:userdata` / `super`.
+            b"download:0x10000",
+            &misc_img,
+            b"flash:misc",
+            b"erase:userdata",
+            b"erase:super",
+            b"getvar:snapshot-update-status",
+            b"continue",
+        ] {
+            listener.add_transport_input(cmd);
+        }
+
+        let mut general = vec![0u8; 1024];
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            GblFbData { boot_buffer: (&mut general[..]).into(), ..Default::default() },
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"OKAY",
+                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
+                b"OKAY",
+                b"OKAY",
+                b"OKAYsnapshotted",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+                b"OKAY",
+                b"OKAYnone",
+                b"OKAY",
+                b"FAILInvalidInput",
+                b"DATA00010000",
+                b"OKAY",
+                b"OKAY",
+                b"FAILCannot flash/erase partition while a snapshot update is in progress",
+                b"OKAY",
+                b"OKAYnone",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+        assert_eq!(
+            block_on(read_virtual_ab_message(&mut gbl_ops)).unwrap().merge_status(),
+            MergeStatus::Cancelled
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fuchsia")]
+    fn test_snapshot_update_ignored_on_fuchsia() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        storage.add_raw_device(c"userdata", [0u8; KiB!(4)]);
+        storage.add_raw_device(c"super", [0u8; KiB!(4)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        set_test_merge_status(&mut gbl_ops, MergeStatus::Merging);
+        gbl_ops.os = Some(Os::Fuchsia);
+        gbl_ops.avb_device_status.is_unlocked = true;
+
+        {
+            let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
+            let tasks = vec![].into();
+            let parts = gbl_ops.disks();
+            let mut gbl_fb = GblFastboot::new(
+                &mut gbl_ops,
+                parts,
+                Task::run,
+                &tasks,
+                &dl_buffers,
+                Default::default(),
+            );
+            let mut logger = TestVarSender(vec![]);
+            block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
+            assert!(
+                !logger.0.iter().any(|s| s.starts_with("snapshot-update-status:")),
+                "unexpected snapshot-update-status in Fuchsia getvar all: {:?}",
+                logger.0
+            );
+        }
+
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[
+                b"getvar:snapshot-update-status",
+                b"snapshot-update",
+                b"erase:userdata",
+                b"erase:super",
+                b"erase:misc",
+                b"continue",
+            ],
+            &[b"FAILUnsupported", b"FAILUnsupported", b"OKAY", b"OKAY", b"OKAY", b"OKAY"],
+        );
+        assert!(
+            !gbl_ops.console_logs.contains("snapshot-update-status unavailable"),
+            "unexpected snapshot-update-status getvar all log on Fuchsia: {:?}",
+            gbl_ops.console_logs
+        );
+        assert!(
+            !gbl_ops.console_logs.contains("Warning: unusable Virtual A/B metadata in misc"),
+            "unexpected Virtual A/B guard warning on Fuchsia: {:?}",
+            gbl_ops.console_logs
+        );
     }
 }

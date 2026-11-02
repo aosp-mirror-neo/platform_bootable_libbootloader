@@ -1435,11 +1435,15 @@ pub(crate) mod test {
         /// Custom handler for `Self::handle_loaded_os`.
         pub handle_loaded_os_handler:
             Option<&'a mut dyn FnMut(&[u8], &[u8], &[u8]) -> Result<(), Error>>,
+
+        /// Captured console output written via `console_out`.
+        pub console_logs: String,
     }
 
-    /// Print `console_out` output, which can be useful for debugging.
+    /// Print `console_out` output, which can be useful for debugging, and capture it for tests.
     impl<'a> Write for FakeGblOps<'a> {
         fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
+            self.console_logs.push_str(s);
             print!("{s}");
             Ok(())
         }

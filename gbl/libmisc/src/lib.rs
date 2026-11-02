@@ -286,6 +286,16 @@ impl MiscVirtualAbMessage {
     pub fn set_merge_status(&mut self, status: MergeStatus) {
         self.0.merge_status = status.into();
     }
+
+    /// Returns the 0-based slot index recorded when `merge_status` was written.
+    pub fn source_slot(&self) -> u8 {
+        self.0.source_slot
+    }
+
+    /// Updates the 0-based source slot index in this message.
+    pub fn set_source_slot(&mut self, slot: u8) {
+        self.0.source_slot = slot;
+    }
 }
 
 const_assert!(MiscVirtualAbMessage::SIZE_BYTES == size_of::<MiscVirtualAbMessage>());
@@ -440,9 +450,12 @@ mod test {
 
         let mut msg = MiscVirtualAbMessage::try_from(&buf[..]).unwrap();
         assert_eq!(msg.merge_status(), MergeStatus::Merging);
+        assert_eq!(msg.source_slot(), 1);
         msg.set_merge_status(MergeStatus::Cancelled);
         assert_eq!(msg.merge_status(), MergeStatus::Cancelled);
-        assert_eq!(msg.0.source_slot, 1);
+        assert_eq!(msg.source_slot(), 1);
         assert_eq!(msg.0.reserved[0], 0x5a);
+        msg.set_source_slot(0);
+        assert_eq!(msg.source_slot(), 0);
     }
 }

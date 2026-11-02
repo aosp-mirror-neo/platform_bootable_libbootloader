@@ -45,6 +45,7 @@ extraction commands are only available when the device is **unlocked**:
 - `fastboot erase`
 - `fastboot fetch`
 - `fastboot boot`
+- `fastboot snapshot-update cancel`
 - `fastboot flashing lock_critical`
 - `fastboot flashing unlock_critical`
 
@@ -53,11 +54,12 @@ Attempts to run these commands on a locked device will result in a Fastboot fail
 ## Fastboot Variables
 
 GBL implements the Fastboot variables tied to functionality it owns, such as
-`max-download-size`, `current-slot`, `partition-size` or `unlocked`. Common
-variables whose values are vendor-specific, such as `product`, `serialno`,
-`secure` or `version-baseband`, are not implemented by GBL. Firmware should
-report them via [`GBL_EFI_FASTBOOT_PROTOCOL`][gbl_efi_fastboot_protocol]
-`GetVar()` and `GetVarAll()`.
+`max-download-size`, `current-slot`, `partition-size`, `unlocked`, or
+`snapshot-update-status`. Common variables whose values are vendor-specific,
+such as `product`, `serialno`, `secure` or `version-baseband`, are not
+implemented by GBL. Firmware should report them via
+[`GBL_EFI_FASTBOOT_PROTOCOL`][gbl_efi_fastboot_protocol] `GetVar()` and
+`GetVarAll()`.
 
 ## The Partition Argument
 
@@ -234,6 +236,74 @@ rejected and the host should reboot the device. `fastboot oem gbl-sync-blocks`
 can be used to wait until all currently pending flashes are completed. The
 command returns error if any previous or current flash encounters errors.
 
+## Virtual A/B
+
+Android devices using Virtual A/B with GBL must provide a `misc` partition large
+enough to hold AOSP system space (`>= 32 KiB + 64 B`) and must configure the
+Android Boot Control HAL (`IBootControl`) to store the snapshot merge status in
+[`misc_virtual_ab_message`][misc_virtual_ab_message] at `misc` + 32 KiB
+([`SYSTEM_SPACE_OFFSET_IN_MISC`][system_space_offset_in_misc]), matching AOSP
+`libboot_control` and `libbootloader_message`:
+
+- `source_slot` must be written as the currently booted slot on every
+  `merge_status` update (so `Snapshotted` records the pre-OTA slot and `Merging`
+  records the OTA target slot, as AOSP `SetMiscVirtualAbMergeStatus` does).
+- `source_slot` must use the same 0-based slot index numbering as
+  [`GBL_EFI_BOOT_CONTROL_PROTOCOL.GetSlotInfo(Idx)`][boot_control_protocol].
+
+GBL does not initialize an uninitialized `misc` record. Until Android
+initializes `misc_virtual_ab_message`, or if `misc` is missing, undersized, or
+lacks a valid `misc_virtual_ab_message` header:
+
+- `fastboot getvar snapshot-update-status`, `fastboot snapshot-update`, and
+  `fastboot snapshot-update cancel` return an error, and
+  `snapshot-update-status` is omitted from `fastboot getvar all`.
+- Implicit command guards log a warning over the console and treat no snapshot
+  merge as active so bring-up and initial device provisioning remain unblocked
+  while surfacing non-standard Boot Control HALs.
+
+### Commands and Variables
+
+- `fastboot getvar snapshot-update-status`: Reports `"snapshotted"`
+  (`MergeStatus::Snapshotted` when the currently booted slot reported by
+  [`GetCurrentSlot()`][boot_control_protocol] differs from `source_slot`),
+  `"merging"` (`MergeStatus::Merging`), or `"none"` (`None`, `Unknown`,
+  `Cancelled`, or `Snapshotted` when `GetCurrentSlot()` matches `source_slot`,
+  e.g. after rolling back and rebooting into `source_slot`). Also included in
+  `fastboot getvar all` when `misc` contains a valid `misc_virtual_ab_message`.
+- `fastboot snapshot-update`: Sends the current snapshot merge status via an
+  `INFO` message followed by `OKAY`.
+- `fastboot snapshot-update cancel`: Requires the device to be unlocked.
+  Transitions a `Snapshotted` or `Merging` record in `misc` to `Cancelled`
+  (no-op otherwise). Note that `fastboot snapshot-update merge` is not supported
+  in bootloader fastboot.
+
+### State Guards
+
+- While in an active `Snapshotted` or `Merging` state, `flash`, `erase`, and
+  `stream-flash` / `stream-fill` targeting `userdata`, `misc`, `metadata`, or
+  any partition configured with `GBL_EFI_AVB_PARTITION_FLAG_FDR` are rejected
+  until the merge completes or is canceled via
+  `fastboot snapshot-update cancel` (when `GetCurrentSlot()` matches
+  `source_slot` during `Snapshotted`, e.g. after rolling back and rebooting
+  into `source_slot`, modifying `userdata`, `metadata`, or an FDR partition is
+  permitted and transitions the reverted `misc` record to `Cancelled`).
+- `flash`, `erase`, and `stream-flash` / `stream-fill` targeting `super`
+  automatically transition an active `Snapshotted` or `Merging` record in `misc`
+  to `Cancelled`, fulfilling `IBootControl::getSnapshotMergeStatus()` and
+  unblocking subsequent fastboot guards.
+- Pre-FDR partition wipes during `fastboot flashing lock` and
+  `fastboot flashing unlock` best-effort cancel any active snapshot merge in
+  `misc`.
+- While in `Merging` state, `fastboot set_active` to any slot other than the
+  merging slot (`source_slot`) is rejected (re-selecting the merging slot
+  remains permitted, e.g. for `fastboot flashall`, preserving `Successful`
+  without resetting slot metadata when `GetCurrentSlot()` already reports that
+  slot as booted and all other bootable slots have lower priority; `Snapshotted`
+  still allows `fastboot set_active` for rollback, which clears
+  `snapshot-update-status` and write guards once rebooted into `source_slot`,
+  matching `libboot_control`).
+
 ## Fastboot Boot for Fuchsia
 
 In Fuchsia mode, the image format for "fastboot boot" is ZBI followed by vbmeta
@@ -365,5 +435,10 @@ to complete. The UI should wait until all messages have been displayed.
     screen. (may be defered to main loop)
 10. GBL calls `Stop` to de-initialize the UI.
 
+[boot_control_protocol]: ./gbl_efi_boot_control_protocol.md
 [gbl_efi_fastboot_protocol]: ./gbl_efi_fastboot_protocol.md
 [gbl_efi_fastboot_transport_protocol]: ./gbl_efi_fastboot_transport_protocol.md
+[misc_virtual_ab_message]:
+  https://cs.android.com/search?q=symbol:misc_virtual_ab_message&ss=android%2Fplatform%2Fsuperproject%2Fmain
+[system_space_offset_in_misc]:
+  https://cs.android.com/search?q=symbol:SYSTEM_SPACE_OFFSET_IN_MISC&ss=android%2Fplatform%2Fsuperproject%2Fmain
