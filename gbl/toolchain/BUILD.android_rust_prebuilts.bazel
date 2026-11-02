@@ -87,7 +87,17 @@ rust_library(
         "core",
         "default",
         "mem",
-    ],
+    ] + select(
+        {
+            # Cargo's compiler-builtins build.rs enables `mem-unaligned` on
+            # targets with hardware unaligned access (x86, x86_64, aarch64).
+            # That build script does not run here, so mirror it: without the
+            # feature, memcpy/memmove fall back to the strict-alignment
+            # shift-and-OR word reassembly path for misaligned sources.
+            "@gbl//toolchain:gbl_rust_elf_riscv64": [],
+            "//conditions:default": ["mem-unaligned"],
+        },
+    ),
     crate_name = "compiler_builtins",
     edition = "2024",
     rustc_flags = [
