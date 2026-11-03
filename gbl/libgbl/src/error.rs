@@ -110,5 +110,23 @@ impl Display for IntegrationError {
     }
 }
 
+/// Clones the error.
+///
+/// `SlotVerifyError` can't implement `Clone` because its `SlotVerifyData` owns libavb data, so any
+/// contained `SlotVerifyData` is dropped from the clone. In practice libgbl never stores one here.
+impl Clone for IntegrationError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::AvbDescriptorError(e) => Self::AvbDescriptorError(e.clone()),
+            Self::AvbIoError(e) => Self::AvbIoError(e.clone()),
+            Self::AvbSlotVerifyError(e) => Self::AvbSlotVerifyError(e.without_verify_data()),
+            Self::UnificationError(e) => Self::UnificationError(*e),
+            #[cfg(feature = "fuchsia")]
+            Self::ZbiError(e) => Self::ZbiError(*e),
+            Self::TryFromIntError(e) => Self::TryFromIntError(*e),
+        }
+    }
+}
+
 /// Helper type GBL functions will return.
 pub type Result<T> = core::result::Result<T, IntegrationError>;

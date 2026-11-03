@@ -40,12 +40,14 @@
 //! struct FastbootCommand {}
 //!
 //! impl FastbootImplementation for FastbootTest {
+//!     type Error = MyErrorType;
+//!
 //!     fn get_var(
 //!         &mut self,
 //!         var: &str,
 //!         args: Split<char>,
 //!         out: &mut [u8],
-//!     ) -> CommandResult<usize> {
+//!     ) -> core::result::Result<usize, Self::Error> {
 //!         todo!();
 //!     }
 //!
@@ -254,64 +256,6 @@ impl<'a, T: TcpStream> Transport for TcpTransport<'a, T> {
     }
 }
 
-const COMMAND_ERROR_LENGTH: usize = MAX_RESPONSE_SIZE - 4;
-
-/// `CommandError` is the return error type for methods in trait `FastbootImplementation` when
-/// they fail. It will be converted into string and sent as fastboot error message "FAIL<string>".
-///
-/// Any type that implements `Display` trait can be converted into it. However, because fastboot
-/// response message is limited to `MAX_RESPONSE_SIZE`. If the final displayed string length
-/// exceeds it, the rest of the content is ignored.
-pub struct CommandError(FormattedBytes<[u8; COMMAND_ERROR_LENGTH]>);
-
-impl CommandError {
-    /// Returns the `FormattedBytes` object.
-    pub fn formatted_bytes(&mut self) -> &mut FormattedBytes<impl AsMut<[u8]> + AsRef<[u8]>> {
-        &mut self.0
-    }
-
-    /// Returns the parsed string representation of self.
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl AsRef<[u8]> for CommandError {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl PartialEq for CommandError {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_ref() == other.as_ref()
-    }
-}
-
-impl Clone for CommandError {
-    /// Clones the error.
-    fn clone(&self) -> Self {
-        self.as_str().into()
-    }
-}
-
-impl Debug for CommandError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl<T: Display> From<T> for CommandError {
-    fn from(val: T) -> Self {
-        let mut res = CommandError(FormattedBytes::new([0u8; COMMAND_ERROR_LENGTH]));
-        write!(res.0, "{}", val).unwrap();
-        res
-    }
-}
-
-/// Type alias for Result that wraps a CommandError
-pub type CommandResult<T> = core::result::Result<T, CommandError>;
-
 /// Fastboot reboot mode
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum RebootMode {
@@ -366,6 +310,12 @@ pub enum CommandExecType {
 
 /// Implementation for Fastboot command backends.
 pub trait FastbootImplementation {
+    /// Error type returned by the command backend.
+    ///
+    /// The error is only formatted when it's sent to the host as a "FAIL<message>" response, which
+    /// is limited to `MAX_RESPONSE_SIZE` bytes; any excess content is ignored.
+    type Error: Display + From<&'static str> + From<Error>;
+
     /// Backend for `fastboot getvar ...`
     ///
     /// Gets the value of a variable specified by name and configuration represented by list of
@@ -385,7 +335,7 @@ pub trait FastbootImplementation {
         args: impl Iterator<Item = &'_ CStr> + Clone,
         out: &mut [u8],
         responder: impl InfoSender,
-    ) -> CommandResult<usize>;
+    ) -> core::result::Result<usize, Self::Error>;
 
     /// A helper API for getting the value of a fastboot variable and decoding it into string.
     async fn get_var_as_str<'s>(
@@ -394,7 +344,7 @@ pub trait FastbootImplementation {
         args: impl Iterator<Item = &'_ CStr> + Clone,
         responder: impl InfoSender,
         out: &'s mut [u8],
-    ) -> CommandResult<&'s str> {
+    ) -> core::result::Result<&'s str, Self::Error> {
         let size = self.get_var(var, args, out, responder).await?;
         Ok(from_utf8(out.get(..size).ok_or("Invalid variable size")?)
             .map_err(|_| "Value is not string")?)
@@ -413,7 +363,7 @@ pub trait FastbootImplementation {
     ///
     ///   ```ignore
     ///   async fn get_var_all(&mut self, f: F, resp: impl VarInfoSender)
-    ///     -> CommandResult<()> {
+    ///     -> core::result::Result<(), Self::Error> {
     ///       resp.send("partition-size", &["boot_a"], /* size of boot_a */).await?;
     ///       resp.send("partition-size", &["boot_b"], /* size of boot_b */).await?;
     ///       resp.send("partition-size", &["init_boot_a"], /* size of init_boot_a */).await?;
@@ -435,7 +385,10 @@ pub trait FastbootImplementation {
     ///
     /// TODO(b/465769208): This and `get_var()` contain duplicated logic. Investigate if there can
     /// be better solutions for doing the combination traversal.
-    async fn get_var_all(&mut self, responder: impl VarInfoSender) -> CommandResult<()>;
+    async fn get_var_all(
+        &mut self,
+        responder: impl VarInfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot flash ...`
     ///
@@ -443,7 +396,11 @@ pub trait FastbootImplementation {
     ///
     /// * `part`: Name of the partition.
     /// * `responder`: An instance of `InfoSender`.
-    async fn flash(&mut self, part: &str, responder: impl InfoSender) -> CommandResult<()>;
+    async fn flash(
+        &mut self,
+        part: &str,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot erase ...`
     ///
@@ -451,7 +408,11 @@ pub trait FastbootImplementation {
     ///
     /// * `part`: Name of the partition.
     /// * `responder`: An instance of `InfoSender`.
-    async fn erase(&mut self, part: &str, responder: impl InfoSender) -> CommandResult<()>;
+    async fn erase(
+        &mut self,
+        part: &str,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot download`
     ///
@@ -459,8 +420,10 @@ pub trait FastbootImplementation {
     ///
     /// * `responder`: An instance of `DownloadBuilder + InfoSender` for initiating and downloading
     ///   data.
-    async fn download(&mut self, responder: impl DownloadBuilder + InfoSender)
-        -> CommandResult<()>;
+    async fn download(
+        &mut self,
+        responder: impl DownloadBuilder + InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot stream-flash ...` and `fastboot stream-fill ...`
     ///
@@ -472,10 +435,10 @@ pub trait FastbootImplementation {
         &mut self,
         command: StreamCommand<&str>,
         responder: impl InfoSender,
-    ) -> CommandResult<()>;
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Helper API for providing download from buffer
-    async fn set_download(&mut self, data: &[u8]) -> CommandResult<()> {
+    async fn set_download(&mut self, data: &[u8]) -> core::result::Result<(), Self::Error> {
         self.download(RamDownloader(data)).await
     }
 
@@ -490,7 +453,7 @@ pub trait FastbootImplementation {
     ///   async fn upload(
     ///       &mut self,
     ///       responder: impl UploadBuilder + InfoSender,
-    ///   ) -> CommandResult<()> {
+    ///   ) -> core::result::Result<(), Self::Error> {
     ///       let data = ..;
     ///       // Sends a total of 1024 bytes data.
     ///       responder.send_info("About to upload...").await?;
@@ -504,7 +467,10 @@ pub trait FastbootImplementation {
     ///
     ///   If implementation fails to upload enough, or attempts to upload more than expected data
     ///   with `Uploader::upload()`, an error will be returned.
-    async fn upload(&mut self, responder: impl UploadBuilder + InfoSender) -> CommandResult<()>;
+    async fn upload(
+        &mut self,
+        responder: impl UploadBuilder + InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot fetch ...`
     ///
@@ -520,7 +486,7 @@ pub trait FastbootImplementation {
         offset: u64,
         size: u32,
         responder: impl UploadBuilder + InfoSender,
-    ) -> CommandResult<()>;
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot reboot/reboot-bootloader/reboot-fastboot/reboot-recovery`
     ///
@@ -539,7 +505,7 @@ pub trait FastbootImplementation {
         &mut self,
         mode: RebootMode,
         responder: impl InfoSender + OkaySender,
-    ) -> CommandResult<Infallible>;
+    ) -> core::result::Result<Infallible, Self::Error>;
 
     /// Method for handling `fastboot continue` clean up.
     ///
@@ -549,10 +515,17 @@ pub trait FastbootImplementation {
     /// # Args
     ///
     /// * `responder`: An instance of `InfoSender`.
-    async fn r#continue(&mut self, responder: impl InfoSender) -> CommandResult<()>;
+    async fn r#continue(
+        &mut self,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot set_active`.
-    async fn set_active(&mut self, slot: &str, responder: impl InfoSender) -> CommandResult<()>;
+    async fn set_active(
+        &mut self,
+        slot: &str,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot boot`
     ///
@@ -566,7 +539,10 @@ pub trait FastbootImplementation {
     ///
     /// * The method always returns OK to let fastboot continue.
     /// * Returns `Err(e)` on error.
-    async fn boot(&mut self, responder: impl InfoSender + OkaySender) -> CommandResult<()>;
+    async fn boot(
+        &mut self,
+        responder: impl InfoSender + OkaySender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Backend for `fastboot oem ...`.
     ///
@@ -586,7 +562,7 @@ pub trait FastbootImplementation {
         &mut self,
         cmd: &str,
         responder: impl InfoSender + OkaySender + FailSender,
-    ) -> CommandResult<()>;
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Handler for `fastboot flashing lock|unlock` and
     /// `fastboot flashing lock_critical|unlock_critical`.
@@ -604,7 +580,7 @@ pub trait FastbootImplementation {
         lock_type: LockType,
         lock_state: LockState,
         responder: impl InfoSender,
-    ) -> CommandResult<()>;
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Handler for `fastboot flashing get_unlock_ability`.
     ///
@@ -612,7 +588,9 @@ pub trait FastbootImplementation {
     ///
     /// Ok(Unlockability),
     /// Err on error.
-    async fn flashing_get_unlock_ability(&mut self) -> CommandResult<Unlockability>;
+    async fn flashing_get_unlock_ability(
+        &mut self,
+    ) -> core::result::Result<Unlockability, Self::Error>;
 
     /// Checks whether a command is allowed and if to use custom implementation or default.
     ///
@@ -631,7 +609,7 @@ pub trait FastbootImplementation {
         &mut self,
         args: impl Iterator<Item = &'_ CStr> + Clone,
         responder: impl InfoSender + OkaySender + FailSender,
-    ) -> CommandResult<CommandExecType>;
+    ) -> core::result::Result<CommandExecType, Self::Error>;
 
     /// Logs message if implementation is provided
     ///
@@ -1080,7 +1058,7 @@ async fn get_var(
             let mut val = [0u8; MAX_RESPONSE_SIZE];
             match fb_impl.get_var_as_str(var, args, &mut resp, &mut val[..]).await {
                 Ok(s) => reply_okay!(resp, "{}", s),
-                Err(e) => reply_fail!(resp, "{}", e.as_str()),
+                Err(e) => reply_fail!(resp, "{}", e),
             }
         }
     }
@@ -1096,7 +1074,7 @@ async fn get_var_all(
     let get_res = fb_impl.get_var_all(&mut resp).await;
     match get_res {
         Ok(()) => reply_okay!(resp, ""),
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
     }
 }
 
@@ -1107,10 +1085,10 @@ async fn download(
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
-    let total_download_size = match (|| -> CommandResult<usize> {
-        Ok(usize::try_from_hex_str(args.next().ok_or("Not enough arguments")?)?)
+    let total_download_size = match (|| -> core::result::Result<usize, &'static str> {
+        usize::try_from_hex_str(args.next().ok_or("Not enough arguments")?)
     })() {
-        Err(e) => return reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => return reply_fail!(resp, "{}", e),
         Ok(v) => {
             // Can't compare directly against u32::MAX because that's a u32, and
             // usize does not impl From<u32>
@@ -1138,7 +1116,7 @@ async fn download(
         return Err(Error::InvalidState);
     }
     match res {
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
         _ => reply_okay!(resp, ""),
     }
 }
@@ -1150,13 +1128,12 @@ async fn flash(
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
-    let flash_res =
-        match cmd.strip_prefix("flash:").ok_or::<CommandError>("Missing partition".into()) {
-            Ok(part) => fb_impl.flash(part, &mut resp).await,
-            Err(e) => Err(e),
-        };
+    let flash_res = match cmd.strip_prefix("flash:").ok_or("Missing partition") {
+        Ok(part) => fb_impl.flash(part, &mut resp).await,
+        Err(e) => Err(e.into()),
+    };
     match flash_res {
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
         _ => reply_okay!(resp, ""),
     }
 }
@@ -1174,7 +1151,7 @@ async fn handle_stream_command(
     };
 
     if let Err(e) = stream_res {
-        reply_fail!(resp, "{}", e.as_str())
+        reply_fail!(resp, "{}", e)
     } else {
         reply_okay!(resp, "")
     }
@@ -1187,13 +1164,12 @@ async fn erase(
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
-    let flash_res =
-        match cmd.strip_prefix("erase:").ok_or::<CommandError>("Missing partition".into()) {
-            Ok(part) => fb_impl.erase(part, &mut resp).await,
-            Err(e) => Err(e),
-        };
+    let flash_res = match cmd.strip_prefix("erase:").ok_or("Missing partition") {
+        Ok(part) => fb_impl.erase(part, &mut resp).await,
+        Err(e) => Err(e.into()),
+    };
     match flash_res {
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
         _ => reply_okay!(resp, ""),
     }
 }
@@ -1208,7 +1184,7 @@ async fn upload(
     match resp.remaining_upload > 0 {
         true => Err(Error::InvalidInput),
         _ => match upload_res {
-            Err(e) => reply_fail!(resp, "{}", e.as_str()),
+            Err(e) => reply_fail!(resp, "{}", e),
             _ => reply_okay!(resp, ""),
         },
     }
@@ -1223,7 +1199,7 @@ async fn fetch(
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
     let fetch_res = async {
-        let cmd = cmd.strip_prefix("fetch:").ok_or::<CommandError>("Missing arguments".into())?;
+        let cmd = cmd.strip_prefix("fetch:").ok_or("Missing arguments")?;
         if args.clone().count() < 3 {
             return Err("Not enough arguments".into());
         }
@@ -1246,7 +1222,7 @@ async fn fetch(
     match resp.remaining_upload > 0 {
         true => Err(Error::InvalidInput),
         _ => match fetch_res {
-            Err(e) => reply_fail!(resp, "{}", e.as_str()),
+            Err(e) => reply_fail!(resp, "{}", e),
             _ => reply_okay!(resp, ""),
         },
     }
@@ -1260,7 +1236,7 @@ async fn reboot(
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
     let Err(e) = fb_impl.reboot(mode, &mut resp).await;
-    reply_fail!(resp, "{}", e.as_str())?;
+    reply_fail!(resp, "{}", e)?;
     Err(Error::Aborted)
 }
 
@@ -1272,7 +1248,7 @@ async fn boot(
     let mut resp = Responder::new(transport);
     let boot_res = async { fb_impl.boot(&mut resp).await }.await;
     match boot_res {
-        Err(ref e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(ref e) => reply_fail!(resp, "{}", e),
         _ => reply_okay!(resp, ""),
     }?;
     Ok(boot_res.is_ok())
@@ -1286,7 +1262,7 @@ async fn r#continue(
     let mut resp = Responder::new(transport);
     match fb_impl.r#continue(&mut resp).await {
         Ok(_) => reply_okay!(resp, ""),
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
     }
 }
 
@@ -1303,7 +1279,7 @@ async fn set_active(
     };
     match res.await {
         Ok(_) => reply_okay!(resp, ""),
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
     }
 }
 
@@ -1318,7 +1294,7 @@ async fn oem(
     match oem_res {
         _ if resp.result_message_sent => Ok(()), // Assumes backend has handled the error.
         Ok(()) => reply_okay!(resp, ""),
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
     }
 }
 
@@ -1360,19 +1336,19 @@ async fn command_exec(
                 reply_fail!(resp, "Command not allowed.")?;
             }
             Err(ref e) => {
-                reply_fail!(resp, "{}", e.as_str())?;
+                reply_fail!(resp, "{}", e)?;
             }
         }
         cmd_res.map_err(|_| Error::Other(None))
     }
 }
 
-async fn lock_helper<T: Transport>(
-    fb_impl: &mut impl FastbootImplementation,
+async fn lock_helper<F: FastbootImplementation, T: Transport>(
+    fb_impl: &mut F,
     lock_type: LockType,
     lock_state: LockState,
     resp: &mut Responder<'_, T>,
-) -> CommandResult<&'static str> {
+) -> core::result::Result<&'static str, F::Error> {
     fb_impl.flashing_write_lock_state(lock_type, lock_state, &mut *resp).await.map(|_| "")
 }
 
@@ -1401,7 +1377,7 @@ async fn flashing(
     };
     match res {
         Ok(s) => reply_okay!(resp, "{}", s),
-        Err(e) => reply_fail!(resp, "{}", e.as_str()),
+        Err(e) => reply_fail!(resp, "{}", e),
     }
 }
 
@@ -1584,6 +1560,36 @@ pub async fn run_tcp_session(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Error type for the test fastboot implementation.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum TestError {
+        Static(&'static str),
+        Fastboot(Error),
+    }
+
+    impl Display for TestError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Self::Static(s) => f.write_str(s),
+                Self::Fastboot(e) => write!(f, "{e}"),
+            }
+        }
+    }
+
+    impl From<&'static str> for TestError {
+        fn from(val: &'static str) -> Self {
+            Self::Static(val)
+        }
+    }
+
+    impl From<Error> for TestError {
+        fn from(val: Error) -> Self {
+            Self::Fastboot(val)
+        }
+    }
+
+    type CommandResult<T> = core::result::Result<T, TestError>;
     use gbl_async::block_on;
     use std::{
         collections::{BTreeMap, VecDeque},
@@ -1670,6 +1676,8 @@ mod test {
     }
 
     impl<'a> FastbootImplementation for FastbootTest<'a> {
+        type Error = TestError;
+
         async fn get_var(
             &mut self,
             var: &CStr,
@@ -1678,7 +1686,7 @@ mod test {
             _: impl InfoSender,
         ) -> CommandResult<usize> {
             let args = args.map(|v| v.to_str().unwrap()).collect::<Vec<_>>();
-            match self.vars.get(&(var.to_str()?, &args[..])) {
+            match self.vars.get(&(var.to_str().map_err(|_| "Invalid variable name")?, &args[..])) {
                 Some(v) => {
                     out[..v.len()].copy_from_slice(v.as_bytes());
                     Ok(v.len())
