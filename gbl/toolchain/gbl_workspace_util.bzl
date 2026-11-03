@@ -219,7 +219,4 @@ ANDROID_RUST_LINTS = [
     "clippy::too-many-arguments",
     "-D",
     "clippy::undocumented_unsafe_blocks",
-    # TODO(b/576803831): Fix existing Clippy violations and remove these allow flags.
-    "-A",
-    "clippy::too_many_arguments",
 ]

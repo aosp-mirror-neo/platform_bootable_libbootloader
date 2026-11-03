@@ -365,6 +365,17 @@ mod test {
     /// FW rollback index before verification.
     const TEST_ROLLBACK_INDEX_BEFORE_VERIFY: u64 = TEST_ROLLBACK_INDEX - 1;
 
+    /// Expected results for [test_avb_verify_slot].
+    struct ExpectedVerifyResult<'a> {
+        /// The expected FW rollback index after verification, if it should be checked.
+        updated_fw_rollback: Option<u64>,
+        /// The expected status reported to `avb_handle_verification_result`.
+        reported_status: Option<VerificationStatus>,
+        /// The expected partitions reported to `avb_handle_verification_result`, if they should
+        /// be checked.
+        reported_partitions: Option<&'a [&'a str]>,
+    }
+
     /// Helper for testing avb_verify_slot
     fn test_avb_verify_slot<'a>(
         partitions: &[(&CStr, &str)],
@@ -373,9 +384,7 @@ mod test {
         key_validation_status: KeyValidationStatus,
         fw_rollback_result: std::result::Result<u64, IoError>,
         slot: Slot,
-        expected_updated_fw_rollback: Option<u64>,
-        expected_reported_status: Option<VerificationStatus>,
-        expected_reported_partitions: Option<&[&str]>,
+        expected: ExpectedVerifyResult,
     ) -> Result<()> {
         let mut storage = FakeGblOpsStorage::default();
         for (part, file) in partitions {
@@ -416,14 +425,14 @@ mod test {
         ops.avb_handle_verification_result = Some(&mut handler);
         ops.avb_key_validation_status = Some(Ok(key_validation_status));
         let res = avb_verify_slot(&mut ops, Some(slot), partitions_to_verify);
-        if let Some(expected_updated_fw_rollback) = expected_updated_fw_rollback {
+        if let Some(expected_updated_fw_rollback) = expected.updated_fw_rollback {
             let updated_rollback_index =
                 ops.avb_ops.rollbacks.get(&TEST_ROLLBACK_INDEX_LOCATION).unwrap();
             assert_eq!(updated_rollback_index.as_ref().unwrap(), &expected_updated_fw_rollback);
         }
-        assert_eq!(out_status, expected_reported_status);
+        assert_eq!(out_status, expected.reported_status);
         let (_, status, unlocked) = res?;
-        if let Some(expected_reported_partitions) = expected_reported_partitions {
+        if let Some(expected_reported_partitions) = expected.reported_partitions {
             assert_eq!(
                 out_partitions,
                 expected_reported_partitions.iter().map(|p| p.to_string()).collect()
@@ -476,10 +485,15 @@ mod test {
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 // Slot has been already successfully booted before.
                 slot_successful('a'),
-                // Rollback index is expected to be updated.
-                Some(TEST_ROLLBACK_INDEX),
-                Some(VerificationStatus { color: BootStateColor::Green, is_eio: false }),
-                Some(&["boot", "init_boot", "vendor_boot", "fw"])
+                ExpectedVerifyResult {
+                    // Rollback index is expected to be updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Green,
+                        is_eio: false
+                    }),
+                    reported_partitions: Some(&["boot", "init_boot", "vendor_boot", "fw"]),
+                },
             ),
             Ok(()),
         );
@@ -519,10 +533,15 @@ mod test {
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 // Slot has been already successfully booted before.
                 slot_successful('a'),
-                // Partition isn't found, slot cannot be booted. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Red, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Partition isn't found, slot cannot be booted. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Red,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Err(IoError::NoSuchPartition.into()),
         );
@@ -562,10 +581,15 @@ mod test {
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 // Slot has been already successfully booted before.
                 slot_successful('a'),
-                // Rollback index is expected to be updated.
-                Some(TEST_ROLLBACK_INDEX),
-                Some(VerificationStatus { color: BootStateColor::Green, is_eio: false }),
-                Some(&["boot", "init_boot", "vendor_boot"])
+                ExpectedVerifyResult {
+                    // Rollback index is expected to be updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Green,
+                        is_eio: false
+                    }),
+                    reported_partitions: Some(&["boot", "init_boot", "vendor_boot"]),
+                },
             ),
             Ok(()),
         );
@@ -599,10 +623,15 @@ mod test {
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 // Slot has been already successfully booted before.
                 slot_successful('a'),
-                // Rollback index is expected to be updated.
-                Some(TEST_ROLLBACK_INDEX),
-                Some(VerificationStatus { color: BootStateColor::Yellow, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Rollback index is expected to be updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Yellow,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Ok(()),
         );
@@ -641,10 +670,15 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot('a'),
-                // First boot for slot. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Green, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // First boot for slot. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Green,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Ok(()),
         );
@@ -684,10 +718,15 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Device is unlocked. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Orange, is_eio: false }),
-                Some(&["boot", "init_boot", "vendor_boot", "fw"]),
+                ExpectedVerifyResult {
+                    // Device is unlocked. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Orange,
+                        is_eio: false
+                    }),
+                    reported_partitions: Some(&["boot", "init_boot", "vendor_boot", "fw"]),
+                },
             ),
             Ok(()),
         );
@@ -734,10 +773,15 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Device is unlocked. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Orange, is_eio: false }),
-                Some(&["boot", "init_boot", "vendor_boot", "fw"]),
+                ExpectedVerifyResult {
+                    // Device is unlocked. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Orange,
+                        is_eio: false
+                    }),
+                    reported_partitions: Some(&["boot", "init_boot", "vendor_boot", "fw"]),
+                },
             ),
             Ok(()),
         );
@@ -770,10 +814,15 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Device is unlocked. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Orange, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Device is unlocked. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Orange,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             // Device is unlocked, so can continue boot.
             Ok(()),
@@ -806,10 +855,15 @@ mod test {
                 // FW rollback index result.
                 Err(IoError::NoSuchValue),
                 slot_successful('a'),
-                // Getting FW rollback index is failed. Index cannot be updated and checked.
-                None,
-                Some(VerificationStatus { color: BootStateColor::Red, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Getting FW rollback index is failed. Index cannot be updated and checked.
+                    updated_fw_rollback: None,
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Red,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Err(SlotVerifyError::Io.into())
         )
@@ -843,10 +897,15 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Verification failed. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                Some(VerificationStatus { color: BootStateColor::Red, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Verification failed. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Red,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             // Cannot continue boot.
             Err(SlotVerifyError::Verification(None).into()),
@@ -880,11 +939,16 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Rollback index is expected to be updated.
-                Some(TEST_ROLLBACK_INDEX),
-                // Expected verification status.
-                Some(VerificationStatus { color: BootStateColor::Green, is_eio: true }),
-                None,
+                ExpectedVerifyResult {
+                    // Rollback index is expected to be updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX),
+                    // Expected verification status.
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Green,
+                        is_eio: true
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Ok(()),
         );
@@ -904,11 +968,13 @@ mod test {
                 // FW rollback index result.
                 Ok(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
                 slot_successful('a'),
-                // Verification isn't started. Index hasn't been updated.
-                Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
-                // Expected verification status.
-                None,
-                None,
+                ExpectedVerifyResult {
+                    // Verification isn't started. Index hasn't been updated.
+                    updated_fw_rollback: Some(TEST_ROLLBACK_INDEX_BEFORE_VERIFY),
+                    // Expected verification status.
+                    reported_status: None,
+                    reported_partitions: None,
+                },
             ),
             // Cannot continue boot.
             Err(AvbIoError(IoError::NoSuchValue)),
@@ -938,10 +1004,15 @@ mod test {
                 // Read FW rollback index isn't implemented.
                 Err(IoError::NotImplemented),
                 slot_successful('a'),
-                // Getting FW rollback index is failed. Index cannot be updated and checked.
-                None,
-                Some(VerificationStatus { color: BootStateColor::Orange, is_eio: false }),
-                None,
+                ExpectedVerifyResult {
+                    // Getting FW rollback index is failed. Index cannot be updated and checked.
+                    updated_fw_rollback: None,
+                    reported_status: Some(VerificationStatus {
+                        color: BootStateColor::Orange,
+                        is_eio: false
+                    }),
+                    reported_partitions: None,
+                },
             ),
             Ok(()),
         );
