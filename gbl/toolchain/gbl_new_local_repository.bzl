@@ -137,6 +137,50 @@ gbl_new_local_repository = repository_rule(
     },
 )
 
+# Rust edition for a crate whose Cargo.toml doesn't declare one.
+#
+# Not "latest": a crate that omits `edition` is written for 2015, and building
+# it as a newer edition can break it (e.g. new keywords, prelude changes). This
+# matches both Cargo's and rustc's default.
+_DEFAULT_CARGO_EDITION = "2015"
+
+def _cargo_edition(repo_ctx):
+    """Returns the Rust edition declared in the crate's Cargo.toml.
+
+    Args:
+        repo_ctx: `repository_rule` context for the crate repo.
+
+    Returns:
+        The edition string, e.g. "2021", or `_DEFAULT_CARGO_EDITION` if the
+        crate doesn't declare one.
+    """
+    source_dir = repo_ctx.workspace_root.get_child(repo_ctx.attr.path)
+    if not source_dir.exists:
+        # Some source dirs are optional and may be absent from the checkout.
+        # The generated repo then has no sources, so the edition is irrelevant.
+        return _DEFAULT_CARGO_EDITION
+
+    # We don't build with Cargo, but every vendored crate ships a Cargo.toml
+    # and it's the source of truth for the edition the crate is written for.
+    cargo_toml = source_dir.get_child("Cargo.toml")
+    if not cargo_toml.exists:
+        fail("{}: {} has no Cargo.toml to read the Rust edition from".format(
+            repo_ctx.original_name,
+            repo_ctx.attr.path,
+        ))
+
+    section = None
+    for line in repo_ctx.read(cargo_toml).splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[package]" and line.startswith("edition"):
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "edition":
+                return value.strip().strip("\"'")
+
+    return _DEFAULT_CARGO_EDITION
+
 def _gbl_rust_crate_repository_impl(repo_ctx):
     _gbl_new_local_repository_common_impl(
         repo_ctx,
@@ -148,7 +192,7 @@ def _gbl_rust_crate_repository_impl(repo_ctx):
             deps = repo_ctx.attr.deps,
             proc_macro_deps = repo_ctx.attr.proc_macro_deps,
             features = repo_ctx.attr.crate_features,
-            edition = repo_ctx.attr.edition,
+            edition = _cargo_edition(repo_ctx),
             rustc_flags = repo_ctx.attr.rustc_flags,
             rustc_env = repo_ctx.attr.rustc_env,
             compile_data = repo_ctx.attr.compile_data,
@@ -172,7 +216,6 @@ gbl_rust_crate_repository = repository_rule(
         "crate_name": attr.string(doc = "name of the rust_library crate, same as name by default."),
         "deps": attr.string_list(doc = "The `deps` field."),
         "proc_macro_deps": attr.string_list(doc = "The `proc_macro_deps` field."),
-        "edition": attr.string(doc = "Rust edition.", default = "2021"),
         "rustc_flags": attr.string_list(doc = "The `rustc_flags` field."),
         "rustc_env": attr.string_dict(doc = "The `rustc_env` field."),
         "compile_data": attr.string_list(doc = "The `compile_data` field."),
