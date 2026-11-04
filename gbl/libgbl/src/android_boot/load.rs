@@ -22,7 +22,7 @@ use crate::{
     decompress::decompress_kernel,
     device_tree::DtComponentSource,
     fastboot::boot_items::BootItemContainer,
-    gbl_avb::{state::BootStateColor, LoadPartition},
+    gbl_avb::LoadPartition,
     gbl_println,
     ops::GblOps,
     slots::{slotted_part, Slot},
@@ -605,20 +605,16 @@ impl<'a> BootBufferLoader<'a> {
         ops: &mut impl GblOps<'b>,
         img: &[u8],
         kernel_attrs: &KernelAttributes,
-        verify_data: &SlotVerifyData,
-        unlocked: bool,
-        is_recovery: bool,
-        color: BootStateColor,
+        boot_info: &BootInfo<SlotVerifyData>,
         dtbo_part: &[u8],
     ) -> Result<(&'a mut [u8], usize), Error> {
         // Parse the partition header and extract the pvmfw binary
         let info = BootImageV3Info::new(img)?;
         let pvmfw_bin = img.get(info.kernel_range.clone()).ok_or(Error::BadBufferSize)?;
         let pvmfw_bin_len = pvmfw_bin.len();
-        let boot_info = BootInfo::new(unlocked, is_recovery, color, verify_data);
         Ok(match self.bufs.pvmfw_data.as_mut() {
             Some(v) => {
-                build_pvmfw_data_region(ops, v, pvmfw_bin, kernel_attrs, &boot_info, dtbo_part)
+                build_pvmfw_data_region(ops, v, pvmfw_bin, kernel_attrs, boot_info, dtbo_part)
                     .map(|sz| (&mut take(v)[..sz], pvmfw_bin_len))?
             }
             _ => {
@@ -635,7 +631,7 @@ impl<'a> BootBufferLoader<'a> {
                     &mut self.general[off..],
                     pvmfw_bin,
                     kernel_attrs,
-                    &boot_info,
+                    boot_info,
                     dtbo_part,
                 )?;
                 let (pvmfw, general) = take(&mut self.general)[off..].split_at_mut(sz);

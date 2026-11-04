@@ -41,7 +41,7 @@ use libgblutils::{aligned_subslice, buffer_pool::BufferPool, shared::Shared};
 use misc::AndroidBootMode;
 
 mod avf;
-use avf::{avf_fixup_host_dt, avf_update_bootconfig, inject_vmdtbo};
+use avf::{avf_fixup_host_dt, avf_update_bootconfig, inject_vmdtbo, BootInfo};
 
 pub(crate) mod hasher;
 
@@ -192,10 +192,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
             ops,
             images.pvmfw,
             &kernel_attrs,
-            &verify_data,
-            unlocked,
-            is_recovery,
-            status.color,
+            &BootInfo::new(unlocked, is_recovery, status.color, &verify_data),
             images.dtbo,
         )?),
     };
@@ -1236,7 +1233,7 @@ pub(crate) mod tests {
     ///
     /// # Args
     ///
-    /// * `vbmeta_file``: The test file name for the target vbmeta data.
+    /// * `vbmeta`: The test file name for the target vbmeta data and the key it's signed with.
     /// * `unlocked`: True if unlocked mode.
     /// * `color`: The expected boot state color.
     /// * `slot`: The expected slot.
@@ -1244,13 +1241,12 @@ pub(crate) mod tests {
     /// * `fixup_config`: The expected fixup config by GblOps.
     fn make_expected_bootconfig(
         partitions: &[(String, String)],
-        vbmeta_file: Option<&str>,
+        vbmeta: Option<(&str, TestVbmetaKey)>,
         unlocked: bool,
         color: BootStateColor,
         slot: char,
         vendor_config: &str,
         fixup_config: &str,
-        key: TestVbmetaKey,
     ) -> Vec<u8> {
         let mut builder = ExpectedBootconfigBuilder::new()
             .color(color)
@@ -1272,8 +1268,8 @@ pub(crate) mod tests {
             builder = builder.dtbo_idx(&[0, 1]).dtbo_source(&["dtbo", "dtbo"]);
         }
 
-        match vbmeta_file {
-            Some(vbmeta_file) => {
+        match vbmeta {
+            Some((vbmeta_file, key)) => {
                 let vbmeta_file = Path::new(vbmeta_file);
                 let vbmeta_name = vbmeta_file.to_str().unwrap();
                 let vbmeta_digest = vbmeta_file.with_extension("digest.txt");
@@ -1301,6 +1297,28 @@ pub(crate) mod tests {
         }
     }
 
+    /// Expected loaded images and FDT properties of `android_load_verify_fixup`.
+    #[derive(Clone, Copy)]
+    struct ExpectedImages<'a> {
+        /// Expected loaded kernel.
+        kernel: &'a [u8],
+        /// Expected loaded ramdisk.
+        ramdisk: &'a [u8],
+        /// Expected fixed-up FDT properties.
+        fdt_property: &'a [(&'a str, &'a CStr, Option<&'a [u8]>)],
+    }
+
+    /// Expected results of `android_load_verify_fixup`.
+    #[derive(Clone, Copy)]
+    struct ExpectedLoad<'a> {
+        /// Expected loaded images and FDT properties.
+        images: ExpectedImages<'a>,
+        /// Expected fixed-up bootconfig.
+        bootconfig: &'a [u8],
+        /// Expected fixed-up bootargs.
+        bootargs: &'a str,
+    }
+
     /// Tests `android_load_verify_fixup` succeeds with the given setup.
     ///
     /// # Args
@@ -1311,11 +1329,7 @@ pub(crate) mod tests {
     /// * `unlock`: Unlock state.
     /// * `rollback_idx`: Rollback index at location TEST_ROLLBACK_INDEX_LOCATION.
     /// * `load`: A BootBuffer.
-    /// * `expected_kernel`: Expected loaded kernel.
-    /// * `expected_ramdisk`: Expected loaded ramdisk.
-    /// * `expected_bootconfig`: Expected fixed-up bootconfig.
-    /// * `expected_bootargs`: Expected fixed-up bootargs.
-    /// * `expected_fdt_property`: Expected fixed-up FDT properties.
+    /// * `expected`: Expected results.
     fn test_android_load_verify_fixup_internal(
         slot: Slot,
         partitions: &[(String, String)],
@@ -1323,11 +1337,7 @@ pub(crate) mod tests {
         unlock: bool,
         rollback_idx: u64,
         boot_buffer: BootBuffer<'_>,
-        expected_kernel: &[u8],
-        expected_ramdisk: &[u8],
-        expected_bootconfig: &[u8],
-        expected_bootargs: &str,
-        expected_fdt_property: &[(&str, &CStr, Option<&[u8]>)],
+        expected: ExpectedLoad,
     ) {
         let mut storage = FakeGblOpsStorage::default();
         let partitions = partitions.iter().map(|(l, r)| (CString::new(l.clone()).unwrap(), r));
@@ -1371,8 +1381,8 @@ pub(crate) mod tests {
         let designated_kernel = boot_buffer.kernel.as_ref().map(|v| v.as_ptr());
         let (ramdisk, fdt, kernel, _) =
             android_load_verify_fixup(&mut ops, Some(slot), false, boot_buffer).unwrap();
-        assert_eq!(kernel, expected_kernel);
-        check_ramdisk(ramdisk, expected_ramdisk, expected_bootconfig);
+        assert_eq!(kernel, expected.images.kernel);
+        check_ramdisk(ramdisk, expected.images.ramdisk, expected.bootconfig);
         assert_eq!(ramdisk.as_ptr() as usize % PAGE_SIZE, 0);
         assert_eq!(designated_ramdisk.unwrap_or(ramdisk.as_ptr()), ramdisk.as_ptr());
         assert_eq!(designated_fdt.unwrap_or(fdt.as_ptr()), fdt.as_ptr());
@@ -1403,7 +1413,7 @@ pub(crate) mod tests {
         // Commandlines are updated.
         assert_eq!(
             CStr::from_bytes_until_nul(fdt.get_property("/chosen", c"bootargs").unwrap()).unwrap(),
-            CString::new(expected_bootargs).unwrap().as_c_str(),
+            CString::new(expected.bootargs).unwrap().as_c_str(),
         );
 
         assert_eq!(
@@ -1426,7 +1436,7 @@ pub(crate) mod tests {
         assert_eq!(fdt.get_property("", c"fixup_bootconfig_calls").unwrap(), &[0]);
 
         // Other FDT properties are as expected.
-        for (path, property, res) in expected_fdt_property {
+        for (path, property, res) in expected.images.fdt_property {
             assert_eq!(
                 fdt.get_property(path, property).ok(),
                 res.clone(),
@@ -1443,11 +1453,7 @@ pub(crate) mod tests {
         specialized_partitions: &[SpecializedPartition],
         unlock: bool,
         rollback_idx: u64,
-        expected_kernel: &[u8],
-        expected_ramdisk: &[u8],
-        expected_bootconfig: &[u8],
-        expected_bootargs: &str,
-        expected_fdt_property: &[(&str, &CStr, Option<&[u8]>)],
+        expected: ExpectedLoad,
     ) {
         let general = &mut AlignedBuffer::new(64 * 1024 * 1024, KERNEL_ALIGNMENT);
         let mut kernel = AlignedBuffer::<u8>::new(64 * 1024 * 1024, KERNEL_ALIGNMENT);
@@ -1472,11 +1478,7 @@ pub(crate) mod tests {
                 unlock,
                 rollback_idx,
                 buffers,
-                expected_kernel,
-                expected_ramdisk,
-                expected_bootconfig,
-                expected_bootargs,
-                expected_fdt_property,
+                expected,
             );
         }
     }
@@ -1487,11 +1489,9 @@ pub(crate) mod tests {
         slot_name: char,
         partitions: &[(String, String)],
         vbmeta: &str,
-        expected_kernel: &[u8],
-        expected_ramdisk: &[u8],
+        expected_images: ExpectedImages,
         expected_vendor_bootconfig: &str,
         expected_bootargs: &str,
-        expected_fdt_property: &[(&str, &CStr, Option<&[u8]>)],
         key: TestVbmetaKey,
     ) {
         let test_common = |unlock, color, rollback_idx, vbmeta: Option<&str>| {
@@ -1504,13 +1504,12 @@ pub(crate) mod tests {
 
             let expected_bootconfig = make_expected_bootconfig(
                 &partitions,
-                vbmeta,
+                vbmeta.map(|v| (v, key)),
                 unlock,
                 color,
                 slot_name,
                 expected_vendor_bootconfig,
                 FakeGblOps::GBL_TEST_BOOTCONFIG,
-                key,
             );
             let mut expected_bootargs = String::from(expected_bootargs);
             // Appended via dtbo/bootargs_ext.
@@ -1558,11 +1557,11 @@ pub(crate) mod tests {
                 ],
                 unlock,
                 rollback_idx,
-                expected_kernel,
-                expected_ramdisk,
-                &expected_bootconfig,
-                &expected_bootargs,
-                expected_fdt_property,
+                ExpectedLoad {
+                    images: expected_images,
+                    bootconfig: &expected_bootconfig,
+                    bootargs: &expected_bootargs,
+                },
             );
         };
 
@@ -1604,11 +1603,13 @@ pub(crate) mod tests {
             slot,
             &parts,
             &vbmeta_file,
-            &read_test_data(format!("android/kernel_{slot}.img")),
-            &read_test_data(format!("android/generic_ramdisk_{slot}.img")),
+            ExpectedImages {
+                kernel: &read_test_data(format!("android/kernel_{slot}.img")),
+                ramdisk: &read_test_data(format!("android/generic_ramdisk_{slot}.img")),
+                fdt_property: additional_expected_fdt_properties,
+            },
             "",
             EXPECTED_V2_CMDLINE,
-            additional_expected_fdt_properties,
             TestVbmetaKey::Rsa4096,
         )
     }
@@ -1716,11 +1717,13 @@ pub(crate) mod tests {
             slot,
             partitions,
             vbmeta_file,
-            &read_test_data(format!("android/kernel_{slot}.img")),
-            &expected_v3_v4_ramdisk(slot),
+            ExpectedImages {
+                kernel: &read_test_data(format!("android/kernel_{slot}.img")),
+                ramdisk: &expected_v3_v4_ramdisk(slot),
+                fdt_property: additional_expected_fdt_properties,
+            },
             expected_vendor_bootconfig,
             EXPECTED_V3_V4_CMDLINE,
-            additional_expected_fdt_properties,
             key,
         )
     }
@@ -2153,24 +2156,29 @@ pub(crate) mod tests {
             &[],
             false,
             0,
-            &read_test_data(format!("android/gki_boot_{compression}_kernel_uncompressed")),
-            &expected_v3_v4_ramdisk('a'),
-            &make_expected_bootconfig(
-                &parts,
-                Some(&vbmeta),
-                false,
-                BootStateColor::Green,
-                'a',
-                TEST_VENDOR_BOOTCONFIG,
-                FakeGblOps::GBL_TEST_BOOTCONFIG,
-                TestVbmetaKey::Rsa4096,
-            ),
-            &format!(
-                "{EXPECTED_V3_V4_CMDLINE} {} {}",
-                FakeGblOps::GBL_TEST_CMDLINE_FIXUP,
-                FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
-            ),
-            &[],
+            ExpectedLoad {
+                images: ExpectedImages {
+                    kernel: &read_test_data(format!(
+                        "android/gki_boot_{compression}_kernel_uncompressed"
+                    )),
+                    ramdisk: &expected_v3_v4_ramdisk('a'),
+                    fdt_property: &[],
+                },
+                bootconfig: &make_expected_bootconfig(
+                    &parts,
+                    Some((&vbmeta, TestVbmetaKey::Rsa4096)),
+                    false,
+                    BootStateColor::Green,
+                    'a',
+                    TEST_VENDOR_BOOTCONFIG,
+                    FakeGblOps::GBL_TEST_BOOTCONFIG,
+                ),
+                bootargs: &format!(
+                    "{EXPECTED_V3_V4_CMDLINE} {} {}",
+                    FakeGblOps::GBL_TEST_CMDLINE_FIXUP,
+                    FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
+                ),
+            },
         )
     }
 
@@ -2236,16 +2244,18 @@ pub(crate) mod tests {
             'a',
             &parts,
             "android/vbmeta_v4_v4_init_boot_a.img",
-            &read_test_data("android/kernel_a.img"),
-            &[
-                read_test_data("android/vendor_ramdisk_a.img"),
-                read_test_data("android/vendor_kernel_a.img"),
-                read_test_data("android/generic_ramdisk_a.img"),
-            ]
-            .concat(),
+            ExpectedImages {
+                kernel: &read_test_data("android/kernel_a.img"),
+                ramdisk: &[
+                    read_test_data("android/vendor_ramdisk_a.img"),
+                    read_test_data("android/vendor_kernel_a.img"),
+                    read_test_data("android/generic_ramdisk_a.img"),
+                ]
+                .concat(),
+                fdt_property: &[("/chosen", c"vendor_kernel", Some(b"1\0"))],
+            },
             TEST_VENDOR_BOOTCONFIG,
             EXPECTED_V3_V4_CMDLINE,
-            &[("/chosen", c"vendor_kernel", Some(b"1\0"))],
             TestVbmetaKey::Rsa4096,
         );
     }
@@ -2335,13 +2345,12 @@ pub(crate) mod tests {
                 ("vendor_boot_a".into(), "android/vendor_boot_v4_a.img".into()),
                 ("init_boot_a".into(), "android/init_boot_a.img".into()),
             ],
-            Some("android/vbmeta_v4_v4_init_boot_a.img"),
+            Some(("android/vbmeta_v4_v4_init_boot_a.img", TestVbmetaKey::Rsa4096)),
             false,
             BootStateColor::Green,
             'a',
             TEST_VENDOR_BOOTCONFIG,
             &format!("{TEST_BOOTCONFIG_FIXUP}\n"),
-            TestVbmetaKey::Rsa4096,
         );
         let expected_ramdisk = &[
             read_test_data("android/vendor_ramdisk_a.img"),
