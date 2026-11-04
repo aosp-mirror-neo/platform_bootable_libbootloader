@@ -56,7 +56,6 @@ gbl_rust_crate_repository(
     aliases = {
         "@log_no_std": "log",
     },
-    edition = "2024",
     path = "external/rust/android-crates-io/crates/acpi",
     deps = [
         "@bit_field",
@@ -256,15 +255,12 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "const_fn",
-    edition = "2018",
     path = "external/rust/android-crates-io/crates/const_fn",
     rule = "rust_proc_macro",
 )
 
 gbl_rust_crate_repository(
     name = "crc32fast",
-    # Current version of the crate doesn't compile with newer editions.
-    edition = "2015",
     path = "external/rust/android-crates-io/crates/crc32fast",
     deps = ["@cfg_if"],
 )
@@ -358,7 +354,6 @@ gbl_rust_crate_repository(
 gbl_rust_crate_repository(
     name = "figment",
     crate_features = ["yaml"],
-    edition = "2018",
     path = "external/rust/android-crates-io/crates/figment",
     deps = [
         "@parking_lot",
@@ -871,7 +866,6 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "safe_mmio",
-    edition = "2024",
     path = "external/rust/android-crates-io/crates/safe-mmio",
     deps = ["@zerocopy_alloc"],
 )
@@ -909,7 +903,6 @@ gbl_rust_crate_repository(
         "result",
         "std",
     ],
-    edition = "2021",
     path = "external/rust/android-crates-io/crates/serde_core",
     rustc_env = {
         "OUT_DIR": "../out",
@@ -1259,7 +1252,6 @@ gbl_rust_crate_repository(
         "@log_no_std": "log",
     },
     crate_features = ["alloc"],
-    edition = "2024",
     path = "external/rust/android-crates-io/crates/virtio-drivers",
     proc_macro_deps = ["@enumn"],
     rustc_flags = [
@@ -1378,7 +1370,6 @@ gbl_rust_crate_repository(
         "const_fn",
         "instructions",
     ],
-    edition = "2018",
     path = "external/rust/android-crates-io/crates/x86_64",
     proc_macro_deps = [
         "@const_fn",
