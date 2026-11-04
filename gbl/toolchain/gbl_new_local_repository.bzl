@@ -153,6 +153,9 @@ def _cargo_edition(repo_ctx):
     Returns:
         The edition string, e.g. "2021", or `_DEFAULT_CARGO_EDITION` if the
         crate doesn't declare one.
+
+    Fails if Cargo.toml has no `[package]` section, or declares the edition in
+    any form other than a quoted 4-digit year (e.g. `edition.workspace = true`).
     """
     source_dir = repo_ctx.workspace_root.get_child(repo_ctx.attr.path)
     if not source_dir.exists:
@@ -169,17 +172,61 @@ def _cargo_edition(repo_ctx):
             repo_ctx.attr.path,
         ))
 
+    # This is not a full TOML parser; it only understands the simple
+    # `edition = "YYYY"` form used by vendored (Cargo-normalized) crates and
+    # fails on anything else rather than guessing.
     section = None
+    has_package = False
     for line in repo_ctx.read(cargo_toml).splitlines():
         line = line.strip()
         if line.startswith("["):
-            section = line
-        elif section == "[package]" and line.startswith("edition"):
-            key, sep, value = line.partition("=")
-            if sep and key.strip() == "edition":
-                return value.strip().strip("\"'")
+            # Normalize e.g. "[ package ] # comment" to "[package]".
+            section = line.partition("]")[0].replace(" ", "") + "]"
+            if section == "[package]":
+                has_package = True
+            continue
+
+        if section != "[package]":
+            continue
+
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.replace(" ", "")
+
+        if key.startswith("edition."):
+            # e.g. `edition.workspace = true`.
+            _cargo_edition_fail(repo_ctx, cargo_toml, "unsupported key `{}`".format(key))
+
+        if key == "edition":
+            value = value.strip()
+            year = _get_quoted_year(value)
+            if year == None:
+                # e.g. `edition = { workspace = true }` or a trailing comment.
+                _cargo_edition_fail(
+                    repo_ctx,
+                    cargo_toml,
+                    "unsupported edition value `{}`, expected a quoted year".format(value),
+                )
+            return year
+
+    if not has_package:
+        _cargo_edition_fail(repo_ctx, cargo_toml, "no [package] section")
 
     return _DEFAULT_CARGO_EDITION
+
+def _cargo_edition_fail(repo_ctx, cargo_toml, reason):
+    """Fails with a `_cargo_edition` parse error for the given Cargo.toml."""
+    fail("{}: {}: {}".format(repo_ctx.original_name, cargo_toml, reason))
+
+def _get_quoted_year(value):
+    """Returns the 4-digit year in TOML string `value`, or None if it isn't one."""
+    if (len(value) == 6 and
+        value[0] in ("\"", "'") and
+        value[-1] == value[0] and
+        value[1:-1].isdigit()):
+        return value[1:-1]
+    return None
 
 def _gbl_rust_crate_repository_impl(repo_ctx):
     _gbl_new_local_repository_common_impl(
