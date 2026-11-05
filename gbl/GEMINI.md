@@ -45,11 +45,34 @@ providing a standardized, platform-agnostic bootloader core.
 
 ### 3. Error Handling
 
-- **No Panics:** Avoid `panic!`, `unwrap()`, or `expect()` in production. These
-  cause silent hangs in UEFI.
-- **Recoverable Errors:** Return `Result`.
-- **Fatal Errors:** Use the `report_error_and_reset` pattern and ensure a
-  GBL-specific error tag is provided.
+- **Recoverable Errors:** Return `Result` when a caller may be able to handle
+  the error, e.g. by falling back to fastboot on a corrupt disk, trying the
+  other slot, or rejecting invalid host input while staying in fastboot. If code
+  can't tell whether its errors are recoverable (common in libraries), return
+  `Result` and let something higher in the call stack make the decision.
+- **Unrecoverable Errors:** Once code knows an error is unrecoverable, stop at
+  that point instead of propagating an error that would only fail in `main()`.
+  Avoid `unwrap()` and `panic!()` without a message; use one of:
+  - **`expect()`:** The default, or `panic!()` with a message if there's no
+    `Option` or `Result`. The message should briefly say what went wrong; the
+    location is already logged, so don't repeat it. The panic handler logs the
+    message and location to the console, passes the frame pointer to the GBL
+    debug protocol so firmware can capture a backtrace, and resets. A
+    propagated error usually loses this context.
+  - **`report_error_and_reset()`:** For well-defined failure categories that
+    devices may want to track explicitly. Panics are reported to firmware with
+    the generic `GBL_EFI_DEBUG_ERROR_TAG_ASSERTION_ERROR` tag, while this passes
+    a specific `GblEfiDebugErrorTag`. For example, failing to find any block
+    devices at startup reports `GBL_EFI_DEBUG_ERROR_TAG_PARTITION`. Tags exist
+    for device needs, so only add a new one when a device needs to track that
+    failure.
+- **C Libraries:** Some crates are also built as C static libraries for other
+  firmware (e.g. `libabr_c`). These don't run inside GBL, so GBL's panic handler
+  and `report_error_and_reset()` aren't available; a panic goes to the
+  library's own handler instead (`libabr_c` calls the integrator's
+  `AbrAbort()`). Report errors through the documented C error codes (e.g.
+  `ABR_RESULT_ERR_IO`) so the integrator can handle them, and only panic on
+  fatal unrecoverable conditions.
 
 ### 4. Coding Conventions
 
