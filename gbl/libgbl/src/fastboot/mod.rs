@@ -933,6 +933,20 @@ where
         Ok(())
     }
 
+    /// Re-reads GPT partition tables across all GPT block devices.
+    async fn sync_gpts(&mut self) {
+        for (idx, disk) in self.disks.iter().enumerate().filter(|(_, d)| d.is_gpt()) {
+            // GPT operations are not scheduled as background tasks. No need to wait.
+            let had_valid_gpt = disk.num_partitions().is_ok();
+            match disk.sync_gpt().await {
+                Ok(Some(GptSyncResult::BothValid)) | Ok(None) => {}
+                Ok(Some(GptSyncResult::NoValidGpt { .. })) if !had_valid_gpt => {}
+                Ok(Some(res)) => gbl_println!(self.gbl_ops, "Block #{idx} GPT sync result: {res}"),
+                Err(e) => gbl_println!(self.gbl_ops, "Block #{idx} error while syncing GPT: {e}"),
+            }
+        }
+    }
+
     /// Sets the boot mode for the next reboot.
     fn set_boot_mode(&mut self, mode: AndroidBootMode) -> CommandResult<()> {
         match mode {
@@ -1822,7 +1836,7 @@ where
 
     async fn command_exec(
         &mut self,
-        args: impl Iterator<Item = &'_ CStr> + Clone,
+        mut args: impl Iterator<Item = &'_ CStr> + Clone,
         responder: impl InfoSender + OkaySender + FailSender,
     ) -> CommandResult<CommandExecType> {
         let current_download_size =
@@ -1833,7 +1847,11 @@ where
             current_download_size,
             responder,
         )?;
-
+        if matches!(res, CommandExecType::CustomImpl)
+            && [Some(c"flash"), Some(c"erase")].contains(&args.next())
+        {
+            self.sync_gpts().await;
+        }
         Ok(res)
     }
 
@@ -2136,7 +2154,7 @@ pub(crate) mod test {
         ops::{
             test::{
                 into_refmut_bytes, slot, slot_successful, slot_unbootable, CounterCallback,
-                FakeGblOps, FakeGblOpsStorage, SenderMessage,
+                FakeGblOps, FakeGblOpsStorage, SenderMessage, TestGblDisk,
             },
             FastbootPartitionType, PartitionBuffer,
         },
@@ -2154,7 +2172,7 @@ pub(crate) mod test {
     };
     use fastboot::{test_utils::TestUploadBuilder, CommandExecType, MAX_RESPONSE_SIZE};
     use gbl_async::{block_on, poll, poll_n_times};
-    use gbl_storage::GPT_GUID_LEN;
+    use gbl_storage::{new_gpt_max, GPT_GUID_LEN};
     use libbuild_number::BUILD_NUMBER;
     use liberror::Error;
     use libtestutils::AlignedBuffer;
@@ -6528,6 +6546,128 @@ pub(crate) mod test {
             ]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_fastboot_command_exec_custom_flash_erase_gpt_sync() {
+        fn build_4k_gpt_image(parts: &[(&str, u64)]) -> Vec<u8> {
+            let disk = TestGblDisk::new_gpt(
+                Disk::new_ram_alloc(KiB!(4), KiB!(4), vec![0u8; KiB!(128)]).unwrap(),
+                new_gpt_max(),
+            );
+            let mut builder = disk.gpt_builder().unwrap();
+            for (idx, (name, size)) in parts.iter().enumerate() {
+                let uid = [u8::try_from(idx + 1).unwrap(); GPT_GUID_LEN];
+                builder.add(name, [1u8; GPT_GUID_LEN], uid, 0, Some(*size)).unwrap();
+            }
+            block_on(builder.persist()).unwrap();
+            let mut img = vec![0u8; KiB!(128)];
+            block_on(disk.partition_io(None).unwrap().read(0, &mut img[..])).unwrap();
+            img
+        }
+
+        fn write_disk(s: &FakeGblOpsStorage, idx: usize, off: u64, mut data: Vec<u8>) {
+            block_on(s[idx].partition_io(None).unwrap().write(off, &mut data)).unwrap();
+        }
+
+        let disk0_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let ufs_gpt_v1 = build_4k_gpt_image(&[("ufs_4k_a", 0x2000), ("ufs_4k_b", 0x3000)]);
+        let ufs_gpt_v2 =
+            build_4k_gpt_image(&[("pad", 0x1000), ("ufs_4k_a", 0x2000), ("ufs_4k_b", 0x3000)]);
+
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(disk0_orig);
+        storage.add_raw_device(c"raw_0", [0u8; KiB!(4)]);
+        // Blank 4K-sector UFS LUNs: #2 is populated via custom flash, #3 stays unformatted.
+        for _ in 0..2 {
+            storage.0.push(TestGblDisk::new_gpt(
+                Disk::new_ram_alloc(KiB!(4), KiB!(4), vec![0u8; KiB!(128)]).unwrap(),
+                new_gpt_max(),
+            ));
+        }
+
+        let mut handler =
+            |cmd: Vec<String>, download: &mut [u8], used: usize| match cmd.join(":").as_str() {
+                "flash:partition:0" => {
+                    write_disk(&storage, 2, 0, download[..used].to_vec());
+                    Ok(CommandExecType::CustomImpl)
+                }
+                "flash:bootloader" => {
+                    write_disk(&storage, 2, 0, ufs_gpt_v2.clone());
+                    Ok(CommandExecType::CustomImpl)
+                }
+                "erase:gpt" => {
+                    let mut erased = disk0_orig.to_vec();
+                    erased[512..][..512].fill(0);
+                    erased.last_chunk_mut::<512>().unwrap().fill(0);
+                    write_disk(&storage, 0, 0, erased);
+                    Ok(CommandExecType::CustomImpl)
+                }
+                _ => Ok(CommandExecType::DefaultImpl),
+            };
+
+        let buffers = vec![Some(vec![0u8; KiB!(32)]); 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.fastboot_command_exec_handler = Some(&mut handler);
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+
+        // 24 KiB primary-GPT-only 4K UFS image (MBR + primary header + 128 entries).
+        listener.add_transport_input(format!("download:{:#x}", KiB!(24)).as_bytes());
+        listener.add_transport_input(&ufs_gpt_v1[..KiB!(24)]);
+        listener.add_transport_input(b"flash:partition:0");
+        listener.add_transport_input(b"getvar:partition-size:ufs_4k_a");
+        listener.add_transport_input(b"getvar:partition-size:ufs_4k_b");
+        // Custom `flash:bootloader` shifts `ufs_4k_a` from LBA 6 (0x6000) to LBA 7 (0x7000).
+        listener.add_transport_input(b"flash:bootloader");
+        listener.add_transport_input(format!("download:{:#x}", KiB!(4)).as_bytes());
+        listener.add_transport_input(&[0x5au8; KiB!(4)]);
+        listener.add_transport_input(b"flash:ufs_4k_a");
+        // Custom `erase:gpt` wipes Disk #0 without affecting Disk #2.
+        listener.add_transport_input(b"erase:gpt");
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(b"getvar:partition-size:ufs_4k_a");
+        listener.add_transport_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"DATA00006000",
+                b"OKAY",
+                b"OKAY",
+                b"OKAY0x2000",
+                b"OKAY0x3000",
+                b"OKAY",
+                b"DATA00001000",
+                b"OKAY",
+                b"OKAY",
+                b"OKAY",
+                b"FAILNotFound",
+                b"OKAY0x2000",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+
+        let mut old_and_new_lba = vec![0u8; KiB!(8)];
+        block_on(storage[2].partition_io(None).unwrap().read(0x6000, &mut old_and_new_lba[..]))
+            .unwrap();
+        assert_eq!(&old_and_new_lba[..KiB!(4)], &[0u8; KiB!(4)], "Old ufs_4k_a LBA overwritten");
+        assert_eq!(
+            &old_and_new_lba[KiB!(4)..],
+            &[0x5au8; KiB!(4)],
+            "Updated ufs_4k_a LBA missing flash payload"
         );
     }
 
