@@ -32,7 +32,11 @@ use efi::{
     utils::Timeout,
     DeviceHandle, EfiEntry, Event, EventNotify, EventType, Tpl,
 };
-use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
+use efi_types::{
+    EfiEvent, EfiMacAddress, EFI_SIMPLE_NETWORK_STATE_INITIALIZED,
+    EFI_SIMPLE_NETWORK_STATE_STARTED, EFI_SIMPLE_NETWORK_STATE_STOPPED,
+    EFI_TIMER_DELAY_TIMER_PERIODIC,
+};
 use gbl_async::{yield_now, YieldCounter};
 use liberror::{Error, Result};
 use libgbl::fastboot::fuchsia_fastboot_mdns_packet;
@@ -79,17 +83,20 @@ fn listen_to_unified(err: ListenError) -> Error {
     }
 }
 
-/// Performs a shutdown and restart of the simple network protocol.
+/// Brings the simple network protocol to the initialized state and resets it.
+///
+/// Makes only the calls that are valid in the current state, as EDK2's SnpDxe rejects the others:
+/// e.g. it fails `Shutdown()` with `EFI_DEVICE_ERROR` in the started state, which is where
+/// `EfiNetworkDevice::drop()` leaves the network. An initialized network is shut down first, which
+/// drops its pending transmits and so releases any TX buffers it holds.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
-    match snp.shutdown() {
-        Err(e) if e != Error::NotStarted => return Err(e),
-        _ => {}
-    };
-
-    match snp.start() {
-        Err(e) if e != Error::AlreadyStarted => return Err(e),
-        _ => {}
-    };
+    match snp.mode()?.state {
+        EFI_SIMPLE_NETWORK_STATE_STOPPED => snp.start()?,
+        EFI_SIMPLE_NETWORK_STATE_STARTED => {}
+        EFI_SIMPLE_NETWORK_STATE_INITIALIZED => snp.shutdown()?,
+        // EDK2's SnpDxe fails every call in an out-of-spec state.
+        _ => return Err(Error::InvalidState),
+    }
     snp.initialize(0, 0)?;
     snp.reset(true)
 }
@@ -719,7 +726,12 @@ mod test {
         protocol::device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
         MockEfi, MockLocatedHandles,
     };
-    use efi_types::EfiSimpleNetworkMode;
+    use efi_types::{
+        EfiSimpleNetworkMode, EfiSimpleNetworkState,
+        EFI_SIMPLE_NETWORK_STATE_INITIALIZED as INITIALIZED,
+        EFI_SIMPLE_NETWORK_STATE_STARTED as STARTED, EFI_SIMPLE_NETWORK_STATE_STOPPED as STOPPED,
+    };
+    use std::sync::{atomic::AtomicU32, Arc};
 
     fn make_handle(id: usize) -> DeviceHandle {
         DeviceHandle::new(id as _)
@@ -727,7 +739,6 @@ mod test {
 
     fn make_snp(media_present_supported: bool, media_present: bool) -> SimpleNetworkProtocol {
         let mut snp = SimpleNetworkProtocol::default();
-        snp.expect_shutdown().returning(|| Ok(()));
         snp.expect_start().returning(|| Ok(()));
         snp.expect_initialize().returning(|_, _| Ok(()));
         snp.expect_reset().returning(|_| Ok(()));
@@ -920,5 +931,124 @@ mod test {
 
         let installed = mock_efi.install();
         assert_eq!(find_net_device(installed.entry()), Ok(make_handle(nic1_id)));
+    }
+
+    /// A fake simple network device that follows the UEFI SNP state machine. Calls that are invalid
+    /// in the current state fail with the same errors as EDK2's SnpDxe and are counted.
+    #[derive(Default)]
+    struct FakeSnp {
+        state: AtomicU32,
+        invalid_calls: AtomicU32,
+        resets: AtomicU32,
+    }
+
+    impl FakeSnp {
+        /// Creates a fake device in `state`.
+        fn new(state: EfiSimpleNetworkState) -> Arc<Self> {
+            Arc::new(Self { state: AtomicU32::new(state.0), ..Default::default() })
+        }
+
+        /// Returns the current state.
+        fn state(&self) -> EfiSimpleNetworkState {
+            EfiSimpleNetworkState(self.state.load(Ordering::Relaxed))
+        }
+
+        /// Returns the number of calls made in a state that does not allow them.
+        fn invalid_calls(&self) -> u32 {
+            self.invalid_calls.load(Ordering::Relaxed)
+        }
+
+        /// Returns the number of successful `Reset()` calls.
+        fn resets(&self) -> u32 {
+            self.resets.load(Ordering::Relaxed)
+        }
+
+        /// Handles a call that is only valid in state `from` by moving to state `to`.
+        fn transition(&self, from: EfiSimpleNetworkState, to: EfiSimpleNetworkState) -> Result<()> {
+            let state = self.state();
+            if state == from {
+                self.state.store(to.0, Ordering::Relaxed);
+                return Ok(());
+            }
+            self.invalid_calls.fetch_add(1, Ordering::Relaxed);
+            Err(match (from, state) {
+                // `Start()`, the only call that is valid in the stopped state.
+                (STOPPED, STARTED | INITIALIZED) => Error::AlreadyStarted,
+                (_, STOPPED) => Error::NotStarted,
+                _ => Error::DeviceError,
+            })
+        }
+
+        /// Returns a mock protocol instance that operates on this device.
+        fn snp(self: &Arc<Self>) -> SimpleNetworkProtocol {
+            let mut snp = SimpleNetworkProtocol::default();
+            let fake = self.clone();
+            snp.expect_start().returning(move || fake.transition(STOPPED, STARTED));
+            let fake = self.clone();
+            snp.expect_stop().returning(move || fake.transition(STARTED, STOPPED));
+            let fake = self.clone();
+            snp.expect_initialize().returning(move |_, _| fake.transition(STARTED, INITIALIZED));
+            let fake = self.clone();
+            snp.expect_shutdown().returning(move || fake.transition(INITIALIZED, STARTED));
+            let fake = self.clone();
+            snp.expect_reset().returning(move |_| {
+                fake.transition(INITIALIZED, INITIALIZED)?;
+                fake.resets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            });
+            let fake = self.clone();
+            snp.expect_mode().returning(move || {
+                Ok(EfiSimpleNetworkMode { state: fake.state(), ..Default::default() })
+            });
+            snp
+        }
+    }
+
+    /// Checks that `reset_simple_network()` initializes and resets a device in `state` without
+    /// making any call that is invalid in the device's current state.
+    fn check_reset_simple_network(state: EfiSimpleNetworkState) {
+        let fake = FakeSnp::new(state);
+        assert_eq!(reset_simple_network(&fake.snp()), Ok(()));
+        assert_eq!(fake.state(), INITIALIZED);
+        assert_eq!(fake.resets(), 1);
+        assert_eq!(fake.invalid_calls(), 0);
+    }
+
+    #[test]
+    fn test_reset_simple_network_from_stopped() {
+        check_reset_simple_network(STOPPED);
+    }
+
+    #[test]
+    fn test_reset_simple_network_from_started() {
+        check_reset_simple_network(STARTED);
+    }
+
+    #[test]
+    fn test_reset_simple_network_from_initialized() {
+        check_reset_simple_network(INITIALIZED);
+    }
+
+    #[test]
+    fn test_reset_simple_network_rejects_unknown_state() {
+        let fake = FakeSnp::new(EfiSimpleNetworkState(3));
+        assert_eq!(reset_simple_network(&fake.snp()), Err(Error::InvalidState));
+        assert_eq!(fake.invalid_calls(), 0);
+    }
+
+    #[test]
+    fn test_reset_simple_network_after_network_device_drop() {
+        // Each fastboot session drops its `EfiNetworkDevice`, which leaves the network started,
+        // and the next session resets it from there.
+        let installed = MockEfi::new().install();
+        let fake = FakeSnp::new(STOPPED);
+        let snp = fake.snp();
+        assert_eq!(reset_simple_network(&snp), Ok(()));
+        drop(EfiNetworkDevice::new(snp, 0, installed.entry()));
+        assert_eq!(fake.state(), STARTED);
+
+        assert_eq!(reset_simple_network(&fake.snp()), Ok(()));
+        assert_eq!(fake.state(), INITIALIZED);
+        assert_eq!(fake.invalid_calls(), 0);
     }
 }
