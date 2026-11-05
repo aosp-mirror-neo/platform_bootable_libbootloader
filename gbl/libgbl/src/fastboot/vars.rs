@@ -45,7 +45,7 @@ use zerocopy::{error::SizeError, FromBytes, IntoBytes, Unaligned};
 const MAX_DOWNLOAD_SIZE: &str = "max-download-size";
 
 const IS_USERSPACE: &str = "is-userspace";
-const VERSION_BOOTLOADER: &str = "version-bootloader";
+const VERSION_GBL: &str = "version-gbl";
 
 const SLOT_COUNT: &str = "slot-count";
 const CURRENT_SLOT: &str = "current-slot";
@@ -86,7 +86,7 @@ const STREAM_SEGMENT_SIZE: &str = "stream-segment-size";
 
 pub(crate) const GETVAR_ALL_FILTER: &[&str] = &[
     IS_USERSPACE,
-    VERSION_BOOTLOADER,
+    VERSION_GBL,
     SLOT_COUNT,
     CURRENT_SLOT,
     SLOT_SUCCESSFUL,
@@ -240,7 +240,7 @@ where
         Ok(Some(match name {
             MAX_DOWNLOAD_SIZE => snprintf!(out, "{:#x}", self.max_download_size().await),
             IS_USERSPACE => snprintf!(out, "no"),
-            VERSION_BOOTLOADER => snprintf!(out, "gbl.{}", BUILD_NUMBER),
+            VERSION_GBL => snprintf!(out, "gbl.{}", BUILD_NUMBER),
             MAX_FETCH_SIZE => snprintf!(out, "{}", MAX_FETCH_SIZE_VAL),
             DEFAULT_BLOCK => self.get_var_default_block(out)?,
             STREAM_SEGMENT_SIZE => self.get_var_stream_segment_size(out)?,
@@ -272,8 +272,8 @@ where
         let args_str = args_str.map(|v| v.unwrap());
         let name_str = name.to_str()?;
         Ok(match name_str {
-            MAX_DOWNLOAD_SIZE | IS_USERSPACE | VERSION_BOOTLOADER | MAX_FETCH_SIZE
-            | DEFAULT_BLOCK | STREAM_SEGMENT_SIZE => {
+            MAX_DOWNLOAD_SIZE | IS_USERSPACE | VERSION_GBL | MAX_FETCH_SIZE | DEFAULT_BLOCK
+            | STREAM_SEGMENT_SIZE => {
                 self.get_builtin_var(name_str, out).await?.ok_or(Error::InvalidInput)?
             }
             SLOT_COUNT => format_slot_count(self.gbl_ops.get_slot_count()?, out),
@@ -313,7 +313,7 @@ where
         let mut buf = [0u8; GETVAR_RESPONSE_MAX_SIZE];
         self.send_builtin_var(MAX_DOWNLOAD_SIZE, &mut buf, send).await?;
         self.send_builtin_var(IS_USERSPACE, &mut buf, send).await?;
-        self.send_builtin_var(VERSION_BOOTLOADER, &mut buf, send).await?;
+        self.send_builtin_var(VERSION_GBL, &mut buf, send).await?;
         match self.gbl_ops.get_slot_count() {
             Ok(slot_count) => {
                 send.send_var_info(SLOT_COUNT, [], format_slot_count(slot_count, &mut buf)).await?;
