@@ -30,8 +30,11 @@ unsafe fn strtou_helper(
     endptr: *mut *const c_char,
     base: c_int,
 ) -> (SafeNum, bool) {
-    assert!(!s.is_null());
-    assert!(base == 0 || base == 8 || base == 10 || base == 16);
+    assert!(!s.is_null(), "strtoul() called with a null string");
+    assert!(
+        base == 0 || base == 8 || base == 10 || base == 16,
+        "strtoul() called with unsupported base {base}"
+    );
 
     let mut pos = 0;
     let mut base = base;

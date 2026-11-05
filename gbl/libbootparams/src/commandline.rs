@@ -130,7 +130,10 @@ impl<'a> CommandlineBuilder<'a> {
         // Appended command line data must be valid UTF-8.
         from_utf8(&remains_buffer[..size])?;
 
-        assert!(size <= remains_buffer.len());
+        assert!(
+            size <= remains_buffer.len(),
+            "Command line reader returned more bytes than the remaining buffer"
+        );
 
         // Replace current null terminator with space separator. This logic adds a redundant
         // leading space in case build is currently empty. Keep it as is for the simplicity.

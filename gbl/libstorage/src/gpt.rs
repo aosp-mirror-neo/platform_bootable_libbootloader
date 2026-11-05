@@ -291,7 +291,11 @@ fn check_header(io: &impl BlockIo, header: &GptHeader, is_primary: bool) -> Resu
 /// * `entries`: The buffer containing the entries.
 fn check_entries(header: &GptHeader, entries: &[u8]) -> Result<()> {
     // Checks entries CRC.
-    assert!(header.entries_count <= GPT_MAX_NUM_ENTRIES.try_into().unwrap());
+    assert!(
+        header.entries_count <= GPT_MAX_NUM_ENTRIES.try_into().unwrap(),
+        "GPT entry count {} exceeds the maximum",
+        { header.entries_count }
+    );
     let entries_size: usize = gpt_entries_size(header.entries_count).try_into().unwrap();
     let entries = entries.get(..entries_size).ok_or(Error::GptError(GptError::EntriesTruncated))?;
     if header.entries_crc != crc32(entries) {
@@ -1177,7 +1181,7 @@ where
         // Inserts the new entry.
         entries[idx..].rotate_right(1);
         let entry = &mut entries[idx];
-        assert!(entry.is_null());
+        assert!(entry.is_null(), "GPT entry slot for the new partition isn't empty");
         entry.part_type = GptGuid(part_type);
         entry.guid = GptGuid(unique_guid);
         entry.flags = flags;

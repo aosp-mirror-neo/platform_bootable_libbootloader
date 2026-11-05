@@ -256,7 +256,10 @@ pub fn split_loaded_android<'a>(
     let kernel = sub_slice_range(general, kernel).unwrap_or(0..0);
     let ramdisk = sub_slice_range(general, ramdisk).unwrap_or(kernel.end..kernel.end);
     let fdt = sub_slice_range(general, fdt).unwrap_or(ramdisk.end..ramdisk.end);
-    assert!(ramdisk.start >= kernel.end && fdt.start >= ramdisk.end);
+    assert!(
+        ramdisk.start >= kernel.end && fdt.start >= ramdisk.end,
+        "Kernel, ramdisk and FDT are out of order in the general load buffer"
+    );
     let (rem, unused) = general_buf.split_at_mut(fdt.end);
     let (rem, general_fdt) = rem.split_at_mut(fdt.start);
     let (rem, general_ramdisk) = rem.split_at_mut(ramdisk.start);

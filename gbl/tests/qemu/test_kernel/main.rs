@@ -91,12 +91,12 @@ pub unsafe extern "C" fn kernel_main(boot_arg: *const u8) -> ! {
     semihosting::println!("GBL Custom Kernel loaded and self-relocated successfully from Rust!");
 
     // For now we don't expect boot_arg to be null.
-    assert!(!boot_arg.is_null());
+    assert!(!boot_arg.is_null(), "Kernel boot argument is null");
 
     #[cfg(target_arch = "x86_64")]
     {
         let bp_ptr = boot_arg.cast::<boot::x86::BootParams>();
-        assert!(bp_ptr.is_aligned());
+        assert!(bp_ptr.is_aligned(), "x86 boot params pointer is misaligned");
         // SAFETY: By safety contract, on x86_64 `boot_arg` is non-null, properly aligned, and
         // points to a valid `BootParams` structure whose `ramdisk_image` and `ramdisk_size` mark a
         // valid ramdisk address range, with no mutable Rust references to data pointed to by
@@ -164,7 +164,7 @@ pub unsafe extern "C" fn kernel_main(boot_arg: *const u8) -> ! {
             let dice_handover = config
                 .entry(PvmfwConfigEntryType::DiceHandover)
                 .expect("Failed to read DICE handover entry");
-            assert!(!dice_handover.is_empty());
+            assert!(!dice_handover.is_empty(), "DICE handover entry is empty");
             let parsed = bcc_handover_parse(dice_handover).expect("Failed to parse DICE handover");
             let bcc = parsed.bcc.expect("Missing BCC in DICE handover");
             let extracted_alg = extract_subject_algorithm_from_dice_chain(bcc)

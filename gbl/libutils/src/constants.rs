@@ -19,8 +19,8 @@ macro_rules! KiB  (
         $x*1024
     }
 );
-const _: () = assert!(KiB!(1) == 1024);
-const _: () = assert!(KiB!(5) == 5 * 1024);
+const _: () = assert!(KiB!(1) == 1024, "KiB!(1) is wrong");
+const _: () = assert!(KiB!(5) == 5 * 1024, "KiB!(5) is wrong");
 
 /// Macro for defining Mebibyte-sized constants
 #[macro_export]
@@ -29,8 +29,8 @@ macro_rules! MiB  (
         $x*KiB!(1024)
     }
 );
-const _: () = assert!(MiB!(1) == 1024 * 1024);
-const _: () = assert!(MiB!(5) == 5 * 1024 * 1024);
+const _: () = assert!(MiB!(1) == 1024 * 1024, "MiB!(1) is wrong");
+const _: () = assert!(MiB!(5) == 5 * 1024 * 1024, "MiB!(5) is wrong");
 
 pub use KiB;
 pub use MiB;

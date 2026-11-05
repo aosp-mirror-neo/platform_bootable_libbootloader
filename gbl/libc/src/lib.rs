@@ -279,7 +279,7 @@ pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: usize) -> 
     if count == 0 {
         return null_mut();
     }
-    assert!(!ptr.is_null());
+    assert!(!ptr.is_null(), "memchr() called with a null pointer");
     let start = ptr as *const u8;
     let target = (ch & 0xff) as u8;
     for i in 0..count {

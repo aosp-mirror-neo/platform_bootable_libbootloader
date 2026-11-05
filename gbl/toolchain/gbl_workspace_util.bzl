@@ -216,6 +216,8 @@ ANDROID_RUST_LINTS = [
     "-A",
     "clippy::upper-case-acronyms",
     "-D",
+    "clippy::missing_assert_message",
+    "-D",
     "clippy::too-many-arguments",
     "-D",
     "clippy::undocumented_unsafe_blocks",

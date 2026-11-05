@@ -109,7 +109,7 @@ struct FillInfo {
 impl FillInfo {
     /// Creates an instance that represents filling a number of blocks.
     fn new_fill(blocks: u32, value: u32) -> Self {
-        assert_ne!(blocks, 0);
+        assert_ne!(blocks, 0, "Sparse fill of zero blocks");
         Self { fill_blocks: blocks, fill_value_or_skip_blocks: value }
     }
 

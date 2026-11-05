@@ -101,7 +101,7 @@ unsafe fn jump_kernel(addr: usize, arg0: usize, arg1: usize, arg2: usize, arg3: 
 ///
 /// Caller must ensure that `kernel` contains a valid Linux kernel.
 pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], ramdisk: &[u8], fdt: &[u8]) -> ! {
-    assert_ne!(current_el(), ExceptionLevel::EL3);
+    assert_ne!(current_el(), ExceptionLevel::EL3, "Can't boot the kernel from EL3");
     // The following is sufficient to work for existing use cases such as Cuttlefish. But there are
     // additional initializations listed
     // https://www.kernel.org/doc/html/v5.11/arm64/booting.html that may need to be performed
@@ -137,7 +137,7 @@ pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], ramdisk: &[u8], fdt: &[u8])
 /// Caller must ensure that `zbi_kernel` contains a valid zircon kernel ZBI item.
 #[cfg(feature = "fuchsia")]
 pub unsafe fn jump_zircon_el2_or_lower(kernel: &[u8], zbi_item: &[u8]) -> ! {
-    assert_ne!(current_el(), ExceptionLevel::EL3);
+    assert_ne!(current_el(), ExceptionLevel::EL3, "Can't boot the kernel from EL3");
     let (entry, _) =
         ZbiContainer::parse(kernel).unwrap().get_kernel_entry_and_reserved_memory_size().unwrap();
     flush_dcache_buffer(kernel);

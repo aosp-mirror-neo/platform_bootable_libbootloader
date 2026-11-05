@@ -117,8 +117,14 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
         buf: impl Into<&'a mut UninitSlice>,
     ) -> Result<usize, Error> {
         let buf = buf.into();
-        assert!(is_buffer_aligned(&mut *buf, self.alignment).unwrap_or(false));
-        assert!(is_aligned(buf.len(), self.block_size).unwrap_or(false));
+        assert!(
+            is_buffer_aligned(&mut *buf, self.alignment).unwrap_or(false),
+            "Buffer isn't aligned"
+        );
+        assert!(
+            is_aligned(buf.len(), self.block_size).unwrap_or(false),
+            "Buffer size isn't block aligned"
+        );
         for _ in 0..self.yields {
             yield_now().await;
         }

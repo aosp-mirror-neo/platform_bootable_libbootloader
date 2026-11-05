@@ -213,8 +213,13 @@ unsafe fn setup_bzimage_boot_params<'a>(
     bootparam.check()?;
 
     // low memory address must be non-null, aligned for `BootParams`, and <= 0x9_0000.
-    assert!(low_mem_addr != 0 && low_mem_addr.is_multiple_of(core::mem::align_of::<BootParams>()));
-    assert!(low_mem_addr <= 0x9_0000);
+    let align = core::mem::align_of::<BootParams>();
+    assert!(
+        low_mem_addr != 0 && low_mem_addr.is_multiple_of(align) && low_mem_addr <= 0x9_0000,
+        "x86 boot params address {:#x} must be non-null, <= 0x90000, and {}-byte aligned",
+        low_mem_addr,
+        align
+    );
     // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
     // memory.
     let boot_param_buffer =
@@ -224,7 +229,10 @@ unsafe fn setup_bzimage_boot_params<'a>(
     // real-mode kernel.
     let cmdline_start = low_mem_addr + BOOT_SETUP_LOAD_SIZE;
     // Should not reach into I/O memory hole section.
-    assert!(cmdline_start + cmdline.len() <= 0x0A0000);
+    assert!(
+        cmdline_start + cmdline.len() <= 0x0A0000,
+        "Command line reaches into the I/O memory hole at 0xA0000"
+    );
     // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
     // memory.
     let cmdline_buffer = unsafe { from_raw_parts_mut(cmdline_start as *mut _, cmdline.len()) };

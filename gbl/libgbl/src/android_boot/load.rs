@@ -619,10 +619,10 @@ impl<'a> BootBufferLoader<'a> {
             }
             _ => {
                 // Kernel must already be loaded, nothing else should be.
-                assert_ne!(self.kernel_sz, 0);
-                assert_eq!(self.ramdisk_sz, 0);
-                assert_eq!(self.bootconfig_sz, 0);
-                assert_eq!(self.general_fdt, 0..0);
+                assert_ne!(self.kernel_sz, 0, "pvmfw loaded before the kernel");
+                assert_eq!(self.ramdisk_sz, 0, "pvmfw loaded after the ramdisk");
+                assert_eq!(self.bootconfig_sz, 0, "pvmfw loaded after the bootconfig");
+                assert_eq!(self.general_fdt, 0..0, "pvmfw loaded after the FDT");
                 // Use the kernel's page size so the hypervisor's identity mapping covers the
                 // pvmfw region exactly.
                 let off = aligned_offset(self.general, kernel_attrs.page_size)?;
@@ -661,10 +661,10 @@ impl<'a> BootBufferLoader<'a> {
             // `self.general` so subsequent loads see only the remaining space.
             _ => {
                 // Nothing else may be loaded yet.
-                assert_eq!(self.ramdisk_sz, 0);
-                assert_eq!(self.bootconfig_sz, 0);
-                assert_eq!(self.general_fdt, 0..0);
-                assert!(self.general_kernel.is_none());
+                assert_eq!(self.ramdisk_sz, 0, "Kernel loaded after the ramdisk");
+                assert_eq!(self.bootconfig_sz, 0, "Kernel loaded after the bootconfig");
+                assert_eq!(self.general_fdt, 0..0, "Kernel loaded after the FDT");
+                assert!(self.general_kernel.is_none(), "Kernel loaded twice");
                 let off = aligned_offset(self.general, KERNEL_ALIGNMENT)?;
                 let sz = decompress_kernel(ops, kernel, &mut self.general[off..])?;
                 let attrs = parse_kernel_attributes(&self.general[off..off + sz])?;
@@ -690,8 +690,8 @@ impl<'a> BootBufferLoader<'a> {
             Some(v) => v,
             _ => {
                 // Kernel and pvmfw must already be carved out; bootconfig/fdt not yet loaded.
-                assert_eq!(self.bootconfig_sz, 0);
-                assert_eq!(self.general_fdt.len(), 0);
+                assert_eq!(self.bootconfig_sz, 0, "Ramdisk loaded after the bootconfig");
+                assert_eq!(self.general_fdt.len(), 0, "Ramdisk loaded after the FDT");
                 self.general_fdt = self.ramdisk_sz..self.ramdisk_sz;
                 self.general = aligned_subslice(take(&mut self.general), PAGE_SIZE)?;
                 split(self.general, self.ramdisk_sz)?.0
@@ -779,7 +779,9 @@ impl<'a> BootBufferLoader<'a> {
         assert!(
             self.general_fdt.is_empty()
                 || self.general_fdt.start >= self.general_bootconfig_end().unwrap()
-                    && self.general_fdt.end <= self.general.len()
+                    && self.general_fdt.end <= self.general.len(),
+            "Invalid FDT range {:?} in the general buffer",
+            self.general_fdt
         );
     }
 

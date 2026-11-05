@@ -25,7 +25,7 @@ use std::{
 /// Typically this will be used with `u8` bytes, but is generic so it can
 /// also work with things like `MaybeUninit<u8>`.
 ///
-/// Using a non-byte-size `T` will cause a runtime panic.
+/// Using a non-byte-size `T` will cause a compile error.
 #[derive(Debug)]
 pub struct AlignedBuffer<T = u8> {
     buffer: Vec<T>,
@@ -37,9 +37,9 @@ impl<T> AlignedBuffer<T> {
     /// Returns the offset to the aligned part of `buffer`.
     fn offset(&self) -> usize {
         // This math doesn't make sense for non-byte-size `T`, and since
-        // this code is test-only it's easier to just panic than to try
+        // this code is test-only it's easier to just check at compile time than to try
         // to be fancier with generics to restrict the types.
-        assert_eq!(size_of::<T>(), 1);
+        const { assert!(size_of::<T>() == 1, "AlignedBuffer only supports byte-sized types") };
         let addr = SafeNum::from(self.buffer.as_ptr() as usize);
         (addr.round_up(self.alignment) - addr).try_into().unwrap()
     }

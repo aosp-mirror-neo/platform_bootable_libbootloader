@@ -284,7 +284,10 @@ unsafe impl GlobalAlloc for EfiAllocator {
             }
             let addr_bytes = (ptr as usize).to_ne_bytes();
             let offset = layout.align() - (ptr as usize % layout.align());
-            assert!(offset <= alloc_sz && alloc_sz - offset >= layout.size());
+            assert!(
+                offset <= alloc_sz && alloc_sz - offset >= layout.size(),
+                "Aligned allocation doesn't fit in the allocated buffer"
+            );
 
             // SAFETY:
             // - `ptr` is guaranteed to point to buffer bigger than `layout.size()`, plus the

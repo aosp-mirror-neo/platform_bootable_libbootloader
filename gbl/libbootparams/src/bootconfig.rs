@@ -92,7 +92,10 @@ impl<'a> BootConfigBuilder<'a> {
 
         let res = reader(&current_buffer[..], &mut remaining_buffer[..remaining]);
         if let Ok(size) = res {
-            assert!(size <= remaining);
+            assert!(
+                size <= remaining,
+                "Bootconfig reader returned more bytes than the remaining buffer"
+            );
             self.current_size += size;
         }
         // Update the trailer regardless of whether `reader` succeeded or not, since in either case
@@ -114,7 +117,10 @@ impl<'a> BootConfigBuilder<'a> {
         self.add_raw_with(|current, out| {
             let reserved = out.len().saturating_sub(1);
             let size = reader(current, &mut out[..reserved])?;
-            assert!(size <= reserved);
+            assert!(
+                size <= reserved,
+                "Bootconfig reader returned more bytes than the reserved buffer"
+            );
             match out[..size].last() {
                 None | Some(b'\n') => Ok(size),
                 Some(_) => {

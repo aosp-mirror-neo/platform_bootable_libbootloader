@@ -411,8 +411,8 @@ fn check_range<'a>(
     let block_size: SafeNum = info.block_size.into();
     let buffer = buffer.into();
     debug_assert!(is_aligned(offset, block_size)?, "{:?}, {:?}", offset, block_size);
-    debug_assert!(is_aligned(buffer.len(), block_size)?);
-    debug_assert!(is_buffer_aligned(&mut *buffer, info.alignment)?);
+    debug_assert!(is_aligned(buffer.len(), block_size)?, "Buffer size isn't block aligned");
+    debug_assert!(is_buffer_aligned(&mut *buffer, info.alignment)?, "Buffer isn't aligned");
     let blk_offset = offset / block_size;
     let blk_count = SafeNum::from(buffer.len()) / block_size;
     let end: u64 = (blk_offset + blk_count).try_into()?;

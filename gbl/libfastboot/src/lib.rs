@@ -833,7 +833,7 @@ impl<'a, T: Transport> Responder<'a, T> {
     /// A helper for sending a fastboot message in the buffer.
     async fn send_buffer(&mut self, size: usize) -> Result<()> {
         self.transport_error?;
-        assert!(size < self.buffer.len());
+        assert!(size < self.buffer.len(), "Fastboot message size exceeds the buffer");
         self.transport_error = self.transport.send_packet(&self.buffer[..size]).await;
         self.transport_error
     }

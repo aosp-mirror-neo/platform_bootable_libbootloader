@@ -25,7 +25,7 @@ use core::ptr::null_mut;
 /// * `str` must be a valid null-terminated C string.
 #[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
-    assert!(!ptr.is_null());
+    assert!(!ptr.is_null(), "strchr() called with a null pointer");
     let target = (ch & 0xff) as u8;
     let mut cur = ptr;
     loop {
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn strchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
 /// * `str` must be a valid null-terminated C string.
 #[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strrchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
-    assert!(!ptr.is_null());
+    assert!(!ptr.is_null(), "strrchr() called with a null pointer");
     // SAFETY: `str` is a null terminated string.
     let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes_with_nul();
     let target = (ch & 0xff) as u8;

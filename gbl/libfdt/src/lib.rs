@@ -600,7 +600,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
                 &mut out_ptr as *mut *mut u8 as *mut _,
             )
         })?;
-        assert!(!out_ptr.is_null());
+        assert!(!out_ptr.is_null(), "libfdt returned a null property buffer");
         // SAFETY: Buffer returned by API from libfdt_c.
         Ok(unsafe { from_raw_parts_mut(out_ptr, len) })
     }

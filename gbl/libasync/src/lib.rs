@@ -194,7 +194,7 @@ pub async fn assert_return<O>(fut: impl Future<Output = O>) -> O {
 
     impl Drop for Returned {
         fn drop(&mut self) {
-            assert!(self.0)
+            assert!(self.0, "Future was dropped before it returned")
         }
     }
 
