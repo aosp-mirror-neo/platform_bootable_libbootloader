@@ -427,7 +427,9 @@ If "default implementation" is requested GBL will handle the command using an
 implementation within GBL.
 
 If "custom implementation" is indicated GBL will assume that the callee handled
-the command.
+the command; for `flash` and `erase` commands, GBL then best-effort re-reads GPT
+partition tables across existing GPT block devices (`EFI_BLOCK_IO_MEDIA`
+geometry remains cached from boot).
 
 Following commands cannot be overridden:
 

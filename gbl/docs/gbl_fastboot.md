@@ -184,7 +184,8 @@ Examples:
 - `fastboot erase gpt/0` -- Erase GPT to storage device 0.
 
 If a storage device's GPT is modified outside of `fastboot flash gpt` /
-`fastboot erase gpt` (for example via raw block flashing `fastboot flash
+`fastboot erase gpt` or a platform-overridden `fastboot flash` /
+`fastboot erase` (for example via raw block flashing `fastboot flash
 /<storage_id>`), GBL's cached partition table can be refreshed without
 rebooting via:
 
