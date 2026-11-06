@@ -65,7 +65,7 @@ const ERR_UNLOCK_PROHIBITED: &str = "Flashing unlock is not allowed";
 const ERR_ALREADY_LOCKED: &str = "Already locked";
 const ERR_ALREADY_UNLOCKED: &str = "Already unlocked";
 use gbl_async::{join, join_mut, yield_now};
-use gbl_storage::{BlockIo, Disk, Gpt};
+use gbl_storage::{BlockIo, Disk, Gpt, GptSyncResult};
 use liberror::Error;
 use libgblutils::{
     buffer_pool::{BufferPool, ScopedBuffer},
@@ -1644,6 +1644,29 @@ where
                 Ok(())
             }
             "gbl-partition-info" => self.oem_dump_partition_info(responder).await,
+            "gbl-sync-gpt" => {
+                let mut args = args.filter(|v| !v.is_empty());
+                let blk_arg = args.next().ok_or("Missing block device ID")?;
+                if args.next().is_some() {
+                    return Err("Too many arguments".into());
+                }
+                let blk_idx: usize = FromHexStr::try_from_hex_str(blk_arg)?;
+                let blk = self.disks.get(blk_idx).ok_or("Invalid block index")?;
+                if !blk.is_gpt() {
+                    return Err("Block device is not for GPT".into());
+                }
+                self.sync_tasks(&mut responder, "GPT sync").await;
+                while matches!(blk.num_partitions(), Err(Error::NotReady)) {
+                    yield_now().await;
+                }
+                if let Some(res) = blk.sync_gpt().await? {
+                    res.res()?;
+                    if !matches!(res, GptSyncResult::BothValid) {
+                        gbl_println!(self.gbl_ops, "Block #{blk_idx} GPT sync result: {res}");
+                    }
+                }
+                Ok(())
+            }
             "gbl-add-cmdline" => {
                 self.check_unlocked()?;
                 let arg = next_arg(&mut args).ok_or("Missing cmdline arg")?;
@@ -6501,6 +6524,123 @@ pub(crate) mod test {
                 b"OKAY",
                 b"FAILDevice is locked",
                 b"OKAY",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+    }
+
+    #[cfg(feature = "gbl_dev")]
+    #[test]
+    fn test_oem_sync_gpt() {
+        let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(disk_orig);
+        storage[0].get_blk_io().set_blocking(true);
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        let buffers = vec![Some(vec![0u8; KiB!(128)]); 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+
+        listener.add_transport_input(b"oem gbl-enable-async-task");
+        // Erase the primary and secondary header.
+        let mut disk = disk_orig.to_vec();
+        disk[512..][..512].fill(0);
+        disk.last_chunk_mut::<512>().unwrap().fill(0);
+        listener.add_transport_input(format!("download:{:#x}", disk.len()).as_bytes());
+        listener.add_transport_input(&disk);
+        listener.add_transport_input(b"flash:/0");
+        // Fails because GPT header has been erased.
+        listener.add_transport_input(b"oem gbl-sync-gpt 0");
+        // Can no longer get partition info on block 0, while block 1 is unaffected.
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        listener.add_transport_input(b"oem gbl-partition-info");
+        // Flashes the primary header to restore (including the first MBR block).
+        listener.add_transport_input(format!("download:{:#x}", 1024).as_bytes());
+        listener.add_transport_input(&disk_orig[..1024]);
+        listener.add_transport_input(b"flash:/0");
+        listener.add_transport_input(b"oem gbl-sync-gpt 0");
+        // Can get partition info again.
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        listener.add_transport_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"OKAY",
+                b"DATA00010000",
+                b"OKAY",
+                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
+                b"OKAY",
+                b"INFOGPT sync waiting on 1 I/O task(s)",
+                b"FAILGptError(\n    IncorrectMagic(\n        0,\n    ),\n)",
+                b"FAILNotFound",
+                b"FAILNotFound",
+                b"INFO<block ID>: <partition>, <range>, <size>",
+                b"INFO1: vendor_boot_a, [0x4400, 0x5400), 0x1000",
+                b"INFO1: vendor_boot_b, [0x5400, 0x6c00), 0x1800",
+                b"OKAY",
+                b"DATA00000400",
+                b"OKAY",
+                b"OKAY",
+                b"INFOGPT sync waiting on 1 I/O task(s)",
+                b"OKAY",
+                b"OKAY0x2000",
+                b"OKAY0x3000",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_oem_sync_gpt_invalid_input() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        storage.add_raw_device(c"raw_0", [0u8; KiB!(4)]);
+        let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+
+        listener.add_transport_input(b"oem gbl-sync-gpt");
+        listener.add_transport_input(b"oem gbl-sync-gpt  ");
+        listener.add_transport_input(b"oem gbl-sync-gpt  zzz");
+        listener.add_transport_input(b"oem gbl-sync-gpt 0  extra");
+        listener.add_transport_input(b"oem gbl-sync-gpt 2");
+        listener.add_transport_input(b"oem gbl-sync-gpt 1");
+        listener.add_transport_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"FAILMissing block device ID",
+                b"FAILMissing block device ID",
+                b"FAILInvalid hex string",
+                b"FAILToo many arguments",
+                b"FAILInvalid block index",
+                b"FAILBlock device is not for GPT",
                 b"OKAY",
             ]),
             "\nActual Transport output:\n{}",
