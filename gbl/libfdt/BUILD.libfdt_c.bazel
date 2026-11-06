@@ -45,6 +45,9 @@ cc_library(
     srcs = glob(["libfdt/*.c"]),
     hdrs = glob(["libfdt/*.h"]),
     copts = [
+        # C code is built with -Os by default, but walking large device trees is noticeably
+        # slower at -Os.
+        "-O2",
         "-Wno-int-conversion",
         "-Wno-implicit-function-declaration",
         "-Wno-pointer-integer-compare",

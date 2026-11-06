@@ -395,8 +395,7 @@ cc_flags_common = [
     "-ffunction-sections",
     "-fdata-sections",
     "-ftrivial-auto-var-init=zero",
-    # Enable optimization otherwise software AVB hash will be too slow.
-    "-O3",
+    "-Os",
     # The llvm version we use errors out for every goto statement that bypasses variable
     # initialization. The problematic sources are all C. There's an upstream fix that disables
     # this warning for non-C++ sources. (https://github.com/llvm/llvm-project/pull/138507)
@@ -517,7 +516,7 @@ x86_64_uefi_debug_cc_flags = x86_64_uefi_cc_flags + [
     "-O0",
 ]
 
-x86_64_uefi_debug_cc_flags.remove("-O3")
+x86_64_uefi_debug_cc_flags.remove("-Os")
 
 gbl_clang_cc_toolchain(
     name = "x86_64_uefi_debug_clang_cc_toolchain",
@@ -577,7 +576,7 @@ aarch64_uefi_debug_cc_flags = cc_flags_uefi_common + [
     "-O0",
 ]
 
-aarch64_uefi_debug_cc_flags.remove("-O3")
+aarch64_uefi_debug_cc_flags.remove("-Os")
 
 gbl_clang_cc_toolchain(
     name = "aarch64_uefi_debug_clang_cc_toolchain",
