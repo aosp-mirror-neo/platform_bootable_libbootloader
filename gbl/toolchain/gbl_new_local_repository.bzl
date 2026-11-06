@@ -181,7 +181,7 @@ def _cargo_edition(repo_ctx):
         line = line.strip()
         if line.startswith("["):
             # Normalize e.g. "[ package ] # comment" to "[package]".
-            section = line.partition("]")[0].replace(" ", "") + "]"
+            section = _remove_toml_whitespace(line.partition("]")[0]) + "]"
             if section == "[package]":
                 has_package = True
             continue
@@ -192,7 +192,7 @@ def _cargo_edition(repo_ctx):
         key, sep, value = line.partition("=")
         if not sep:
             continue
-        key = key.replace(" ", "")
+        key = _remove_toml_whitespace(key)
 
         if key.startswith("edition."):
             # e.g. `edition.workspace = true`.
@@ -218,6 +218,10 @@ def _cargo_edition(repo_ctx):
 def _cargo_edition_fail(repo_ctx, cargo_toml, reason):
     """Fails with a `_cargo_edition` parse error for the given Cargo.toml."""
     fail("{}: {}: {}".format(repo_ctx.original_name, cargo_toml, reason))
+
+def _remove_toml_whitespace(s):
+    """Returns `s` with all TOML whitespace (spaces and tabs) removed."""
+    return s.replace(" ", "").replace("\t", "")
 
 def _get_quoted_year(value):
     """Returns the 4-digit year in TOML string `value`, or None if it isn't one."""
