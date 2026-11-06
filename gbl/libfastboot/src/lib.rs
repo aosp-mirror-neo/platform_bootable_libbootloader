@@ -263,8 +263,23 @@ impl<'a, T: TcpStream> Transport for TcpTransport<'a, T> {
     }
 
     async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
-        self.tcp.write_exact(&u64::try_from(packet.len())?.to_be_bytes()[..]).await?;
-        self.tcp.write_exact(packet).await
+        let length_prefix = u64::try_from(packet.len())?.to_be_bytes();
+        // Sends the length prefix and the payload of packets up to `MAX_RESPONSE_SIZE` (i.e. all
+        // responses) in one write. A `TcpStream` may wait for each write to be acknowledged, and
+        // peers often delay acknowledging a lone small segment, e.g. Linux by 40 ms or more.
+        let mut buffer = [0u8; size_of::<u64>() + MAX_RESPONSE_SIZE];
+        match buffer.get_mut(..length_prefix.len() + packet.len()) {
+            Some(message) => {
+                let (prefix, payload) = message.split_at_mut(length_prefix.len());
+                prefix.copy_from_slice(&length_prefix);
+                payload.copy_from_slice(packet);
+                self.tcp.write_exact(message).await
+            }
+            _ => {
+                self.tcp.write_exact(&length_prefix[..]).await?;
+                self.tcp.write_exact(packet).await
+            }
+        }
     }
 }
 
@@ -1870,6 +1885,8 @@ mod test {
     struct TestTcpStream {
         in_queue: VecDeque<u8>,
         out_queue: VecDeque<u8>,
+        /// Size of each `write_exact()` call.
+        writes: Vec<usize>,
     }
 
     impl TestTcpStream {
@@ -1895,6 +1912,7 @@ mod test {
 
         async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
             data.iter().for_each(|v| self.out_queue.push_back(*v));
+            self.writes.push(data.len());
             Ok(())
         }
     }
@@ -2393,7 +2411,30 @@ mod test {
             b"\x00\x00\x00\x00\x00\x00\x00\x04OKAY",
         ];
         assert_eq!(tcp_stream.out_queue, VecDeque::from(expected.concat()));
+        // Each response goes out in a single write, with its length prefix.
+        assert_eq!(tcp_stream.writes, expected.iter().map(|v| v.len()).collect::<Vec<_>>());
         assert_eq!(download, download_content);
+    }
+
+    #[test]
+    fn test_fastboot_tcp_send_packet_writes() {
+        let mut tcp_stream: TestTcpStream = Default::default();
+        let mut transport = TcpTransport { tcp: &mut tcp_stream, remaining_packet: 0 };
+        // A packet of up to `MAX_RESPONSE_SIZE` goes out in one write with its length prefix.
+        let small = [0x5au8; MAX_RESPONSE_SIZE];
+        block_on(transport.send_packet(&small)).unwrap();
+        // A larger packet, e.g. upload data, is written after its length prefix.
+        let large = [0xa5u8; MAX_RESPONSE_SIZE + 1];
+        block_on(transport.send_packet(&large)).unwrap();
+        assert_eq!(tcp_stream.writes, [8 + small.len(), 8, large.len()]);
+        let expected = [
+            &(small.len() as u64).to_be_bytes()[..],
+            &small[..],
+            &(large.len() as u64).to_be_bytes()[..],
+            &large[..],
+        ]
+        .concat();
+        assert_eq!(tcp_stream.out_queue, VecDeque::from(expected));
     }
 
     #[test]
