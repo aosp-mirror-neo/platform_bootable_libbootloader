@@ -30,7 +30,6 @@
 #define __SIMPLE_NETWORK_PROTOCOL_H__
 
 #include <stddef.h>
-
 #include <uefi/gbl_protocol_utils.h>
 #include <uefi/types.h>
 
@@ -66,8 +65,12 @@ typedef union {
   uint32_t addr[4];
 } EfiIpAddr;
 
+EFI_ENUM(EfiSimpleNetworkState, uint32_t, EFI_SIMPLE_NETWORK_STATE_STOPPED,
+         EFI_SIMPLE_NETWORK_STATE_STARTED,
+         EFI_SIMPLE_NETWORK_STATE_INITIALIZED);
+
 typedef struct {
-  uint32_t state;
+  EfiSimpleNetworkState state;
   uint32_t hw_address_size;
   uint32_t media_header_size;
   uint32_t max_packet_size;
