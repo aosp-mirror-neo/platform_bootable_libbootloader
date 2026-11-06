@@ -28,7 +28,14 @@ use crate::{
     slots::{slotted_part, Slot},
 };
 use avb::SlotVerifyData;
-use bootimg::{defs::*, BootImage, VendorImageHeader};
+use bootimg::{
+    defs::{
+        boot_img_hdr_v0, boot_img_hdr_v3, vendor_boot_img_hdr_v3, vendor_ramdisk_table_entry_v4,
+        VENDOR_RAMDISK_TYPE_DLKM, VENDOR_RAMDISK_TYPE_NONE, VENDOR_RAMDISK_TYPE_PLATFORM,
+        VENDOR_RAMDISK_TYPE_RECOVERY,
+    },
+    BootImage, VendorImageHeader,
+};
 use core::{mem::take, ops::Range};
 use liberror::Error;
 use libgblutils::{aligned_offset, aligned_subslice};
@@ -828,6 +835,7 @@ fn move_left(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bootimg::defs::{boot_img_hdr_v4, BOOT_MAGIC, BOOT_MAGIC_SIZE};
 
     fn add_header<T: zerocopy::Immutable + IntoBytes>(buffer: &mut [u8], header: T) {
         header.write_to_prefix(buffer).unwrap();

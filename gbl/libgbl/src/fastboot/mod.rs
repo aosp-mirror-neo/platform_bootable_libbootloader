@@ -1862,7 +1862,7 @@ where
 
 #[cfg(feature = "gbl_dev")]
 mod smash {
-    use super::*;
+    use crate::{gbl_println, GblOps};
     use libutils::get_sp;
 
     #[inline(never)]
@@ -4236,7 +4236,9 @@ pub(crate) mod test {
     /// A helper to make an expected stream of TCP output.
     fn make_expected_tcp_out(data: &[&[u8]]) -> VecDeque<u8> {
         let mut res = VecDeque::<u8>::from(b"FB01".to_vec());
-        data.iter().for_each(|v| res.append(&mut length_prefixed(v).into()));
+        for v in data.iter() {
+            res.append(&mut length_prefixed(v).into());
+        }
         res
     }
 

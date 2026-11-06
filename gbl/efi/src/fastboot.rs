@@ -20,6 +20,7 @@
 use crate::utils::FastbootBuffer;
 use alloc::{boxed::Box, vec::Vec};
 use arrayvec::ArrayVec;
+use cfg_if::cfg_if;
 use core::{future::Future, mem::take, pin::Pin, time::Duration};
 use efi::{
     efi_println,
@@ -33,7 +34,7 @@ use fastboot::{Transport, MAX_COMMAND_SIZE};
 use gbl_async::{block_on_mut, YieldCounter};
 use liberror::{Error, Result};
 use libgbl::{
-    fastboot::{FutContext, GblGenericTransport, GblTcpStream, PinFutContainer, TcpStream},
+    fastboot::{FutContext, GblGenericTransport, PinFutContainer},
     {android_boot::GblFastbootEntry, GblOps},
 };
 
@@ -43,8 +44,12 @@ const FASTBOOT_TRANSPORTS_MAX: usize = 8;
 // Network fastboot is only allowed on dev boards.
 #[cfg(feature = "gbl_dev")]
 mod network_fastboot {
-    use super::*;
-    pub(super) use crate::net::{EfiGblNetwork, EfiTcpSocket};
+    use crate::net::EfiTcpSocket;
+    use core::time::Duration;
+    use efi::efi_println;
+    use libgbl::fastboot::{GblTcpStream, TcpStream};
+
+    pub(super) use crate::net::EfiGblNetwork;
     pub(super) use core::sync::atomic::AtomicU64;
 
     const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -149,8 +154,8 @@ mod network_fastboot {
 /// use `None::<!>` instead to represent a TCP connection in prod builds.
 #[cfg(not(feature = "gbl_dev"))]
 mod network_fastboot {
-    use super::*;
     use fastboot::FastbootImplementation;
+    use libgbl::fastboot::{GblTcpStream, TcpStream};
 
     pub(super) enum NoOpTcp {}
 
@@ -180,7 +185,13 @@ mod network_fastboot {
     }
 }
 
-use network_fastboot::*;
+cfg_if! {
+    if #[cfg(feature = "gbl_dev")] {
+        use network_fastboot::{AtomicU64, EfiFastbootTcpTransport, EfiGblNetwork};
+    } else {
+        use network_fastboot::NoOpTcp;
+    }
+}
 
 /// `EfiFastbootTransport` implements the `fastboot::Transport` trait using
 /// EFI_GBL_FASTBOOT_TRANSPORT_PROTOCOL. Adding packed prefetching and yielding

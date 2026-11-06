@@ -56,7 +56,9 @@ fn sha256_to_hex_cstr(digest: &[u8; Sha256::DIGEST_SIZE]) -> [u8; SHA256_HEX_CST
     // Zero-initialized, so the final byte is the NUL terminator.
     let mut encoded = [0u8; SHA256_HEX_CSTR_SIZE];
     let mut writer = FormattedBytes::new(&mut encoded[..]);
-    digest.iter().for_each(|b| write!(writer, "{b:02x}").unwrap());
+    for b in digest.iter() {
+        write!(writer, "{b:02x}").unwrap();
+    }
     encoded
 }
 

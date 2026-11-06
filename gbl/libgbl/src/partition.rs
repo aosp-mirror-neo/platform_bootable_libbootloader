@@ -798,14 +798,18 @@ pub(crate) mod test {
 
         // Flips all the bits in the target range and writes back.
         let seg = &mut part_content[to_usize(off)..][..to_usize(sz)];
-        seg.iter_mut().for_each(|v| *v = !(*v));
+        for v in seg.iter_mut() {
+            *v = !(*v);
+        }
         block_on(blk.partition_io(part).unwrap().write(off, seg)).unwrap();
         // Checks that data is written.
         test_part_read(blk, part, &part_content, off, sz);
 
         // Writes using the `sub()` and then write approach.
         let seg = &mut part_content[to_usize(off)..][..to_usize(sz)];
-        seg.iter_mut().for_each(|v| *v = !(*v));
+        for v in seg.iter_mut() {
+            *v = !(*v);
+        }
         block_on(blk.partition_io(part).unwrap().sub(off, sz).unwrap().write(0, seg)).unwrap();
         test_part_read(blk, part, &part_content, off, sz);
     }
@@ -1055,7 +1059,9 @@ pub(crate) mod test {
 
         // Flips all the bits in the target range and writes back synchronously.
         let seg = &mut part_content[to_usize(off)..][..to_usize(sz)];
-        seg.iter_mut().for_each(|v| *v = !(*v));
+        for v in seg.iter_mut() {
+            *v = !(*v);
+        }
         write_unique_partition_sync(devs, part, off, seg).unwrap();
         check_read_partition(devs, part, &part_content, off, sz);
     }

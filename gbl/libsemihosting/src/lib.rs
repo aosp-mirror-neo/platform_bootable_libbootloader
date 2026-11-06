@@ -165,10 +165,12 @@ unsafe fn semihosting_call(op_code: OpCode, param: usize) -> Result<usize, Error
     /// Caller must ensure that a valid `fw_cfg` entry has been selected via `FW_CFG_PORT_SEL` and
     /// that execution is at CPL 0 in QEMU.
     unsafe fn fw_cfg_read(buf: &mut [u8]) {
-        // SAFETY: By safety contract, a valid `fw_cfg` entry is selected on `FW_CFG_PORT_SEL` and
-        // execution is at CPL 0 in QEMU, so reading `FW_CFG_PORT_DATA` returns the selected entry
-        // bytes without affecting memory safety.
-        buf.iter_mut().for_each(|b| *b = unsafe { u8::read_from_port(FW_CFG_PORT_DATA) });
+        for b in buf.iter_mut() {
+            // SAFETY: By safety contract, a valid `fw_cfg` entry is selected on `FW_CFG_PORT_SEL`
+            // and execution is at CPL 0 in QEMU, so reading `FW_CFG_PORT_DATA` returns the
+            // selected entry bytes without affecting memory safety.
+            *b = unsafe { u8::read_from_port(FW_CFG_PORT_DATA) };
+        }
     }
     /// Looks up `target` in the QEMU `fw_cfg` directory and returns an encoded
     /// `(size << 16) | select` handle if found.

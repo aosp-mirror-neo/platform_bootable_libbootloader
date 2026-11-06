@@ -568,7 +568,10 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, '_, '_, T> {
 /// Custom vbmeta flow support.
 #[cfg(feature = "gbl_dev")]
 pub(crate) mod custom_vbmeta {
-    use super::*;
+    use super::{calculate_partition_read_range, split_slotted};
+    use avb::{CertOps, IoError, IoResult, Ops as AvbOps, PublicKeyForPartitionInfo};
+    use core::ffi::CStr;
+    use uuid::Uuid;
 
     /// To be used as `AvbOps` wrapper to allow running verification on top of custom
     /// RAM-provided `vbmeta` partition.

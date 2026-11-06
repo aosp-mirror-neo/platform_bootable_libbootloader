@@ -339,9 +339,8 @@ pub unsafe extern "C" fn AbrMarkSlotActive(
     abr_ops: *const AbrOps,
     slot_index: AbrSlotIndex,
 ) -> c_uint {
-    let slot_index = match slot_index.try_into() {
-        Ok(v) => v,
-        Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
+    let Ok(slot_index) = slot_index.try_into() else {
+        return ABR_RESULT_ERR_INVALID_DATA;
     };
 
     // SAFETY: The caller guarantees `abr_ops` is a valid, aligned pointer. We check for
@@ -429,9 +428,8 @@ pub unsafe extern "C" fn AbrMarkSlotSuccessful(
     slot_index: AbrSlotIndex,
     from_unbootable_ok: bool,
 ) -> c_uint {
-    let slot_index = match slot_index.try_into() {
-        Ok(v) => v,
-        Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
+    let Ok(slot_index) = slot_index.try_into() else {
+        return ABR_RESULT_ERR_INVALID_DATA;
     };
 
     // SAFETY: The caller guarantees `abr_ops` is a valid, aligned pointer. We check for
@@ -500,9 +498,8 @@ pub unsafe extern "C" fn AbrGetSlotInfo(
     slot_index: AbrSlotIndex,
     info: *mut SlotInfo,
 ) -> c_uint {
-    let slot_index = match slot_index.try_into() {
-        Ok(v) => v,
-        Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
+    let Ok(slot_index) = slot_index.try_into() else {
+        return ABR_RESULT_ERR_INVALID_DATA;
     };
 
     // SAFETY: The caller guarantees `abr_ops` and `info` are valid, aligned pointers. We check for

@@ -17,6 +17,10 @@
 //! The structure of these sub-modules must match the libefi structure so that the code can refer
 //! to either one using the same path.
 
+// Each mock sub-module needs most of the shared mock types and EFI definitions imported above, so
+// it imports them all with `use super::*` instead of repeating long import lists.
+#![allow(clippy::wildcard_imports)]
+
 use crate::{DeviceHandle, MOCK_EFI};
 use alloc::{sync::Arc, vec::Vec};
 use arrayvec::ArrayVec;

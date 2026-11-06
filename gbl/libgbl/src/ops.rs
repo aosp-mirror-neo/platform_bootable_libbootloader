@@ -1470,7 +1470,9 @@ pub(crate) mod test {
         pub fn flip_partition_bytes(&mut self, name: &str, off: u64, sz: usize) {
             let mut contents = vec![0u8; sz];
             self.read_from_partition_sync(name, off, &mut contents[..]).unwrap();
-            contents.iter_mut().for_each(|v| *v = !*v);
+            for v in contents.iter_mut() {
+                *v = !*v;
+            }
             self.write_to_partition_sync(name, off, &mut contents[..]).unwrap();
         }
     }

@@ -870,7 +870,9 @@ mod test {
         // New scope to simplify lifetime for dev.io().storage()
         {
             let erased = &mut disk.io().storage_mut()[rw_off..][..rw_sz];
-            erased.iter_mut().for_each(|v| *v = !*v);
+            for v in erased.iter_mut() {
+                *v = !*v;
+            }
             assert_eq!(erased.to_vec(), orig, "Erase test failed. Test case {:?}", case);
         }
         // The rest of the sotrage should be unchanged.
@@ -1272,7 +1274,9 @@ mod test {
             // Same check for write.
             *disk.io().error.borrow_mut() = Some(Error::OutOfResources);
 
-            buf.iter_mut().for_each(|v| *v = !*v);
+            for v in buf.iter_mut() {
+                *v = !*v;
+            }
             let orig = buf.clone();
             let mut future = Box::pin(disk.write(0, buf.as_mut_slice()));
             assert_eq!(poll(&mut future), None);

@@ -796,26 +796,11 @@ pub fn get_and_clear_one_shot_bootloader(abr_ops: &mut dyn Ops) -> Result<bool> 
     Ok((res & ONE_SHOT_BOOTLOADER) != 0)
 }
 
-/// Reverses the bit of a byte.
-fn reverse_byte(b: u8) -> u8 {
-    const LOOKUP_TABLE_4BIT_REVERSE: &[u8] =
-        &[0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE, 0x1, 0x9, 0x5, 0xD, 0x3, 0xB, 0x7, 0xF];
-    LOOKUP_TABLE_4BIT_REVERSE[(b >> 4) as usize]
-        | (LOOKUP_TABLE_4BIT_REVERSE[(b & 0xf) as usize] << 4)
-}
-
-// Reverses the bits of a u32;
-fn reverse_u32(val: u32) -> u32 {
-    let mut bytes = val.to_le_bytes();
-    bytes.iter_mut().for_each(|v| *v = reverse_byte(*v));
-    u32::from_be_bytes(bytes)
-}
-
 // Calculates the crc32 of the given bytes.
 fn crc32(data: &[u8]) -> u32 {
     let mut res: u32 = 0xffffffff;
     for b in data {
-        res ^= (reverse_byte(*b) as u32) << 24;
+        res ^= u32::from(b.reverse_bits()) << 24;
         for _ in 0..8 {
             if (res & 0x80000000) != 0 {
                 res = (res << 1) ^ 0x04C11DB7;
@@ -824,7 +809,7 @@ fn crc32(data: &[u8]) -> u32 {
             }
         }
     }
-    reverse_u32(!res)
+    (!res).reverse_bits()
 }
 
 #[cfg(test)]

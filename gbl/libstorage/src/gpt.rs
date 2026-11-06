@@ -325,7 +325,7 @@ fn check_entries(header: &GptHeader, entries: &[u8]) -> Result<()> {
     // Checks overlap between partition ranges.
     // Sorts an index array because we don't want to modify input.
     let mut sorted_indices: [u8; GPT_MAX_NUM_ENTRIES] = from_fn(|i| i.try_into().unwrap());
-    sorted_indices.sort_unstable_by_key(|v| match entries.get(usize::try_from(*v).unwrap()) {
+    sorted_indices.sort_unstable_by_key(|v| match entries.get(usize::from(*v)) {
         Some(v) if !v.is_null() => v.first,
         _ => u64::MAX,
     });
@@ -333,8 +333,8 @@ fn check_entries(header: &GptHeader, entries: &[u8]) -> Result<()> {
     let actual = entries.iter().filter(|v| !v.is_null()).count();
     if actual > 1 {
         for i in 0..actual - 1 {
-            let prev: usize = sorted_indices[i].try_into().unwrap();
-            let next: usize = sorted_indices[i + 1].try_into().unwrap();
+            let prev: usize = sorted_indices[i].into();
+            let next: usize = sorted_indices[i + 1].into();
             if entries[prev].last >= entries[next].first {
                 return Err(Error::GptError(GptError::PartitionRangeOverlap {
                     prev: (prev + 1, entries[prev].first, entries[prev].last),

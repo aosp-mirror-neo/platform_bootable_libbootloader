@@ -100,8 +100,13 @@ mod fuchsia {
     pub(super) const SMBIOS_TABLE_GUID: EfiGuid =
         EfiGuid::new(0xeb9d2d31, 0x2d88, 0x11d3, [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d]);
 }
+#[cfg(all(feature = "fuchsia", any(target_arch = "x86_64", test)))]
+use fuchsia::{
+    EfiGuid, ZbiFlags, ZbiType, ACPI_TABLE_GUID, EFI_ACPI_20_TABLE_GUID, SMBIOS3_TABLE_GUID,
+    SMBIOS_TABLE_GUID,
+};
 #[cfg(feature = "fuchsia")]
-use fuchsia::*;
+use fuchsia::{Vec, ZbiContainer};
 
 // Ensure the max partition name length in the image loading protocol matches the max image type
 // name length in GBL ops.

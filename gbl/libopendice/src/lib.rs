@@ -88,9 +88,8 @@ impl<'a> Cursor<'a> {
 
     /// Reads a definite-length byte string and returns a fresh cursor over its body.
     fn descend_bstr(&mut self) -> Result<Cursor<'a>> {
-        let n = match self.pull()? {
-            Header::Bytes(Some(n)) => n,
-            _ => return Err(DiceError::InvalidInput),
+        let Header::Bytes(Some(n)) = self.pull()? else {
+            return Err(DiceError::InvalidInput);
         };
         if n > self.0.len() {
             return Err(DiceError::InvalidInput);
@@ -103,9 +102,8 @@ impl<'a> Cursor<'a> {
     /// Opens the int-keyed map at the cursor and positions the cursor on the value
     /// whose key equals `label`.
     fn enter_map_value(&mut self, label: i64) -> Result<()> {
-        let pairs = match self.pull()? {
-            Header::Map(Some(n)) => n,
-            _ => return Err(DiceError::InvalidInput),
+        let Header::Map(Some(pairs)) = self.pull()? else {
+            return Err(DiceError::InvalidInput);
         };
         for _ in 0..pairs {
             if self.read_int()? == label {

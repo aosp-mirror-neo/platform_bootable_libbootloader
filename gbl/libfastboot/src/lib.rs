@@ -1892,7 +1892,9 @@ mod test {
     impl TestTcpStream {
         /// Adds bytes to input stream.
         fn add_input(&mut self, data: &[u8]) {
-            data.iter().for_each(|v| self.in_queue.push_back(*v));
+            for v in data.iter() {
+                self.in_queue.push_back(*v);
+            }
         }
 
         /// Adds a length pre-fixed bytes stream.
@@ -1911,7 +1913,9 @@ mod test {
         }
 
         async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
-            data.iter().for_each(|v| self.out_queue.push_back(*v));
+            for v in data.iter() {
+                self.out_queue.push_back(*v);
+            }
             self.writes.push(data.len());
             Ok(())
         }
