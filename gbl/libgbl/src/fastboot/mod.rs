@@ -2439,6 +2439,7 @@ pub(crate) mod test {
             "arg",
             format!("{}:Some(\"arg\")", FakeGblOps::GBL_TEST_VAR_VAL).as_str(),
         );
+        check_var(&mut gbl_fb, "version-gbl", "", expected_version_gbl().as_str());
     }
 
     #[test]
@@ -2619,8 +2620,8 @@ pub(crate) mod test {
         }
     }
 
-    /// Returns the expected value of the `version-bootloader` variable.
-    fn expected_version_bootloader() -> String {
+    /// Returns the expected value of the `version-gbl` variable.
+    fn expected_version_gbl() -> String {
         format!("gbl.{BUILD_NUMBER}")
     }
 
@@ -2665,7 +2666,7 @@ pub(crate) mod test {
             [
                 "max-download-size: 0x20000",
                 "is-userspace: no",
-                format!("version-bootloader: {}", expected_version_bootloader()).as_str(),
+                format!("version-gbl: {}", expected_version_gbl()).as_str(),
                 "slot-count: 2",
                 "current-slot: a",
                 "slot-successful:a: no",
@@ -2772,7 +2773,7 @@ pub(crate) mod test {
             [
                 "max-download-size: 0x20000",
                 "is-userspace: no",
-                format!("version-bootloader: {}", expected_version_bootloader()).as_str(),
+                format!("version-gbl: {}", expected_version_gbl()).as_str(),
                 "max-fetch-size: 0x20000000",
                 "gbl-default-block: None",
                 "stream-segment-size: 0x1000"
@@ -4215,7 +4216,7 @@ pub(crate) mod test {
         let listener: SharedTestListener = Default::default();
         let (transports, tcp) = (&mut [&listener], &listener);
 
-        listener.add_transport_input(b"getvar:version-bootloader");
+        listener.add_transport_input(b"getvar:version-gbl");
         listener.add_tcp_input(b"FB01");
         listener.add_tcp_length_prefixed_input(b"getvar:max-download-size");
         listener.add_tcp_length_prefixed_input(b"continue");
@@ -4229,9 +4230,7 @@ pub(crate) mod test {
 
         assert_eq!(
             listener.transport_out_queue(),
-            make_expected_transport_out(&[
-                format!("OKAY{}", expected_version_bootloader()).as_bytes()
-            ]),
+            make_expected_transport_out(&[format!("OKAY{}", expected_version_gbl()).as_bytes()]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
         );
@@ -4668,7 +4667,7 @@ pub(crate) mod test {
                 b"FAILNotFound",
                 b"INFOmax-download-size: 0x20000",
                 b"INFOis-userspace: no",
-                format!("INFOversion-bootloader: {}", expected_version_bootloader()).as_bytes(),
+                format!("INFOversion-gbl: {}", expected_version_gbl()).as_bytes(),
                 b"INFOslot-count: 2",
                 b"INFOcurrent-slot: a",
                 b"INFOslot-successful:a: no",
@@ -4714,7 +4713,7 @@ pub(crate) mod test {
                 b"OKAY0x3000",
                 b"INFOmax-download-size: 0x20000",
                 b"INFOis-userspace: no",
-                format!("INFOversion-bootloader: {}", expected_version_bootloader()).as_bytes(),
+                format!("INFOversion-gbl: {}", expected_version_gbl()).as_bytes(),
                 b"INFOslot-count: 2",
                 b"INFOcurrent-slot: a",
                 b"INFOslot-successful:a: no",
@@ -7106,7 +7105,7 @@ pub(crate) mod test {
         let listener2: SharedTestListener = Default::default();
         let (transports, tcp) = (&mut [&listener1, &listener2], &listener);
 
-        listener1.add_transport_input(b"getvar:version-bootloader");
+        listener1.add_transport_input(b"getvar:version-gbl");
         listener2.add_transport_input(b"oem test-oem");
         listener.add_tcp_input(b"FB01");
         listener.add_tcp_length_prefixed_input(b"getvar:max-download-size");
@@ -7121,9 +7120,7 @@ pub(crate) mod test {
 
         assert_eq!(
             listener1.transport_out_queue(),
-            make_expected_transport_out(&[
-                format!("OKAY{}", expected_version_bootloader()).as_bytes()
-            ]),
+            make_expected_transport_out(&[format!("OKAY{}", expected_version_gbl()).as_bytes()]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
         );
