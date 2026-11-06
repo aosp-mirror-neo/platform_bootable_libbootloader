@@ -51,6 +51,9 @@ cc_library(
         "ufdt_prop_dict.h",
     ],
     copts = [
+        # C code is built with -Os by default, but applying overlays to large device trees is
+        # ~25% slower at -Os.
+        "-O2",
         # Disable default dto_print implementation to include libufdt_sysdeps_vendor.c
         "-DDTO_DISABLE_DEFAULT_VENDOR_LIBC_PRINT",
         # Disable default dto_malloc, dto_free implementations to include libufdt_sysdeps_vendor.c
