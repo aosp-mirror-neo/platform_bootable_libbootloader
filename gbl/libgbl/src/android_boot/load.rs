@@ -19,7 +19,6 @@ use crate::{
         kernel::{parse_kernel_attributes, KernelAttributes},
     },
     constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
-    decompress::decompress_kernel,
     device_tree::DtComponentSource,
     fastboot::boot_items::BootItemContainer,
     gbl_avb::LoadPartition,
@@ -30,6 +29,7 @@ use crate::{
 use avb::SlotVerifyData;
 use bootimg::{defs::*, BootImage, VendorImageHeader};
 use core::{mem::take, ops::Range};
+use gbl_decompress::decompress_or_copy;
 use liberror::Error;
 use libgblutils::{aligned_offset, aligned_subslice};
 use safemath::SafeNum;
@@ -642,15 +642,11 @@ impl<'a> BootBufferLoader<'a> {
     }
 
     /// Decompresses and loads kernel into the kernel buffer.
-    pub(super) fn kernel_load<'b>(
-        &mut self,
-        ops: &mut impl GblOps<'b>,
-        kernel: &[u8],
-    ) -> Result<KernelAttributes, Error> {
+    pub(super) fn kernel_load(&mut self, kernel: &[u8]) -> Result<KernelAttributes, Error> {
         let (attrs, image_sz) = match self.bufs.kernel.as_mut() {
             // Designated buffer, decompresses directly into it.
             Some(v) => {
-                let sz = decompress_kernel(ops, kernel, v)?;
+                let sz = decompress_or_copy(kernel, v)?;
                 let attrs = parse_kernel_attributes(&v[..sz])?;
                 if attrs.reserved_size > v.len() {
                     return Err(Error::BufferTooSmall(Some(attrs.reserved_size)));
@@ -666,7 +662,7 @@ impl<'a> BootBufferLoader<'a> {
                 assert_eq!(self.general_fdt, 0..0, "Kernel loaded after the FDT");
                 assert!(self.general_kernel.is_none(), "Kernel loaded twice");
                 let off = aligned_offset(self.general, KERNEL_ALIGNMENT)?;
-                let sz = decompress_kernel(ops, kernel, &mut self.general[off..])?;
+                let sz = decompress_or_copy(kernel, &mut self.general[off..])?;
                 let attrs = parse_kernel_attributes(&self.general[off..off + sz])?;
                 if off + attrs.reserved_size > self.general.len() {
                     return Err(Error::BufferTooSmall(Some(off + attrs.reserved_size)));

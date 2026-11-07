@@ -38,7 +38,6 @@ extern crate zbi;
 
 pub mod android_boot;
 pub mod constants;
-pub mod decompress;
 pub mod device_tree;
 pub mod error;
 pub mod fastboot;

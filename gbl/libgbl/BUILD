@@ -67,6 +67,7 @@ rust_library(
         "@gbl//libbootimg",
         "@gbl//libbootparams",
         "@gbl//libbuild_number",
+        "@gbl//libdecompress",
         "@gbl//libdttable",
         "@gbl//liberror",
         "@gbl//libfastboot",
@@ -82,11 +83,9 @@ rust_library(
         "@gbl//libstorage",
         "@gbl//libtrace",
         "@gbl//libutils",
-        "@lz4_flex",
         "@static_assertions",
         "@uuid",
         "@zerocopy",
-        "@zune_inflate",
     ] + select({
         "@gbl//toolchain:dev": [
             "@zbi",
