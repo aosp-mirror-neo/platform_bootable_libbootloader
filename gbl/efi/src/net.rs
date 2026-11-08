@@ -41,6 +41,7 @@ use efi_types::{
 use gbl_async::{yield_now, YieldCounter};
 use liberror::{Error, Result};
 use libgbl::fastboot::fuchsia_fastboot_mdns_packet;
+use libgblutils::arch_timestamp;
 use smoltcp::{
     iface::{Config, Interface, SocketSet, SocketStorage},
     phy,
@@ -54,12 +55,31 @@ use smoltcp::{
     wire::{EthernetAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv6Address},
 };
 
-/// Ethernet frame size for frame pool.
-const ETHERNET_FRAME_SIZE: usize = 1536;
+/// Ethernet frame buffer size for frame pool.
+const ETHERNET_FRAME_BUFFER_SIZE: usize = 1536;
+/// Maximum size of the Ethernet frames that GBL sends and receives, without the frame check
+/// sequence: a standard 1500 byte IP MTU plus the 14 byte Ethernet header.
+const ETHERNET_MAX_FRAME_SIZE: usize = 1514;
+const _: () = assert!(
+    ETHERNET_MAX_FRAME_SIZE <= ETHERNET_FRAME_BUFFER_SIZE,
+    "Frames must fit in the frame buffers"
+);
 // Update period for `NETWORK_TIMESTAMP`.
 const NETWORK_TIMESTAMP_UPDATE_PERIOD: Duration = Duration::from_millis(50);
 // Size of the socket tx/rx application data buffer.
 const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
+/// Extra RX buffer space requested from `SimpleNetworkProtocol::initialize` (512 KiB, enough to
+/// buffer ~340 full-sized Ethernet frames across bursts while synchronous storage writes are in
+/// flight).
+const SNP_EXTRA_RX_BUFFER_SIZE: usize = 512 * 1024;
+
+/// Minimum time between polls of the network device while data keeps arriving.
+///
+/// Frames that arrive in between wait in the device's receive ring, so that a poll processes
+/// several of them and smoltcp acknowledges them together. Each transmitted frame, such as an
+/// acknowledgement, costs several microseconds of firmware calls, so batching saves CPU time during
+/// downloads while still yielding right after each batch when the ring is empty.
+const BULK_RECEIVE_POLL_INTERVAL: Duration = Duration::from_micros(100);
 
 /// Converts smoltcp [RecvError] to unified [Error].
 fn recv_to_unified(err: RecvError) -> Error {
@@ -98,7 +118,16 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
         // EDK2's SnpDxe fails every call in an out-of-spec state.
         _ => return Err(Error::InvalidState),
     }
-    snp.initialize(0, 0)?;
+    // Request extra driver RX buffer space when supported so bursts arriving during synchronous
+    // storage writes do not overflow small default UNDI RX rings; fall back to `(0, 0)` if the
+    // driver rejects the extra buffer allocation and leaves the interface in `STARTED`.
+    if let Err(e) = snp.initialize(SNP_EXTRA_RX_BUFFER_SIZE, 0) {
+        if snp.mode()?.state == EFI_SIMPLE_NETWORK_STATE_STARTED {
+            snp.initialize(0, 0)?;
+        } else {
+            return Err(e);
+        }
+    }
     snp.reset(true)
 }
 
@@ -127,8 +156,8 @@ pub struct EfiNetworkDevice<'a> {
     // Dropped after `EfiNetworkDevice::drop` shuts down the NIC, so `CloseProtocol` on an
     // `ExclusiveProtocol` guard always runs after `shutdown()`.
     protocol: NetworkProtocol<'a>,
-    rx_frame: Box<[u8; ETHERNET_FRAME_SIZE]>,
-    tx_frames: Vec<*mut [u8; ETHERNET_FRAME_SIZE]>,
+    rx_frame: Box<[u8; ETHERNET_FRAME_BUFFER_SIZE]>,
+    tx_frames: Vec<*mut [u8; ETHERNET_FRAME_BUFFER_SIZE]>,
     tx_frame_curr: usize, // Circular next index into tx_frames.
     efi_entry: &'a EfiEntry,
 }
@@ -138,14 +167,14 @@ impl<'a> EfiNetworkDevice<'a> {
     fn new(protocol: NetworkProtocol<'a>, extra_tx_frames: usize, efi_entry: &'a EfiEntry) -> Self {
         let mut ret = Self {
             protocol,
-            rx_frame: Box::new([0u8; ETHERNET_FRAME_SIZE]),
+            rx_frame: Box::new([0u8; ETHERNET_FRAME_BUFFER_SIZE]),
             tx_frames: vec![core::ptr::null_mut(); extra_tx_frames + 1],
             tx_frame_curr: 0,
             efi_entry,
         };
         ret.tx_frames
             .iter_mut()
-            .for_each(|v| *v = Box::into_raw(Box::new([0u8; ETHERNET_FRAME_SIZE])));
+            .for_each(|v| *v = Box::into_raw(Box::new([0u8; ETHERNET_FRAME_BUFFER_SIZE])));
         ret
     }
 }
@@ -165,7 +194,7 @@ impl Drop for EfiNetworkDevice<'_> {
             // SAFETY:
             // Each pointer is created by `Box::new()` in `EfiNetworkDevice::new()`. Thus the
             // pointer is valid and layout matches.
-            drop(unsafe { Box::<[u8; ETHERNET_FRAME_SIZE]>::from_raw(*v) });
+            drop(unsafe { Box::<[u8; ETHERNET_FRAME_BUFFER_SIZE]>::from_raw(*v) });
         });
     }
 }
@@ -182,9 +211,10 @@ impl<'a> Device for EfiNetworkDevice<'a> {
         Self: 'b;
 
     fn capabilities(&self) -> DeviceCapabilities {
-        // Taken from upstream example.
         let mut res: DeviceCapabilities = Default::default();
-        res.max_transmission_unit = 65535;
+        // smoltcp sizes its frames and advertises its TCP MSS from this value, so it must match
+        // standard Ethernet and never exceed the frame buffers.
+        res.max_transmission_unit = ETHERNET_MAX_FRAME_SIZE;
         res.medium = Medium::Ethernet;
         res
     }
@@ -233,7 +263,7 @@ impl phy::RxToken for RxToken<'_> {
 
 /// In smoltcp, a `TxToken` is used to transmit a frame when consumed.
 pub struct TxToken<'a: 'b, 'b> {
-    tx_frames: &'b mut [*mut [u8; ETHERNET_FRAME_SIZE]],
+    tx_frames: &'b mut [*mut [u8; ETHERNET_FRAME_BUFFER_SIZE]],
     curr: &'b mut usize,
     protocol: &'b Protocol<'a, SimpleNetworkProtocol>,
     efi_entry: &'a EfiEntry,
@@ -241,7 +271,7 @@ pub struct TxToken<'a: 'b, 'b> {
 
 impl TxToken<'_, '_> {
     /// Tries to allocate a send buffer.
-    fn try_get_buffer(&mut self) -> Option<*mut [u8; ETHERNET_FRAME_SIZE]> {
+    fn try_get_buffer(&mut self) -> Option<*mut [u8; ETHERNET_FRAME_BUFFER_SIZE]> {
         let mut ptr: *mut c_void = null_mut();
         let mut interrupt_status = 0u32;
         // Recyle a buffer or take one from `tx_frames`.
@@ -264,9 +294,15 @@ impl phy::TxToken for TxToken<'_, '_> {
         F: FnOnce(&mut [u8]) -> R,
     {
         loop {
-            match loop_with_timeout(self.efi_entry, Duration::from_secs(5), || {
-                self.try_get_buffer().ok_or(false)
-            }) {
+            // A transmit buffer is almost always free, so only arm a UEFI timeout timer if none is
+            // immediately available.
+            let buffer = match self.try_get_buffer() {
+                Some(v) => Ok(Some(v)),
+                None => loop_with_timeout(self.efi_entry, Duration::from_secs(5), || {
+                    self.try_get_buffer().ok_or(false)
+                }),
+            };
+            match buffer {
                 Ok(Some(send_buffer)) => {
                     // SAFETY:
                     // * The pointer is confirmed to come from one of `self.tx_frames`. It's
@@ -433,8 +469,14 @@ pub struct EfiTcpSocket<'a, 'b> {
     socket_set: SocketSet<'b>,
     io_yield_counter: YieldCounter,
     last_listen_timestamp: Option<u64>,
-    _time_update_event: Event<'a, 'b>,
+    _time_update_event: Option<Event<'a, 'b>>,
     timestamp: &'b AtomicU64,
+    clock_fn: fn() -> Result<Duration>,
+    // The architecture timer's time at the creation of the socket, if the timer is supported.
+    clock_epoch: Option<Duration>,
+    // Elapsed time on `clock_fn` (relative to `clock_epoch`) of the last poll that received data,
+    // while data keeps arriving.
+    last_data_poll: Option<Duration>,
     fuchsia_fastboot_mdns_packet: Vec<u8>,
 }
 
@@ -444,6 +486,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         self.get_socket().abort();
         self.get_socket().listen(port).map_err(listen_to_unified)?;
         self.last_listen_timestamp = Some(self.timestamp(0).as_millis() as u64);
+        self.last_data_poll = None;
         Ok(())
     }
 
@@ -484,31 +527,56 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     ///
     /// Returns Ok(0) if `out` is empty;
     pub async fn receive(&mut self, out: &mut [u8], timeout: Duration) -> Result<usize> {
-        let timer = Timeout::new(self.efi_entry, timeout)?;
-        let mut curr = &mut out[..];
-        while !curr.is_empty() {
-            self.poll();
+        if out.is_empty() {
+            return Ok(0);
+        }
+        // During a download, data is usually available right away. Only create the timeout's UEFI
+        // timer once there is none.
+        let mut timeout_timer = None;
+        loop {
+            // While data keeps arriving, polls the device at most every
+            // `BULK_RECEIVE_POLL_INTERVAL`, if the architecture timer is available. Between polls,
+            // draining the buffered TCP stream causes `receive()` to yield right after an RX batch
+            // while the NIC RX ring is empty, giving pending async storage tasks a clean window.
+            let now = self.clock_now();
+            let poll_due = match (self.last_data_poll, now) {
+                (Some(last), Some(now)) => now.saturating_sub(last) >= BULK_RECEIVE_POLL_INTERVAL,
+                _ => true,
+            };
+            if poll_due {
+                self.poll();
+            }
 
-            let mut recv_size = 0;
-            if self.is_closed() {
-                return Err(Error::Disconnected);
-            } else if timer.check()? {
-                return Err(Error::Timeout);
-            } else if self.get_socket().can_recv() {
-                recv_size = self.get_socket().recv_slice(curr).map_err(recv_to_unified)?;
-                curr = curr.get_mut(recv_size..).ok_or(Error::BadIndex(recv_size))?;
+            // Checks for data first: a peer that closes its side may have sent data before.
+            if self.get_socket().can_recv() {
+                let recv_size = self.get_socket().recv_slice(out).map_err(recv_to_unified)?;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
                 // in case IO speed is high and the executor uses cooperative scheduling.
                 self.io_yield_counter.increment(recv_size.try_into().unwrap()).await;
+                if recv_size > 0 {
+                    if poll_due {
+                        self.last_data_poll = now;
+                    }
+                    return Ok(recv_size);
+                }
+            } else if self.is_closed() {
+                return Err(Error::Disconnected);
+            } else if poll_due {
+                // The data stopped, at least for now: poll right away until more arrives.
+                self.last_data_poll = None;
+                if timeout_timer.is_none() {
+                    timeout_timer = Some(Timeout::new(self.efi_entry, timeout)?);
+                }
+                if let Some(timeout_timer) = &timeout_timer
+                    && timeout_timer.check()?
+                {
+                    return Err(Error::Timeout);
+                }
             }
 
-            match recv_size > 0 {
-                true => return Ok(recv_size),
-                _ => yield_now().await,
-            }
+            yield_now().await;
         }
-        Ok(out.len())
     }
 
     /// Sends exactly `data.len()` number of bytes from `data`.
@@ -555,19 +623,29 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         &self.interface
     }
 
+    /// Returns the elapsed duration on the high-resolution clock since socket creation, if
+    /// supported.
+    fn clock_now(&self) -> Option<Duration> {
+        self.clock_epoch.and_then(|epoch| (self.clock_fn)().ok().map(|t| t.saturating_sub(epoch)))
+    }
+
+    /// Returns the current time of the network clock since socket creation.
+    fn now(&self) -> Duration {
+        // Prefers the architecture timer: the timestamp maintained by `_time_update_event` only
+        // advances every `NETWORK_TIMESTAMP_UPDATE_PERIOD`, which makes smoltcp's TCP timers, e.g.
+        // its delayed ACK, that coarse.
+        self.clock_now()
+            .unwrap_or_else(|| Duration::from_millis(self.timestamp.load(Ordering::Relaxed)))
+    }
+
     /// Returns the duration elapsed since the `base` timestamp.
     pub fn timestamp(&self, base_in_millis: u64) -> Duration {
-        let curr = self.timestamp.load(Ordering::Relaxed);
-        // Assume there can be at most one overflow.
-        Duration::from_millis(match curr < base_in_millis {
-            true => u64::MAX - (base_in_millis - curr),
-            false => curr - base_in_millis,
-        })
+        Duration::from_millis((self.now().as_millis() as u64).wrapping_sub(base_in_millis))
     }
 
     /// Returns a smoltcp time `Instant` value.
     fn instant(&self) -> Instant {
-        to_smoltcp_instant(self.timestamp(0).as_millis() as u64)
+        to_smoltcp_instant(self.now())
     }
 
     /// Broadcasts Fuchsia Fastboot MDNS service once.
@@ -592,9 +670,9 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 }
 
-/// Returns a smoltcp time `Instant` value from a u64 timestamp.
-fn to_smoltcp_instant(ts: u64) -> Instant {
-    Instant::from_millis(i64::try_from(ts).unwrap())
+/// Returns a smoltcp time `Instant` value from a `Duration` timestamp.
+fn to_smoltcp_instant(ts: Duration) -> Instant {
+    Instant::from_micros(i64::try_from(ts.as_micros()).unwrap())
 }
 
 /// Internal type that contains net driver interfaces and buffers for creating GBL network and
@@ -641,8 +719,8 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
             efi_entry,
             tcp_tx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
             tcp_rx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
-            udp_tx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
-            udp_rx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
+            udp_tx_payload_buffer: vec![0u8; ETHERNET_FRAME_BUFFER_SIZE],
+            udp_rx_payload_buffer: vec![0u8; ETHERNET_FRAME_BUFFER_SIZE],
             udp_tx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
             udp_rx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
             socket_storage: Default::default(),
@@ -656,35 +734,46 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
 
     /// Creates an instance of [EfiTcpSocket].
     fn create_socket(&'b mut self) -> Result<EfiTcpSocket<'a, 'b>> {
-        // Resets network timestamp to 0.
-        let _ = self.timestamp.swap(0, Ordering::Relaxed);
+        self.create_socket_with_clock(arch_timestamp)
+    }
 
-        // Initializes notification functions.
-        if self.notify_fn.is_none() {
-            self.notify_fn = Some(Box::new(|_: EfiEvent| {
-                self.timestamp.fetch_add(
-                    NETWORK_TIMESTAMP_UPDATE_PERIOD.as_millis() as u64,
-                    Ordering::Relaxed,
-                );
-            }));
-            self.notify = Some(EventNotify::new(Tpl::Callback, self.notify_fn.as_mut().unwrap()));
-        }
+    /// Creates an instance of [EfiTcpSocket] using `clock_fn` as the high-resolution clock source.
+    fn create_socket_with_clock(
+        &'b mut self,
+        clock_fn: fn() -> Result<Duration>,
+    ) -> Result<EfiTcpSocket<'a, 'b>> {
+        let clock_epoch = clock_fn().ok();
+        let _time_update_event = if clock_epoch.is_none() {
+            // Resets network timestamp to 0.
+            let _ = self.timestamp.swap(0, Ordering::Relaxed);
 
-        // Creates a timer event for updating the global timestamp.
-        let bs = self.efi_entry.system_table().boot_services();
-        // SAFETY: the notification callback in `notify_fn` initialized above never allocates,
-        // deallocates, or panics.
-        let _time_update_event = unsafe {
-            bs.create_event_with_notification(
-                EventType::TimerNotifySignal,
-                self.notify.as_mut().unwrap(),
-            )
-        }?;
-        bs.set_timer(
-            &_time_update_event,
-            EFI_TIMER_DELAY_TIMER_PERIODIC,
-            NETWORK_TIMESTAMP_UPDATE_PERIOD,
-        )?;
+            // Initializes notification functions.
+            if self.notify_fn.is_none() {
+                self.notify_fn = Some(Box::new(|_: EfiEvent| {
+                    self.timestamp.fetch_add(
+                        NETWORK_TIMESTAMP_UPDATE_PERIOD.as_millis() as u64,
+                        Ordering::Relaxed,
+                    );
+                }));
+                self.notify =
+                    Some(EventNotify::new(Tpl::Callback, self.notify_fn.as_mut().unwrap()));
+            }
+
+            // Creates a timer event for updating the global timestamp.
+            let bs = self.efi_entry.system_table().boot_services();
+            // SAFETY: the notification callback in `notify_fn` initialized above never allocates,
+            // deallocates, or panics.
+            let event = unsafe {
+                bs.create_event_with_notification(
+                    EventType::TimerNotifySignal,
+                    self.notify.as_mut().unwrap(),
+                )
+            }?;
+            bs.set_timer(&event, EFI_TIMER_DELAY_TIMER_PERIODIC, NETWORK_TIMESTAMP_UPDATE_PERIOD)?;
+            Some(event)
+        } else {
+            None
+        };
 
         // Gets our MAC address and IPv6 address.
         // We can also consider getting this from vendor configuration.
@@ -697,7 +786,7 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         let mut interface = Interface::new(
             Config::new(ll_mac.into()),
             &mut self.efi_net_dev,
-            to_smoltcp_instant(0),
+            to_smoltcp_instant(Duration::ZERO),
         );
         interface.update_ip_addrs(|ip_addrs| ip_addrs.push(IpCidr::new(ll_ip6_addr, 64)).unwrap());
 
@@ -716,7 +805,10 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         // Creates a TCP socket for fastboot over TCP.
         let tx_socket_buffer = SocketBuffer::new(&mut self.tcp_tx_buffer[..]);
         let rx_socket_buffer = SocketBuffer::new(&mut self.tcp_rx_buffer[..]);
-        let tcp_socket = TcpSocket::new(rx_socket_buffer, tx_socket_buffer);
+        let mut tcp_socket = TcpSocket::new(rx_socket_buffer, tx_socket_buffer);
+        // Fastboot sends short framed responses (e.g. `INFO` followed by `OKAY`); disable Nagle so
+        // `OKAY` is never held waiting for the host's delayed ACK of a preceding `INFO`.
+        tcp_socket.set_nagle_enabled(false);
         let _ = socket_set.add(tcp_socket);
         // Creates a UDP socket for MDNS broadcast.
         let udp_tx_packet_buffer = PacketBuffer::new(
@@ -738,6 +830,9 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
             last_listen_timestamp: None,
             _time_update_event,
             timestamp: self.timestamp,
+            clock_fn,
+            clock_epoch,
+            last_data_poll: None,
             fuchsia_fastboot_mdns_packet,
         })
     }
@@ -1205,5 +1300,163 @@ mod test {
         assert_eq!(reset_simple_network(&fake.snp()), Ok(()));
         assert_eq!(fake.state(), INITIALIZED);
         assert_eq!(fake.invalid_calls(), 0);
+    }
+
+    #[test]
+    fn test_reset_simple_network_falls_back_when_extra_rx_buffer_unsupported() {
+        for err in [Error::OutOfResources, Error::Unsupported, Error::DeviceError] {
+            let fake = FakeSnp::new(STARTED);
+            let mut snp = SimpleNetworkProtocol::default();
+            let fake_mode = fake.clone();
+            snp.expect_mode().returning(move || {
+                Ok(EfiSimpleNetworkMode { state: fake_mode.state(), ..Default::default() })
+            });
+            let fake_init = fake.clone();
+            snp.expect_initialize().times(1).returning(move |extra_rx, extra_tx| {
+                assert_eq!(extra_rx, SNP_EXTRA_RX_BUFFER_SIZE);
+                assert_eq!(extra_tx, 0);
+                assert_eq!(fake_init.state(), STARTED);
+                Err(err)
+            });
+            let fake_fallback = fake.clone();
+            snp.expect_initialize().times(1).returning(move |extra_rx, extra_tx| {
+                assert_eq!((extra_rx, extra_tx), (0, 0));
+                fake_fallback.transition(STARTED, INITIALIZED)
+            });
+            let fake_reset = fake.clone();
+            snp.expect_reset().times(1).returning(move |_| {
+                fake_reset.transition(INITIALIZED, INITIALIZED)?;
+                fake_reset.resets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            });
+
+            assert_eq!(reset_simple_network(&snp), Ok(()));
+            assert_eq!(fake.state(), INITIALIZED);
+            assert_eq!(fake.resets(), 1);
+            assert_eq!(fake.invalid_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn test_reset_simple_network_propagates_initialize_error_when_not_started() {
+        let fake = FakeSnp::new(STARTED);
+        let mut snp = SimpleNetworkProtocol::default();
+        let fake_mode = fake.clone();
+        snp.expect_mode().returning(move || {
+            Ok(EfiSimpleNetworkMode { state: fake_mode.state(), ..Default::default() })
+        });
+        let fake_init = fake.clone();
+        snp.expect_initialize().times(1).returning(move |extra_rx, extra_tx| {
+            assert_eq!((extra_rx, extra_tx), (SNP_EXTRA_RX_BUFFER_SIZE, 0));
+            let _ = fake_init.transition(STARTED, STOPPED);
+            Err(Error::DeviceError)
+        });
+
+        assert_eq!(reset_simple_network(&snp), Err(Error::DeviceError));
+        assert_eq!(fake.state(), STOPPED);
+    }
+
+    #[test]
+    fn test_network_device_capabilities_standard_ethernet_mtu() {
+        let installed = MockEfi::new().install();
+        let fake = FakeSnp::new(STOPPED);
+        let snp = fake.snp();
+        assert_eq!(reset_simple_network(&snp), Ok(()));
+        let dev = EfiNetworkDevice::new(NetworkProtocol::Shared(snp), 0, installed.entry());
+        assert_eq!(dev.capabilities().max_transmission_unit, ETHERNET_MAX_FRAME_SIZE);
+    }
+
+    static FAKE_CLOCK_US: AtomicU64 = AtomicU64::new(0);
+
+    fn fake_clock() -> Result<Duration> {
+        Ok(Duration::from_micros(FAKE_CLOCK_US.load(Ordering::Relaxed)))
+    }
+
+    fn make_test_network<'a, 'b, 'c>(
+        efi_entry: &'a EfiEntry,
+        snp: SimpleNetworkProtocol,
+        timestamp: &'c AtomicU64,
+    ) -> EfiGblNetworkInternal<'a, 'b, 'c> {
+        EfiGblNetworkInternal {
+            efi_entry,
+            tcp_tx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            tcp_rx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            udp_tx_payload_buffer: vec![0u8; ETHERNET_FRAME_BUFFER_SIZE],
+            udp_rx_payload_buffer: vec![0u8; ETHERNET_FRAME_BUFFER_SIZE],
+            udp_tx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
+            udp_rx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
+            socket_storage: Default::default(),
+            efi_net_dev: EfiNetworkDevice::new(NetworkProtocol::Shared(snp), 7, efi_entry),
+            timestamp,
+            notify_fn: None,
+            notify: None,
+        }
+    }
+
+    #[test]
+    fn test_create_socket_with_clock_skips_periodic_timer_and_uses_micros() {
+        // `MockEfi` expects 0 calls to `create_event_with_notification` and `set_timer` unless
+        // configured, verifying that the periodic UEFI timer is not created when `clock_fn`
+        // succeeds.
+        let installed = MockEfi::new().install();
+        let fake = FakeSnp::new(INITIALIZED);
+        let timestamp = AtomicU64::new(0);
+        let mut net = make_test_network(installed.entry(), fake.snp(), &timestamp);
+
+        FAKE_CLOCK_US.store(1_000, Ordering::Relaxed);
+        let mut socket = net.create_socket_with_clock(fake_clock).unwrap();
+        assert!(socket._time_update_event.is_none());
+        assert_eq!(socket.clock_epoch, Some(Duration::from_micros(1_000)));
+        assert_eq!(socket.instant(), Instant::from_micros(0));
+
+        // Sub-millisecond clock advancement is preserved in `instant()`, while `timestamp()`
+        // reports elapsed whole milliseconds.
+        FAKE_CLOCK_US.store(2_350, Ordering::Relaxed);
+        assert_eq!(socket.instant(), Instant::from_micros(1_350));
+        assert_eq!(socket.timestamp(0), Duration::from_millis(1));
+
+        // `listen()` clears `last_data_poll`.
+        socket.last_data_poll = Some(Duration::from_micros(500));
+        socket.listen(5554).unwrap();
+        assert_eq!(socket.last_data_poll, None);
+    }
+
+    #[test]
+    fn test_socket_receive_batches_polls_with_fake_clock() {
+        let installed = MockEfi::new().install();
+        let rx_polls = Arc::new(AtomicU32::new(0));
+        let rx_polls_clone = rx_polls.clone();
+        let mut snp = FakeSnp::new(INITIALIZED).snp();
+        snp.expect_receive_raw().returning(move |_, _, _, _, _, _| {
+            rx_polls_clone.fetch_add(1, Ordering::Relaxed);
+            Err(Error::NotReady)
+        });
+
+        let timestamp = AtomicU64::new(0);
+        let mut net = make_test_network(installed.entry(), snp, &timestamp);
+        FAKE_CLOCK_US.store(10_000, Ordering::Relaxed);
+        let mut socket = net.create_socket_with_clock(fake_clock).unwrap();
+
+        // Empty output buffer returns `Ok(0)` immediately without polling.
+        assert_eq!(gbl_async::block_on(socket.receive(&mut [], Duration::from_secs(1))), Ok(0));
+        assert_eq!(rx_polls.load(Ordering::Relaxed), 0);
+
+        // Within `BULK_RECEIVE_POLL_INTERVAL` (50 us < 100 us), `receive()` skips polling the NIC.
+        socket.last_data_poll = Some(Duration::from_micros(100));
+        FAKE_CLOCK_US.store(10_150, Ordering::Relaxed);
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            gbl_async::block_on(socket.receive(&mut buf, Duration::from_secs(1))),
+            Err(Error::Disconnected)
+        );
+        assert_eq!(rx_polls.load(Ordering::Relaxed), 0);
+
+        // Once `BULK_RECEIVE_POLL_INTERVAL` (100 us) has elapsed, `receive()` polls the NIC.
+        FAKE_CLOCK_US.store(10_200, Ordering::Relaxed);
+        assert_eq!(
+            gbl_async::block_on(socket.receive(&mut buf, Duration::from_secs(1))),
+            Err(Error::Disconnected)
+        );
+        assert_eq!(rx_polls.load(Ordering::Relaxed), 1);
     }
 }
