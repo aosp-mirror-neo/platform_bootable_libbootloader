@@ -19,6 +19,7 @@ extern crate alloc;
 use crate::{constants::FDT_ALIGNMENT, gbl_println, GblOps};
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
+use core::fmt::{Display, Formatter};
 use dttable::{DtTableEntry, DtTableImage, DtTableMetadata};
 use fdt::{Fdt, FdtHeader, FDT_HEADER_SIZE, MAXIMUM_OVERLAYS_TO_APPLY};
 use liberror::{Error, Result};
@@ -55,8 +56,8 @@ pub enum DtComponentType {
 }
 
 /// To be used in the bootconfig. Do not change the values.
-impl core::fmt::Display for DtComponentSource {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for DtComponentSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             DtComponentSource::Boot => write!(f, "boot"),
             DtComponentSource::VendorBoot => write!(f, "vendor_boot"),
@@ -66,8 +67,8 @@ impl core::fmt::Display for DtComponentSource {
     }
 }
 
-impl core::fmt::Display for DtComponentType {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for DtComponentType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             DtComponentType::BaseDt => write!(f, "DTB"),
             DtComponentType::Overlay => write!(f, "DTBO"),

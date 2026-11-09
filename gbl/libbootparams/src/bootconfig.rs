@@ -17,7 +17,10 @@
 //! https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig#bootloader-changes
 
 use crate::slice::SliceWriter;
-use core::{fmt::Write, str::from_utf8};
+use core::{
+    fmt::{Display, Formatter, Write},
+    str::from_utf8,
+};
 use liberror::{Error, Result};
 
 /// A class for constructing bootconfig section.
@@ -132,11 +135,7 @@ impl<'a> BootConfigBuilder<'a> {
     }
 
     /// Append a single bootconfig item.
-    pub fn add_item(
-        &mut self,
-        key: impl core::fmt::Display,
-        value: impl core::fmt::Display,
-    ) -> Result<()> {
+    pub fn add_item(&mut self, key: impl Display, value: impl Display) -> Result<()> {
         writeln!(self, "{}={}", key, value).map_err(|_| Error::BufferTooSmall(None))
     }
 
@@ -155,7 +154,7 @@ impl<'a> BootConfigBuilder<'a> {
     /// # Returns
     ///
     /// `Ok` on success, `Err` if the value failed to write or the check failed.
-    pub fn add_checked_item<F>(&mut self, item: impl core::fmt::Display, check: F) -> Result<()>
+    pub fn add_checked_item<F>(&mut self, item: impl Display, check: F) -> Result<()>
     where
         F: FnOnce(&str) -> Result<()>,
     {
@@ -177,8 +176,8 @@ impl<'a> BootConfigBuilder<'a> {
     /// Append a bootconfig array item.
     pub fn add_array(
         &mut self,
-        key: impl core::fmt::Display,
-        items: impl IntoIterator<Item = impl core::fmt::Display>,
+        key: impl Display,
+        items: impl IntoIterator<Item = impl Display>,
     ) -> Result<()> {
         let mut iter = items.into_iter().peekable();
         if iter.peek().is_none() {
@@ -239,8 +238,8 @@ pub fn extract_bootconfig(buffer: &[u8]) -> Result<&str> {
     from_utf8(&buf[off..]).map_err(|_| Error::InvalidInput)
 }
 
-impl core::fmt::Display for BootConfigBuilder<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for BootConfigBuilder<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let bytes = self.config_bytes();
         for val in &bytes[..bytes.len().checked_sub(BOOTCONFIG_TRAILER_SIZE).unwrap()] {
             write!(f, "{}", core::ascii::escape_default(*val))?;

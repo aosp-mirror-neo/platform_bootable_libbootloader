@@ -69,6 +69,7 @@ impl<'b> Buffer<'b> {
 }
 
 /// Buffer type returned by BufferPool.get().
+#[must_use = "the buffer is released as soon as the guard is dropped"]
 pub struct BufferGuard<'a, 'b>(MutexGuard<'a, Buffer<'b>>);
 
 impl Deref for BufferGuard<'_, '_> {
@@ -484,7 +485,7 @@ mod test {
     #[test]
     fn test_get_out_of_resource() {
         let pool = BufferPool::<1>::new();
-        pool.get("buf1", true).unwrap();
+        let _ = pool.get("buf1", true).unwrap();
         assert!(matches!(pool.get("buf2", true), Err(Error::OutOfResources)));
     }
 }

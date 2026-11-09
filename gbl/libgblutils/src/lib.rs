@@ -18,6 +18,7 @@
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
+use core::time::Duration;
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -80,7 +81,7 @@ where
 
 /// Get timestamp from architecture specific timer.
 #[cfg(target_arch = "aarch64")]
-pub fn arch_timestamp() -> Result<core::time::Duration> {
+pub fn arch_timestamp() -> Result<Duration> {
     let (cnt, freq): (u64, u64);
     // SAFETY: Generic timer is always available on AArch64 and safe to read.
     unsafe {
@@ -94,19 +95,19 @@ pub fn arch_timestamp() -> Result<core::time::Duration> {
     }
     let (cnt, freq): (u128, u128) = (cnt as _, freq as _);
     let nanos = cnt * 1000 * 1000 * 1000 / freq;
-    Ok(core::time::Duration::from_nanos(nanos as u64))
+    Ok(Duration::from_nanos(nanos as u64))
 }
 
 /// Get timestamp from architecture specific timer.
 #[cfg(all(target_arch = "x86_64", not(test), not(target_os = "linux")))]
-pub fn arch_timestamp() -> Result<core::time::Duration> {
+pub fn arch_timestamp() -> Result<Duration> {
     const NANOS_PER_SEC: u128 = 1_000_000_000;
     let freq_hz = tsc_freq_hz()? as u128;
     // SAFETY: `rdtsc` is guaranteed to be supported by the baseline `x86_64` ISA, is permitted in
     // ring 0 (UEFI/kernel execution), and only reads the timestamp counter without modifying
     // memory or CPU state.
     let tsc = unsafe { core::arch::x86_64::_rdtsc() } as u128;
-    Ok(core::time::Duration::from_nanos((tsc * NANOS_PER_SEC / freq_hz) as u64))
+    Ok(Duration::from_nanos((tsc * NANOS_PER_SEC / freq_hz) as u64))
 }
 
 /// Queries the TSC frequency in Hz from CPUID leaf `0x15` or calibrates it against PIT Channel 2.
@@ -183,7 +184,7 @@ fn tsc_freq_hz() -> Result<u64> {
     target_arch = "aarch64",
     all(target_arch = "x86_64", not(test), not(target_os = "linux"))
 )))]
-pub fn arch_timestamp() -> Result<core::time::Duration> {
+pub fn arch_timestamp() -> Result<Duration> {
     // Implement for other architectures if needed. For riscv64, we can use `rdtime`.
     Err(Error::Unsupported)
 }

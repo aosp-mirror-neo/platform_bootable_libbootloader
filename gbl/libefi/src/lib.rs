@@ -53,7 +53,7 @@
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 use arrayvec::ArrayVec;
-use core::{convert::Infallible, ptr::NonNull};
+use core::{convert::Infallible, fmt::Display, ptr::NonNull};
 use efi_types::{
     protocol::{BridgeToRust, Provider},
     Identified,
@@ -1455,6 +1455,7 @@ macro_rules! efi_println {
 
 mod log_fatal {
     use crate::{protocol, EfiEntry};
+    use core::fmt::Display;
     use efi_types::defs::GblEfiDebugErrorTag;
 
     /// Control flow token to force fatal error logging before invoking `reset()`.
@@ -1472,7 +1473,7 @@ mod log_fatal {
     ///
     /// Note: std::panic::PanicHookInfo and core::panic::PanicInfo are (now) different
     ///       types, but we just want to print the panic info out, so just require Display.
-    pub(super) fn report_fatal_error_and_reset_internal<P: core::fmt::Display, T>(
+    pub(super) fn report_fatal_error_and_reset_internal<P: Display, T>(
         entry: &EfiEntry,
         panic: &P,
         tag: GblEfiDebugErrorTag,
@@ -1493,11 +1494,7 @@ mod log_fatal {
 ///
 /// Call directly to panic while passing an explicit error tag.
 #[cfg(test)]
-fn report_error_and_reset<P: core::fmt::Display>(
-    entry: &EfiEntry,
-    panic_info: &P,
-    tag: GblEfiDebugErrorTag,
-) {
+fn report_error_and_reset<P: Display>(entry: &EfiEntry, panic_info: &P, tag: GblEfiDebugErrorTag) {
     fn reset(entry: &EfiEntry, _: log_fatal::FatalErrorToken) {
         efi_print!(entry, "Resetting...\r\n");
         test::efi_call_traces().with(|traces| {
@@ -1516,7 +1513,7 @@ fn report_error_and_reset<P: core::fmt::Display>(
 ///
 /// Call directly to panic while passing an explicit error tag.
 #[cfg(not(test))]
-pub fn report_error_and_reset<P: core::fmt::Display>(
+pub fn report_error_and_reset<P: Display>(
     entry: &EfiEntry,
     panic_info: &P,
     tag: GblEfiDebugErrorTag,
@@ -1552,7 +1549,7 @@ pub fn report_error_and_reset<P: core::fmt::Display>(
 ///   active, it loops indefinitely.
 /// * In `#[cfg(test)]` builds, if thread-local `GLOBAL_EFI_ENTRY` is `Some`, it must point to a
 ///   well-formed, live [EfiEntry] for the duration of the call.
-pub unsafe fn report_error_and_reset_with_global_entry<P: core::fmt::Display>(
+pub unsafe fn report_error_and_reset_with_global_entry<P: Display>(
     panic_info: &P,
     tag: GblEfiDebugErrorTag,
 ) -> ! {

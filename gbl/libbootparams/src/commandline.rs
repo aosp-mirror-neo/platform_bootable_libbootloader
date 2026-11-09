@@ -17,7 +17,11 @@
 //! https://www.kernel.org/doc/html/v4.14/admin-guide/kernel-parameters.html
 
 use crate::entry::{CommandlineParser, Entry};
-use core::{ffi::CStr, str::from_utf8};
+use core::{
+    ffi::CStr,
+    fmt::{Display, Formatter},
+    str::from_utf8,
+};
 use liberror::{Error, Error::BufferTooSmall, Error::InvalidInput, Result};
 use safemath::SafeNum;
 
@@ -180,8 +184,8 @@ impl<'a> CommandlineBuilder<'a> {
     }
 }
 
-impl core::fmt::Display for CommandlineBuilder<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for CommandlineBuilder<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }

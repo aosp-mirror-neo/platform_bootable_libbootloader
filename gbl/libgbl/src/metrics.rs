@@ -19,6 +19,7 @@ use crate::{
     partition::{split_partition_suffix, RAW_PARTITION_NAME_LEN},
 };
 use arrayvec::{ArrayString, ArrayVec};
+use core::fmt::{Display, Formatter};
 use liberror::Result;
 
 /// Interface for hardware timestamp and tick operations.
@@ -80,8 +81,8 @@ pub struct FirmwareVersion {
     pub minor: u16,
 }
 
-impl core::fmt::Display for FirmwareVersion {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+impl Display for FirmwareVersion {
+    fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
     }
 }

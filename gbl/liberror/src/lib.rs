@@ -36,6 +36,7 @@
 
 use core::{
     ffi::{FromBytesUntilNulError, FromBytesWithNulError},
+    fmt::{Display, Formatter},
     num::ParseIntError,
     str::Utf8Error,
 };
@@ -330,8 +331,8 @@ impl From<Utf8Error> for Error {
     }
 }
 
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:#?}", self)
     }
 }

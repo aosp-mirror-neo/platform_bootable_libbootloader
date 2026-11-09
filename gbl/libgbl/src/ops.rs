@@ -34,7 +34,7 @@ use bytes::buf::UninitSlice;
 use core::{
     convert::Infallible,
     ffi::CStr,
-    fmt::{Display, Write},
+    fmt::{Display, Formatter, Write},
     ops::{Deref, DerefMut},
     result::Result,
 };
@@ -140,7 +140,7 @@ impl FastbootPartitionType {
 }
 
 impl Display for FastbootPartitionType {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }

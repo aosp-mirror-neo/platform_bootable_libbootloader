@@ -17,6 +17,7 @@
 use crate::{efi_println, record_protocol, DeviceHandle, EfiEntry};
 use core::{
     ffi::c_void,
+    fmt::{Display, Formatter},
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -82,8 +83,8 @@ impl Revision {
     }
 }
 
-impl core::fmt::Display for Revision {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for Revision {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
     }
 }

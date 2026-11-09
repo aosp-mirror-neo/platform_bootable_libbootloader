@@ -17,7 +17,7 @@
 use crate::protocol::{MaybeVersioned, Protocol, ProtocolInfo, Requirement};
 use crate::{efi_println, EfiEntry};
 use core::ffi::CStr;
-use core::fmt::Display;
+use core::fmt::{Display, Formatter};
 use core::marker::PhantomData;
 use core::mem::size_of;
 use efi_types::{
@@ -253,7 +253,7 @@ impl<'a> DevicePathText<'a> {
 }
 
 impl Display for DevicePathText<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         if let Some(text) = self.text {
             for c in char::decode_utf16(text.iter().copied()) {
                 match c.unwrap_or(char::REPLACEMENT_CHARACTER) {

@@ -19,6 +19,7 @@ use zeroize::Zeroize;
 
 /// A RAII guard wrapping a mutable byte slice that zeroizes its target on drop
 /// unless explicitly defused.
+#[must_use = "the target is zeroized as soon as the guard is dropped"]
 pub struct ZeroizeGuard<'a> {
     val: &'a mut [u8],
     defused: bool,

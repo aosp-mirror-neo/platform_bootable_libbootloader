@@ -152,6 +152,7 @@ mod placeholder {
 pub use placeholder::*;
 
 /// A helper class to temporarily change the trace config and restore it on drop.
+#[must_use = "the trace config is restored as soon as the guard is dropped"]
 pub struct TraceGuard(bool);
 
 impl TraceGuard {

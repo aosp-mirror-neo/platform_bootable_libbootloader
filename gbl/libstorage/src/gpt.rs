@@ -20,7 +20,7 @@ use core::{
     cmp::min,
     convert::TryFrom,
     default::Default,
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     mem::size_of,
     num::NonZeroU64,
     ops::{Deref, DerefMut},
@@ -49,8 +49,8 @@ const GPT_NAME_LEN_U8: usize = 2 * GPT_GUID_LEN;
 )]
 pub struct GptGuid(pub [u8; GPT_GUID_LEN]);
 
-impl core::fmt::Display for GptGuid {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for GptGuid {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let guid = self.0;
         write!(
             f,
@@ -406,8 +406,8 @@ impl GptEntry {
     }
 }
 
-impl core::fmt::Display for GptEntry {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for GptEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         // Format: partition name: "abc", [first, last]: [123, 456]
         let mut name_conversion_buffer = [0u8; GPT_NAME_LEN_U16 * 2];
         let name = self.name_to_str(&mut name_conversion_buffer).map_err(|_| core::fmt::Error)?;
@@ -549,8 +549,8 @@ impl GptSyncResult {
     }
 }
 
-impl core::fmt::Display for GptSyncResult {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for GptSyncResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::BothValid => write!(f, "Found valid GPT."),
             Self::PrimaryError(e) => write!(f, "Found secondary GPT. Bad primary GPT {e:?}."),
