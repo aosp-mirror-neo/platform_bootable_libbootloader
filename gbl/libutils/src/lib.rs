@@ -20,6 +20,7 @@ use core::{arch::asm, cmp::min, str::from_utf8};
 
 /// Generic constants and associated helper functions and macros.
 pub mod constants;
+pub mod conversion;
 
 /// A helper data structure for writing formatted string to fixed size bytes array.
 #[derive(Debug)]

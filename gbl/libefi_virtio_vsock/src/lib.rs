@@ -26,6 +26,7 @@ use efi::{
 };
 use liberror::Error;
 use libgblutils::arch_timestamp;
+use libutils::const_cast;
 use spin::Mutex;
 pub use virtio_drivers::device::socket::VsockAddr;
 use virtio_drivers::{
@@ -43,7 +44,7 @@ use virtio_drivers::{
 mod fastboot_transport;
 pub use fastboot_transport::FastbootTransport;
 
-const EFI_PAGE_SIZE: usize = efi_types::EFI_PAGE_SIZE as usize;
+const EFI_PAGE_SIZE: usize = const_cast!(efi_types::EFI_PAGE_SIZE);
 
 #[derive(Clone)]
 struct GblAcpiHandler;

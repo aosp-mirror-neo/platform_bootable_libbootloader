@@ -21,8 +21,9 @@
 
 use core::ffi::{c_char, c_int, c_void};
 use libc::{abort, gbl_free, gbl_malloc, memcmp, memcpy, memset, strcmp, strlen, strncmp};
+use libutils::const_cast;
 
-const AVB_MALLOC_ALIGNMENT: usize = avb_bindgen::AVB_ALIGNMENT_SIZE as usize;
+const AVB_MALLOC_ALIGNMENT: usize = const_cast!(avb_bindgen::AVB_ALIGNMENT_SIZE);
 
 #[no_mangle]
 pub extern "C" fn avb_abort() -> ! {

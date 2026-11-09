@@ -71,9 +71,10 @@ pub fn efi_android_boot(
         use fdt::Fdt;
         use liberror::Error;
         use libgbl::android_boot::device_tree::PROP_BOOTARGS;
+        use libutils::const_cast;
         use safemath::SafeNum;
 
-        const EFI_PAGE_SIZE: u64 = efi_types::EFI_PAGE_SIZE as u64;
+        const EFI_PAGE_SIZE: u64 = const_cast!(efi_types::EFI_PAGE_SIZE);
 
         let fdt = Fdt::new(fdt)?;
         let systab_addr = entry.system_table().as_ptr() as usize;

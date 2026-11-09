@@ -22,18 +22,19 @@ use crate::{
     error::{DiceError, Result},
 };
 use core::{marker::PhantomData, ptr};
+use libutils::const_cast;
 use opendice_android_bindgen::DiceAndroidHandoverParse;
 
 pub use opendice_cbor_bindgen::{DiceConfigType, DiceInputValues, DiceKeyAlgorithm, DiceMode};
 
 /// The size of a CDI.
-pub const CDI_SIZE: usize = opendice_cbor_bindgen::DICE_CDI_SIZE as usize;
+pub const CDI_SIZE: usize = const_cast!(opendice_cbor_bindgen::DICE_CDI_SIZE);
 /// The size of a DICE hash.
-pub const HASH_SIZE: usize = opendice_cbor_bindgen::DICE_HASH_SIZE as usize;
+pub const HASH_SIZE: usize = const_cast!(opendice_cbor_bindgen::DICE_HASH_SIZE);
 /// The size of the DICE hidden value.
-pub const HIDDEN_SIZE: usize = opendice_cbor_bindgen::DICE_HIDDEN_SIZE as usize;
+pub const HIDDEN_SIZE: usize = const_cast!(opendice_cbor_bindgen::DICE_HIDDEN_SIZE);
 /// The size of a DICE inline config.
-pub const INLINE_CONFIG_SIZE: usize = opendice_cbor_bindgen::DICE_INLINE_CONFIG_SIZE as usize;
+pub const INLINE_CONFIG_SIZE: usize = const_cast!(opendice_cbor_bindgen::DICE_INLINE_CONFIG_SIZE);
 
 /// Array type of inline configuration values.
 type InlineConfig = [u8; INLINE_CONFIG_SIZE];

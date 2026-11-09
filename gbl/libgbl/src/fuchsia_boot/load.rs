@@ -212,8 +212,7 @@ mod test {
         get_and_clear_one_shot_flag, mark_slot_active, mark_slot_successful, mark_slot_unbootable,
         set_one_shot_bootloader, UnbootableReason, ABR_MAX_TRIES_REMAINING,
     };
-    use avb::IoError as AvbIoError;
-    use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
+    use avb::{IoError as AvbIoError, CERT_PIK_VERSION_LOCATION, CERT_PSK_VERSION_LOCATION};
     use fastboot::LockState;
     use libtestutils::AlignedBuffer;
     use std::string::String;
@@ -300,8 +299,8 @@ mod test {
             ops.avb_ops.rollbacks,
             [
                 (TEST_ROLLBACK_INDEX_LOCATION, Ok(0)),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), Ok(0)),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), Ok(0))
+                (CERT_PSK_VERSION_LOCATION, Ok(0)),
+                (CERT_PIK_VERSION_LOCATION, Ok(0))
             ]
             .into()
         );
@@ -355,14 +354,8 @@ mod test {
             ops.avb_ops.rollbacks,
             [
                 (TEST_ROLLBACK_INDEX_LOCATION, Ok(TEST_ROLLBACK_INDEX_VALUE)),
-                (
-                    usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(),
-                    Ok(TEST_CERT_PSK_VERSION)
-                ),
-                (
-                    usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(),
-                    Ok(TEST_CERT_PIK_VERSION)
-                )
+                (CERT_PSK_VERSION_LOCATION, Ok(TEST_CERT_PSK_VERSION)),
+                (CERT_PIK_VERSION_LOCATION, Ok(TEST_CERT_PIK_VERSION))
             ]
             .into()
         );
@@ -467,8 +460,8 @@ mod test {
             ops.avb_ops.rollbacks,
             [
                 (TEST_ROLLBACK_INDEX_LOCATION, Ok(TEST_ROLLBACK_INDEX_VALUE + 1)),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), Ok(0)),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), Ok(0))
+                (CERT_PSK_VERSION_LOCATION, Ok(0)),
+                (CERT_PIK_VERSION_LOCATION, Ok(0))
             ]
             .into()
         );

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 package(
     default_applicable_licenses = ["@gbl//licensing:gbl_license"],
@@ -31,4 +31,9 @@ rust_test(
     name = "test",
     crate = ":libutils",
     visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "libutils_doc_test",
+    crate = ":libutils",
 )

@@ -19,6 +19,7 @@ use efi_types::{
 };
 use liberror::{Error, Error::BufferTooSmall, Result as EfiResult};
 use libgbl::constants::PAGE_SIZE as PAGE_SIZE_USIZE;
+use libutils::const_cast;
 use safemath::SafeNum;
 use zbi::{zbi_format::zbi_mem_range_t, ZbiContainer, ZbiFlags, ZbiType};
 use zerocopy::{Ref, SplitByteSliceMut};
@@ -39,7 +40,7 @@ use {
     },
 };
 
-const PAGE_SIZE: u64 = PAGE_SIZE_USIZE as u64;
+const PAGE_SIZE: u64 = const_cast!(PAGE_SIZE_USIZE);
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 #[cfg(not(test))]

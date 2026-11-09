@@ -32,6 +32,7 @@ rust_library(
         ":opendice_android_bindgen",
         ":opendice_cbor_bindgen",
         "@ciborium_ll",
+        "@gbl//libutils",
         "@open_dice//:libopen_dice_android_baremetal_multialg_static",
         "@open_dice//:libopen_dice_cbor_baremetal_multialg_static",
         "@zeroize",

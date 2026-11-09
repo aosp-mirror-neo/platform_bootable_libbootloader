@@ -48,7 +48,7 @@ macro_rules! impl_hasher {
 
         // Generate the implementation block
         impl Hasher for $hasher_name {
-            const DIGEST_SIZE: usize = $digest_size_const as usize;
+            const DIGEST_SIZE: usize = libutils::const_cast!($digest_size_const);
             type Output = [u8; Self::DIGEST_SIZE];
 
             /// Create and initialize the hasher

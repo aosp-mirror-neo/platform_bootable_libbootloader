@@ -36,5 +36,6 @@ rust_library(
     deps = [
         "@avb//:avb_bindgen",
         "@gbl//libc",
+        "@gbl//libutils",
     ],
 )

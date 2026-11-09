@@ -213,7 +213,7 @@ pub(crate) mod test {
         tests::read_test_data,
     };
     use abr::{get_and_clear_one_shot_flag, set_one_shot_bootloader};
-    use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
+    use avb::{CERT_PIK_VERSION_LOCATION, CERT_PSK_VERSION_LOCATION};
     use std::collections::{BTreeSet, HashMap};
     use zerocopy::FromBytes;
 
@@ -279,8 +279,8 @@ pub(crate) mod test {
         let mut ops = FakeGblOps::new(partitions);
         ops.avb_ops.rollbacks = HashMap::from([
             (TEST_ROLLBACK_INDEX_LOCATION, Ok(0)),
-            (AVB_CERT_PSK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
-            (AVB_CERT_PIK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
+            (CERT_PSK_VERSION_LOCATION, Ok(0)),
+            (CERT_PIK_VERSION_LOCATION, Ok(0)),
         ]);
         ops.avb_ops.use_cert = true;
         ops.avb_ops.cert_permanent_attributes = Some(

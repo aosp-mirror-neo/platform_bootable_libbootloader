@@ -1260,6 +1260,7 @@ pub(crate) mod test {
     use crate::{gpt::GptError::NumberOfEntriesOverflow, test::TestDisk};
     use gbl_async::block_on;
     use libtestutils::AlignedBuffer;
+    use libutils::const_cast;
 
     impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         /// Returns the maximum allowed entries.
@@ -1269,6 +1270,7 @@ pub(crate) mod test {
     }
 
     const BLOCK_SIZE: usize = 512;
+    const BLOCK_SIZE_U64: u64 = const_cast!(BLOCK_SIZE);
     const MBR_BLKS: usize = 1;
     const MBR_SIZE: usize = MBR_BLKS * BLOCK_SIZE;
     const GPT_HEADER_NO_ENTRIES_SIZE: usize = size_of::<GptHeader>();
@@ -1296,12 +1298,7 @@ pub(crate) mod test {
     /// A helper for creating a [TestDisk] from given data.
     fn test_disk(data: impl AsRef<[u8]>) -> TestDisk {
         // All tests cases use pre-generated GPT disk of 512 block size.
-        TestDisk::new_ram_alloc(
-            BLOCK_SIZE.try_into().unwrap(),
-            BLOCK_SIZE.try_into().unwrap(),
-            data.as_ref().to_vec(),
-        )
-        .unwrap()
+        TestDisk::new_ram_alloc(BLOCK_SIZE_U64, BLOCK_SIZE_U64, data.as_ref().to_vec()).unwrap()
     }
 
     /// A helper for creating a [TestDisk] from given data and a [Gpt] for 256 entries.
@@ -1609,8 +1606,7 @@ pub(crate) mod test {
     fn test_sync_gpt_last_usable_out_of_range() {
         for (entries_count, data) in get_gpt_test_1_data() {
             let modify = |hdr: &mut GptHeader, _: Ref<&mut [u8], [GptEntry]>| {
-                hdr.last +=
-                    1 + gpt_entries_blk(BLOCK_SIZE.try_into().unwrap(), entries_count).unwrap();
+                hdr.last += 1 + gpt_entries_blk(BLOCK_SIZE_U64, entries_count).unwrap();
                 hdr.update_crc();
             };
             let err = match entries_count {
@@ -2221,8 +2217,8 @@ pub(crate) mod test {
                 (expected_start, expected_end)
             );
             let expected_start: u64 = expected_end;
-            let expected_end = expected_start
-                + NEW_PARTITION_1_SIZE.next_multiple_of(BLOCK_SIZE.try_into().unwrap());
+            let expected_end =
+                expected_start + NEW_PARTITION_1_SIZE.next_multiple_of(BLOCK_SIZE_U64);
             assert_eq!(
                 gpt.find_partition("new_1").unwrap().absolute_range().unwrap(),
                 (expected_start, expected_end)

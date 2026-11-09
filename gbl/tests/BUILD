@@ -75,6 +75,7 @@ test_suite(
         "@gbl//libsafemath:libsafemath_test",
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
+        "@gbl//libutils:libutils_doc_test",
         "@gbl//libutils:test",
         "@gbl//signtool:gblsigntool_test",
         "@gbl//tests/qemu:tests",

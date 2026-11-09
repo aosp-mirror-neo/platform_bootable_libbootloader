@@ -34,6 +34,7 @@ rust_library(
         "@gbl//liberror",
         "@gbl//libfdt",
         "@gbl//libgblutils",
+        "@gbl//libutils",
         "@spin",
         "@virtio_drivers",
     ],

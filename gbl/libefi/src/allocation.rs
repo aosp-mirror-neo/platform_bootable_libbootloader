@@ -24,13 +24,14 @@ use core::{
 };
 use efi_types::EFI_MEMORY_TYPE_LOADER_DATA;
 use liberror::{Error, Result};
+use libutils::const_cast;
 use safemath::SafeNum;
 use spin::Once;
 
 // Alignment guaranteed by EFI AllocatePoll()
 const EFI_ALLOCATE_POOL_ALIGNMENT: usize = 8;
 // Page size of AllocatePages() by UEFI spec.
-const EFI_PAGE_SIZE: usize = efi_types::EFI_PAGE_SIZE as usize;
+const EFI_PAGE_SIZE: usize = const_cast!(efi_types::EFI_PAGE_SIZE);
 
 /// Installs [`EfiAllocator`] as the UEFI application's global allocator and exports the unmangled
 /// `EFI_GLOBAL_ALLOCATOR` symbol linked by `libefi` with the exact type expected by its
