@@ -14,10 +14,7 @@
 
 use super::{CommandResult, GblFastbootError};
 use crate::{
-    android_boot::{
-        hasher::{Hasher, Sha256},
-        vboot::into_verify_data,
-    },
+    android_boot::hasher::{Hasher, Sha256},
     fastboot::{BufferPool, GblFastboot, PinFutContainerTyped, ResolveMode},
     gbl_avb::ops::GblAvbOps,
     gbl_println,
@@ -25,7 +22,7 @@ use crate::{
     slots::{Bootability, Slot},
     GblOps,
 };
-use avb::{slot_verify, HashtreeErrorMode, SlotVerifyFlags, VbmetaVerifyError};
+use avb::{slot_verify, HashtreeErrorMode, SlotVerifyError, SlotVerifyFlags, VbmetaVerifyError};
 use core::{
     ffi::CStr,
     future::Future,
@@ -288,7 +285,7 @@ where
                 snprintf!(out, "{}", self.get_fastboot_slot_info(args_str)?.retry_count)
             }
             HAS_SLOT => self.get_var_has_slot(args_str, out).await?,
-            FINGERPRINT => self.get_var_fingerprint(args_str, out)?,
+            FINGERPRINT => self.get_var_fingerprint(args_str, out).await?,
             PARTITION_START => self.get_var_partition_start(args_str, out)?,
             PARTITION_SIZE => self.get_var_partition_size(args_str, out)?,
             PARTITION_TYPE => self.get_var_partition_type(args_str, out)?,
@@ -341,8 +338,8 @@ where
                     send.send_var_info(SLOT_UNBOOTABLE, [suffix], unbootable).await?;
                     send.send_var_info(SLOT_RETRY_COUNT, [suffix], snprintf!(buf, "{retry_count}"))
                         .await?;
-                    match self.get_system_fingerprint_for_slot(suffix, &mut buf) {
-                        Ok(Some(fp)) => {
+                    match self.get_system_fingerprint_for_slot(suffix, &mut buf).await {
+                        Ok(fp) => {
                             let mut part_buf = [0u8; 16];
                             send.send_var_info(
                                 FINGERPRINT,
@@ -351,7 +348,7 @@ where
                             )
                             .await?;
                         }
-                        Ok(None) => {}
+                        Err(Error::NotFound) => {}
                         Err(e) => gbl_println!(
                             self.gbl_ops,
                             "Failed to get fingerprint for slot {suffix}: {e:?}"
@@ -841,53 +838,76 @@ where
         Ok(())
     }
 
-    /// Looks up the system fingerprint for `slot_suffix` from `vbmeta_<slot>` or
-    /// `vbmeta_system_<slot>`.
-    fn get_system_fingerprint_for_slot<'s>(
+    /// Looks up the system fingerprint for `slot_suffix`
+    async fn get_system_fingerprint_for_slot<'s>(
         &mut self,
         slot_suffix: &str,
         out: &'s mut [u8],
-    ) -> CommandResult<Option<&'s str>> {
-        self.get_fastboot_slot_info([slot_suffix].into_iter())?;
-        let mut part_buf = [0u8; 32];
-        for (mid, vbmeta_name) in [("", "vbmeta"), ("_system", "vbmeta_system")] {
-            let part_name = snprintf!(part_buf, "vbmeta{mid}_{slot_suffix}");
-            if self.gbl_ops.partition_size(part_name)?.is_none() {
-                continue;
+    ) -> Result<&'s str, Error> {
+        // Validate that `slot_suffix` corresponds to a valid slot.
+        self.get_fastboot_slot_info([slot_suffix].into_iter()).map_err(|_| Error::InvalidInput)?;
+        let mut suffix_buf = [0u8; 8];
+        let ab_suffix_str = snprintf!(suffix_buf, "_{slot_suffix}\0");
+        let ab_suffix = CStr::from_bytes_with_nul(ab_suffix_str.as_bytes())
+            .map_err(|_| "Invalid slot suffix")?;
+        // Wait for any pending async I/O tasks to finish before reading vbmeta from disk.
+        while self.tasks.borrow_mut().poll_all() > 0 {
+            yield_now().await;
+        }
+        let mut avb_ops = GblAvbOps::new(self.gbl_ops, None, &mut [], false);
+        // Allow verification errors regardless of lock state so `fastboot getvar` can still
+        // inspect and report the vbmeta properties; structurally invalid or corrupted vbmeta images
+        // are still rejected below.
+        let res = slot_verify(
+            &mut avb_ops,
+            &[],
+            Some(ab_suffix),
+            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
+            // Hashtree error mode does not matter here since we are not booting anything, only
+            // inspecting the vbmeta images.
+            HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
+        );
+        let verify_data = match &res {
+            Ok(data) => data,
+            Err(e) => e.verification_data().ok_or(match e {
+                SlotVerifyError::Io => Error::BlockIoError,
+                SlotVerifyError::Oom => Error::OutOfResources,
+                SlotVerifyError::UnsupportedVersion => Error::UnsupportedVersion,
+                SlotVerifyError::PublicKeyRejected(_)
+                | SlotVerifyError::RollbackIndex(_)
+                | SlotVerifyError::Verification(_) => Error::SecurityViolation,
+                SlotVerifyError::InvalidArgument
+                | SlotVerifyError::InvalidMetadata
+                | SlotVerifyError::Internal => Error::NotFound,
+            })?,
+        };
+        for vbmeta in verify_data.vbmeta_data() {
+            if !matches!(
+                vbmeta.verify_result(),
+                Ok(())
+                    | Err(VbmetaVerifyError::NotSigned
+                        | VbmetaVerifyError::HashMismatch
+                        | VbmetaVerifyError::SignatureMismatch)
+            ) {
+                return Err("Invalid vbmeta".into());
             }
-            let mut suffix_buf = [0u8; 16];
-            let ab_suffix_str = snprintf!(suffix_buf, "{mid}_{slot_suffix}\0");
-            let ab_suffix = CStr::from_bytes_with_nul(ab_suffix_str.as_bytes())
-                .map_err(|_| "Invalid slot suffix")?;
-            let mut avb_ops = GblAvbOps::new(self.gbl_ops, None, &mut [], false);
-            let res = slot_verify(
-                &mut avb_ops,
-                &[],
-                Some(ab_suffix),
-                SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
-                HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
-            );
-            let verify_data =
-                into_verify_data(res).ok_or(GblFastbootError::VbmetaVerifyFailed(vbmeta_name))?;
-            for vbmeta in verify_data.vbmeta_data() {
-                if !matches!(vbmeta.verify_result(), Ok(()) | Err(VbmetaVerifyError::NotSigned)) {
-                    return Err(GblFastbootError::VbmetaInvalid(vbmeta_name));
+            if let Some(val) = vbmeta.get_property_value(SYSTEM_FINGERPRINT_KEY) {
+                let val = from_utf8(val)?;
+                if !val.bytes().all(|b| b.is_ascii_graphic()) {
+                    return Err("Invalid fingerprint".into());
                 }
-                if let Some(val) = vbmeta.get_property_value(SYSTEM_FINGERPRINT_KEY) {
-                    let val = from_utf8(val)?;
-                    if val.len() > out.len() {
-                        return Err(GblFastbootError::FingerprintTooLong(vbmeta_name));
-                    }
-                    return Ok(Some(snprintf!(out, "{val}")));
+                if val.len() > out.len() {
+                    return Err(Error::BufferTooSmall(Some(val.len())));
                 }
+                return Ok(snprintf!(out, "{val}"));
             }
         }
-        Ok(None)
+        Err(Error::NotFound)
     }
 
     /// "fastboot getvar fingerprint:<partition-name>"
     /// Currently only supports system partition.
-    fn get_var_fingerprint<'t, 's>(
+    async fn get_var_fingerprint<'t, 's>(
         &mut self,
         mut args: impl Iterator<Item = &'t str> + Clone,
         out: &'s mut [u8],
@@ -897,6 +917,6 @@ where
             .ok_or("Missing partition")?
             .strip_prefix("system_")
             .ok_or("Invalid partition")?;
-        Ok(self.get_system_fingerprint_for_slot(suffix, out)?.ok_or(Error::NotFound)?)
+        Ok(self.get_system_fingerprint_for_slot(suffix, out).await?)
     }
 }
