@@ -24,6 +24,11 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "gbl_decompress",
     edition = "2024",
+    # Kernel decompression: keep it fast.
+    rustc_flags = [
+        "-C",
+        "opt-level=3",
+    ],
     deps = [
         "@gbl//liberror",
         "@gbl//libtrace",
