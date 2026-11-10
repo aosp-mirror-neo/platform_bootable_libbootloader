@@ -22,13 +22,14 @@ use crate::{
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     ffi::c_void,
+    ops::Deref,
     ptr::null_mut,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use efi::{
     efi_println,
-    protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    protocol::{simple_network::SimpleNetworkProtocol, ExclusiveProtocol, Protocol},
     utils::Timeout,
     DeviceHandle, EfiEntry, Event, EventNotify, EventType, Tpl,
 };
@@ -101,9 +102,31 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
     snp.reset(true)
 }
 
+/// Holds an open `SimpleNetworkProtocol`, either exclusively (closing on drop) or shared when
+/// firmware denies exclusive access to another agent.
+enum NetworkProtocol<'a> {
+    /// Exclusively owned protocol guard; calls `CloseProtocol` when dropped.
+    Exclusive(ExclusiveProtocol<'a, SimpleNetworkProtocol>),
+    /// Shared protocol handle (`BY_HANDLE_PROTOCOL`).
+    Shared(Protocol<'a, SimpleNetworkProtocol>),
+}
+
+impl<'a> Deref for NetworkProtocol<'a> {
+    type Target = Protocol<'a, SimpleNetworkProtocol>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Exclusive(snp) => snp,
+            Self::Shared(snp) => snp,
+        }
+    }
+}
+
 /// `EfiNetworkDevice` manages a frame pool and handles receiving/sending network frames.
 pub struct EfiNetworkDevice<'a> {
-    protocol: Protocol<'a, SimpleNetworkProtocol>,
+    // Dropped after `EfiNetworkDevice::drop` shuts down the NIC, so `CloseProtocol` on an
+    // `ExclusiveProtocol` guard always runs after `shutdown()`.
+    protocol: NetworkProtocol<'a>,
     rx_frame: Box<[u8; ETHERNET_FRAME_SIZE]>,
     tx_frames: Vec<*mut [u8; ETHERNET_FRAME_SIZE]>,
     tx_frame_curr: usize, // Circular next index into tx_frames.
@@ -112,11 +135,7 @@ pub struct EfiNetworkDevice<'a> {
 
 impl<'a> EfiNetworkDevice<'a> {
     /// Creates a new instance. Allocates `extra_tx_frames+1` number of TX frames.
-    pub fn new(
-        protocol: Protocol<'a, SimpleNetworkProtocol>,
-        extra_tx_frames: usize,
-        efi_entry: &'a EfiEntry,
-    ) -> Self {
+    fn new(protocol: NetworkProtocol<'a>, extra_tx_frames: usize, efi_entry: &'a EfiEntry) -> Self {
         let mut ret = Self {
             protocol,
             rx_frame: Box::new([0u8; ETHERNET_FRAME_SIZE]),
@@ -330,7 +349,11 @@ fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
         }
     });
 
-    let first_handle = candidates.first().ok_or(Error::NotFound)?.0;
+    if candidates.is_empty() {
+        return Err(Error::NotFound);
+    }
+
+    let first_handle = candidates.first().unwrap().0;
 
     // Find the first root NIC handle with an active link, falling back to the first root handle.
     let has_active_link = |&handle: &DeviceHandle| {
@@ -349,6 +372,39 @@ fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
             .unwrap_or(false)
     };
     Ok(candidates.into_iter().map(|(h, _)| h).find(has_active_link).unwrap_or(first_handle))
+}
+
+/// Opens the simple network protocol on `handle` exclusively, which makes firmware stop the
+/// drivers bound to it. Otherwise these drivers take frames that GBL needs: EDK2's Managed Network
+/// driver, for example, polls the device every 10 ms and takes a received frame each time.
+///
+/// Returns an [`ExclusiveProtocol`] guard (via [`NetworkProtocol::Exclusive`]) that closes the
+/// protocol on drop so later sessions can open it exclusively again. If exclusive open fails,
+/// warns and falls back to a shared open (`BY_HANDLE_PROTOCOL`).
+fn open_simple_network<'a>(
+    efi_entry: &'a EfiEntry,
+    handle: DeviceHandle,
+) -> Result<NetworkProtocol<'a>> {
+    let bs = efi_entry.system_table().boot_services();
+    // SAFETY:
+    // * `EfiGblNetwork::init` drops any previous `EfiGblNetworkInternal` (and its
+    //   `SimpleNetworkProtocol` handle) before calling `open_simple_network`, and `find_net_device`
+    //   drops all temporary `DevicePathProtocol` and `SimpleNetworkProtocol` handles before
+    //   returning `handle`.
+    // * No other GBL component holds a live `Protocol` or `RawProtocol` to `SimpleNetworkProtocol`
+    //   on `handle` or to any child protocol (such as MNP/ARP/IPv4/IPv6) installed by a network
+    //   driver bound `BY_DRIVER` to `(handle, SimpleNetworkProtocol)`.
+    match unsafe { bs.open_protocol_exclusive::<SimpleNetworkProtocol>(handle) } {
+        Ok(snp) => Ok(NetworkProtocol::Exclusive(snp)),
+        Err(e) => {
+            efi_println!(
+                efi_entry,
+                "Warning: Failed to open the network device exclusively: {e}. Firmware may take \
+                 received packets",
+            );
+            bs.open_protocol::<SimpleNetworkProtocol>(handle).map(NetworkProtocol::Shared)
+        }
+    }
 }
 
 /// Derives a link local ethernet mac address and IPv6 address from `EfiMacAddress`.
@@ -569,10 +625,7 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
     fn new(efi_entry: &'a EfiEntry, timestamp: &'c AtomicU64) -> Result<Self> {
         // Creates and initializes simple network protocol.
         let snp_dev = find_net_device(efi_entry)?;
-        let snp = efi_entry
-            .system_table()
-            .boot_services()
-            .open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
+        let snp = open_simple_network(efi_entry, snp_dev)?;
         reset_simple_network(&snp)?;
 
         // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that
@@ -731,7 +784,10 @@ mod test {
         EFI_SIMPLE_NETWORK_STATE_INITIALIZED as INITIALIZED,
         EFI_SIMPLE_NETWORK_STATE_STARTED as STARTED, EFI_SIMPLE_NETWORK_STATE_STOPPED as STOPPED,
     };
-    use std::sync::{atomic::AtomicU32, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU32},
+        Arc, Mutex,
+    };
 
     fn make_handle(id: usize) -> DeviceHandle {
         DeviceHandle::new(id as _)
@@ -933,6 +989,105 @@ mod test {
         assert_eq!(find_net_device(installed.entry()), Ok(make_handle(nic1_id)));
     }
 
+    #[test]
+    fn test_open_simple_network_exclusive_guard_closes_and_reopens() {
+        let mut mock_efi = MockEfi::new();
+
+        let held_in_fw = Arc::new(AtomicBool::new(false));
+        let held = held_in_fw.clone();
+        mock_efi
+            .boot_services
+            .expect_open_protocol_exclusive::<SimpleNetworkProtocol>()
+            .times(2)
+            .returning(move |h| {
+                assert_eq!(h, make_handle(1));
+                if held.swap(true, Ordering::SeqCst) {
+                    Err(Error::AccessDenied)
+                } else {
+                    Ok(ExclusiveProtocol::new(h, SimpleNetworkProtocol::default()))
+                }
+            });
+
+        let held = held_in_fw.clone();
+        mock_efi.boot_services.expect_close_protocol::<SimpleNetworkProtocol>().times(2).returning(
+            move |h| {
+                assert_eq!(h, make_handle(1));
+                assert!(held.swap(false, Ordering::SeqCst));
+                Ok(())
+            },
+        );
+
+        let installed = mock_efi.install();
+        let snp1 = open_simple_network(installed.entry(), make_handle(1)).unwrap();
+        assert!(matches!(snp1, NetworkProtocol::Exclusive(_)));
+        assert!(held_in_fw.load(Ordering::SeqCst));
+
+        // Dropping `snp1` invokes `CloseProtocol`, allowing the next session to open exclusively.
+        drop(snp1);
+        assert!(!held_in_fw.load(Ordering::SeqCst));
+
+        let snp2 = open_simple_network(installed.entry(), make_handle(1)).unwrap();
+        assert!(matches!(snp2, NetworkProtocol::Exclusive(_)));
+        assert!(held_in_fw.load(Ordering::SeqCst));
+        drop(snp2);
+        assert!(!held_in_fw.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_open_simple_network_falls_back_to_shared_when_exclusive_fails() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_open_protocol_exclusive::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(|_| Err(Error::AccessDenied));
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(|h| {
+                assert_eq!(h, make_handle(1));
+                Ok(SimpleNetworkProtocol::default())
+            });
+        mock_efi.con_out.expect_write_str().returning(|_| Ok(()));
+
+        let installed = mock_efi.install();
+        let snp = open_simple_network(installed.entry(), make_handle(1)).unwrap();
+        assert!(matches!(snp, NetworkProtocol::Shared(_)));
+    }
+
+    #[test]
+    fn test_open_simple_network_logs_close_error_on_drop() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_open_protocol_exclusive::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(|h| Ok(ExclusiveProtocol::new(h, SimpleNetworkProtocol::default())));
+        mock_efi
+            .boot_services
+            .expect_close_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(|_| Err(Error::NotFound));
+
+        let logged = Arc::new(Mutex::new(String::new()));
+        let logged_clone = logged.clone();
+        mock_efi.con_out.expect_write_str().returning(move |s| {
+            logged_clone.lock().unwrap().push_str(s);
+            Ok(())
+        });
+
+        let installed = mock_efi.install();
+        let snp = open_simple_network(installed.entry(), make_handle(1)).unwrap();
+        drop(snp);
+
+        let msg = logged.lock().unwrap();
+        assert!(
+            msg.contains("Failed to close exclusive Protocol<"),
+            "expected close failure log, got: {msg:?}",
+        );
+    }
+
     /// A fake simple network device that follows the UEFI SNP state machine. Calls that are invalid
     /// in the current state fail with the same errors as EDK2's SnpDxe and are counted.
     #[derive(Default)]
@@ -1044,7 +1199,7 @@ mod test {
         let fake = FakeSnp::new(STOPPED);
         let snp = fake.snp();
         assert_eq!(reset_simple_network(&snp), Ok(()));
-        drop(EfiNetworkDevice::new(snp, 0, installed.entry()));
+        drop(EfiNetworkDevice::new(NetworkProtocol::Shared(snp), 0, installed.entry()));
         assert_eq!(fake.state(), STARTED);
 
         assert_eq!(reset_simple_network(&fake.snp()), Ok(()));
