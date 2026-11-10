@@ -27,9 +27,9 @@ use crate::{
     gbl_avb::{ops::GblAvbOps, Critical, Fdr},
     gbl_println,
     misc::{
-        read_bootloader_message_to, read_virtual_ab_message, write_bootloader_message,
-        write_virtual_ab_message, AndroidBootMode, MergeStatus, MiscVirtualAbMessage,
-        MISC_PARTITION,
+        read_bootloader_message_to, read_misc_gsi_message, read_virtual_ab_message,
+        write_bootloader_message, write_misc_gsi_message, write_virtual_ab_message,
+        AndroidBootMode, MergeStatus, MiscGsiStatus, MiscVirtualAbMessage, MISC_PARTITION,
     },
     ops::{CommandExecType, RambootOps},
     partition::{
@@ -59,8 +59,8 @@ use core::{
 };
 use fastboot::{
     process_next_command, DownloadBuilder, Downloader, FailSender, FastbootImplementation,
-    InfoSender, LockState, LockType, OkaySender, RebootMode, StreamCommand, StreamOperation,
-    Unlockability, UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
+    GsiCommand, InfoSender, LockState, LockType, OkaySender, RebootMode, StreamCommand,
+    StreamOperation, Unlockability, UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
 };
 
 const ERR_DEVICE_LOCKED: &str = "Device is locked";
@@ -2622,6 +2622,45 @@ where
         self.gbl_ops.fastboot_get_unlock_ability().map_err(|e| e.into())
     }
 
+    async fn gsi(&mut self, cmd: GsiCommand, mut responder: impl InfoSender) -> CommandResult<()> {
+        self.state.sync_tasks(self.gbl_ops, &mut responder, "gsi").await;
+
+        let mut gsi = match read_misc_gsi_message(self.gbl_ops) {
+            // `misc` holds no valid GSI message header, i.e. no GSI is installed.
+            Err(Error::BadMagic) => return Err("No DSU is installed".into()),
+            res => res?,
+        };
+        let status = gsi.status()?.ok_or("No DSU is installed")?;
+
+        match cmd {
+            GsiCommand::Wipe | GsiCommand::Disable => {
+                if gsi.is_locked_dsu()? {
+                    self.state.check_unlocked(self.gbl_ops).map_err(|e| match e {
+                        GblFastbootError::Msg(ERR_DEVICE_LOCKED) => {
+                            "Command not available on locked DSU/devices".into()
+                        }
+                        e => e,
+                    })?;
+                }
+                gsi.set_status(match cmd {
+                    GsiCommand::Wipe => MiscGsiStatus::Wipe,
+                    GsiCommand::Disable => MiscGsiStatus::Disabled,
+                    GsiCommand::Status => unreachable!(),
+                });
+                write_misc_gsi_message(self.gbl_ops, gsi)?;
+            }
+            GsiCommand::Status => {
+                let active_slot = gsi.active_slot()?;
+                responder.send_formatted_info(|f| write!(f, "{status:?}").unwrap()).await?;
+                responder
+                    .send_formatted_info(|f| write!(f, "Active slot: {active_slot}").unwrap())
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn command_exec(
         &mut self,
         mut args: impl Iterator<Item = &'_ CStr> + Clone,
@@ -3073,7 +3112,8 @@ pub(crate) mod test {
         constants::{KiB, MiB, KERNEL_ALIGNMENT},
         gbl_avb::{AvbDeviceStatus, LoadPartition, PartitionName, SpecializedPartition},
         misc::{
-            test::read_bootloader_message, write_virtual_ab_message, MiscVirtualAbMessage,
+            test::{read_bootloader_message, RawMiscGsiMessage},
+            write_virtual_ab_message, MiscGsiMessage, MiscVirtualAbMessage,
             SYSTEM_SPACE_OFFSET_IN_MISC,
         },
         ops::{
@@ -11306,5 +11346,213 @@ pub(crate) mod test {
         unsliced_transport.add_transport_input(b"continue");
         block_on(fb_fut);
         assert_eq!(io.num_writes(), 1);
+    }
+
+    /// Creates a test storage containing a zeroed 64 KiB `misc` partition.
+    fn make_gsi_test_storage() -> FakeGblOpsStorage {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", vec![0u8; KiB!(64)]);
+        storage
+    }
+
+    /// Writes a [`RawMiscGsiMessage`] to `misc`, e.g. to simulate an invalid or corrupt message.
+    fn write_raw_misc_gsi_message<'a>(ops: &mut impl GblOps<'a>, mut raw: RawMiscGsiMessage) {
+        ops.write_to_partition_sync(
+            MISC_PARTITION,
+            MiscGsiMessage::OFFSET_IN_MISC,
+            raw.as_mut_bytes(),
+        )
+        .unwrap();
+    }
+
+    /// Checks that `gsi:status`, `gsi:wipe`, and `gsi:disable` all fail with `fail_msg` when
+    /// `misc` contains `raw`.
+    fn check_gsi_error(raw: RawMiscGsiMessage, fail_msg: &[u8]) {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        write_raw_misc_gsi_message(&mut gbl_ops, raw);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"gsi:status", b"gsi:wipe", b"gsi:disable", b"continue"],
+            &[fail_msg, fail_msg, fail_msg, b"OKAY"],
+        );
+    }
+
+    /// Writes a `MiscGsiMessage` with `status` and `slot` and checks `gsi:status` output.
+    fn check_gsi_status(status: MiscGsiStatus, slot: &str, expected: &[&[u8]]) {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(status);
+        gsi.set_active_slot(slot).unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+        check_fastboot_commands(&mut gbl_ops, &[b"gsi:status", b"continue"], expected);
+    }
+
+    #[test]
+    fn test_fastboot_gsi_zeroed_misc() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"gsi:status", b"gsi:wipe", b"gsi:disable", b"continue"],
+            &[
+                b"FAILNo DSU is installed",
+                b"FAILNo DSU is installed",
+                b"FAILNo DSU is installed",
+                b"OKAY",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_fastboot_gsi_undefined_status() {
+        check_gsi_error(MiscGsiMessage::default().into(), b"FAILNo DSU is installed");
+    }
+
+    #[test]
+    fn test_fastboot_gsi_unsupported_version() {
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootSuccess);
+        let mut raw = RawMiscGsiMessage::from(gsi);
+        raw.version = 2;
+        check_gsi_error(raw, b"FAILUnsupportedVersion");
+    }
+
+    #[test]
+    fn test_fastboot_gsi_invalid_status() {
+        let mut raw = RawMiscGsiMessage::from(MiscGsiMessage::default());
+        raw.status = 0xff;
+        check_gsi_error(raw, b"FAILInvalidInput");
+    }
+
+    #[test]
+    fn test_fastboot_gsi_status() {
+        check_gsi_status(
+            MiscGsiStatus::BootAttempt(0),
+            "dsu",
+            &[b"INFOBootAttempt(0)", b"INFOActive slot: dsu", b"OKAY", b"OKAY"],
+        );
+    }
+
+    #[test]
+    fn test_fastboot_gsi_status_empty_active_slot() {
+        check_gsi_status(
+            MiscGsiStatus::Wipe,
+            "",
+            &[b"INFOWipe", b"INFOActive slot: ", b"OKAY", b"OKAY"],
+        );
+    }
+
+    #[test]
+    fn test_fastboot_gsi_corrupt_active_slot() {
+        // Corrupt `active_slot` (missing NUL terminator) fails cleanly when reading the active DSU
+        // slot without emitting partial `INFO` output.
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootSuccess);
+        let mut raw = RawMiscGsiMessage::from(gsi);
+        raw.active_slot.fill(b'x');
+        check_gsi_error(raw, b"FAILInvalidInput");
+    }
+
+    #[test]
+    fn test_fastboot_gsi_disable() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootAttempt(3));
+        gsi.set_active_slot("dsu").unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+
+        check_fastboot_commands(&mut gbl_ops, &[b"gsi:disable", b"continue"], &[b"OKAY", b"OKAY"]);
+
+        gsi.set_status(MiscGsiStatus::Disabled);
+        assert_eq!(read_misc_gsi_message(&mut gbl_ops), Ok(gsi));
+    }
+
+    #[test]
+    fn test_fastboot_gsi_wipe() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootAttempt(2));
+        gsi.set_active_slot("dsu").unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+
+        check_fastboot_commands(&mut gbl_ops, &[b"gsi:wipe", b"continue"], &[b"OKAY", b"OKAY"]);
+
+        gsi.set_status(MiscGsiStatus::Wipe);
+        assert_eq!(read_misc_gsi_message(&mut gbl_ops), Ok(gsi));
+    }
+
+    #[test]
+    fn test_fastboot_gsi_locked_dsu_locked_device() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = false;
+
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootSuccess);
+        gsi.set_active_slot("dsu.lock").unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"gsi:wipe", b"gsi:disable", b"gsi:status", b"continue"],
+            &[
+                b"FAILCommand not available on locked DSU/devices",
+                b"FAILCommand not available on locked DSU/devices",
+                b"INFOBootSuccess",
+                b"INFOActive slot: dsu.lock",
+                b"OKAY",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(read_misc_gsi_message(&mut gbl_ops).unwrap(), gsi);
+    }
+
+    #[test]
+    fn test_fastboot_gsi_locked_dsu_lock_state_error() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status = avb::IoError::Io.into();
+
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootSuccess);
+        gsi.set_active_slot("dsu.lock").unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"gsi:wipe", b"gsi:disable", b"continue"],
+            &[
+                b"FAILFailed to read lock state: I/O error",
+                b"FAILFailed to read lock state: I/O error",
+                b"OKAY",
+            ],
+        );
+        assert_eq!(read_misc_gsi_message(&mut gbl_ops).unwrap(), gsi);
+    }
+
+    #[test]
+    fn test_fastboot_gsi_locked_dsu_unlocked_device() {
+        let storage = make_gsi_test_storage();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootSuccess);
+        gsi.set_active_slot("dsu.lock").unwrap();
+        write_misc_gsi_message(&mut gbl_ops, gsi).unwrap();
+
+        check_fastboot_commands(
+            &mut gbl_ops,
+            &[b"gsi:disable", b"gsi:wipe", b"continue"],
+            &[b"OKAY", b"OKAY", b"OKAY"],
+        );
+        assert_eq!(
+            read_misc_gsi_message(&mut gbl_ops).unwrap().status(),
+            Ok(Some(MiscGsiStatus::Wipe))
+        );
     }
 }

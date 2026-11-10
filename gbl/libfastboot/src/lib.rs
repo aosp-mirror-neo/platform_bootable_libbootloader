@@ -346,6 +346,30 @@ pub enum CommandExecType {
     Prohibited,
 }
 
+/// Specifies the subcommand for `FastbootImplementation::gsi`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GsiCommand {
+    /// `"fastboot gsi wipe"`. Wipe the installed GSI.
+    Wipe,
+    /// `"fastboot gsi disable"`. Disable the installed GSI.
+    Disable,
+    /// `"fastboot gsi status"`. Query GSI status.
+    Status,
+}
+
+impl TryFrom<&str> for GsiCommand {
+    type Error = Error;
+
+    fn try_from(val: &str) -> Result<Self> {
+        match val {
+            "wipe" => Ok(Self::Wipe),
+            "disable" => Ok(Self::Disable),
+            "status" => Ok(Self::Status),
+            _ => Err(Error::InvalidInput),
+        }
+    }
+}
+
 /// Implementation for Fastboot command backends.
 pub trait FastbootImplementation {
     /// Error type returned by the command backend.
@@ -641,6 +665,18 @@ pub trait FastbootImplementation {
     async fn flashing_get_unlock_ability(
         &mut self,
     ) -> core::result::Result<Unlockability, Self::Error>;
+
+    /// Backend for `fastboot gsi wipe|disable|status`.
+    ///
+    /// # Args
+    ///
+    /// * `cmd`: The [`GsiCommand`] subcommand to execute.
+    /// * `responder`: An instance of [`InfoSender`].
+    async fn gsi(
+        &mut self,
+        cmd: GsiCommand,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
 
     /// Checks whether a command is allowed and if to use custom implementation or default.
     ///
@@ -1376,6 +1412,26 @@ async fn snapshot_update(
     }
 }
 
+/// Handles `fastboot gsi wipe|disable|status`.
+async fn gsi(
+    mut args: Split<'_, char>,
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let cmd = match (args.next(), args.next()) {
+        (Some(sub), None) => match GsiCommand::try_from(sub) {
+            Ok(cmd) => cmd,
+            Err(_) => return reply_fail!(resp, "Invalid arguments"),
+        },
+        _ => return reply_fail!(resp, "Invalid arguments"),
+    };
+    match fb_impl.gsi(cmd, &mut resp).await {
+        Ok(()) => reply_okay!(resp, ""),
+        Err(e) => reply_fail!(resp, "{}", e),
+    }
+}
+
 /// Helper for handling "fastboot oem ...".
 async fn oem(
     cmd: &str,
@@ -1617,6 +1673,7 @@ pub async fn process_next_command(
         "flash" => flash(cmd_str, transport, fb_impl).await,
         "stream-flash" | "stream-fill" => handle_stream_command(cmd_str, transport, fb_impl).await,
         "getvar" => get_var(&mut packet[..], transport, fb_impl).await,
+        "gsi" => gsi(args, transport, fb_impl).await,
         "reboot" => reboot(RebootMode::Normal, transport, fb_impl).await,
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
@@ -1725,6 +1782,8 @@ mod test {
         boot_result: Option<CommandResult<()>>,
         unlockability: Option<Unlockability>,
         last_write_lock_state_call: Option<(LockType, LockState)>,
+        gsi_command: Option<GsiCommand>,
+        gsi_res: Option<CommandResult<()>>,
         command_exec_args: String,
         command_exec_output: Option<OemResponse>,
         command_exec_send_res: Option<Result<()>>,
@@ -1916,6 +1975,11 @@ mod test {
 
         async fn flashing_get_unlock_ability(&mut self) -> CommandResult<Unlockability> {
             self.unlockability.ok_or("Cannot get unlockability".into())
+        }
+
+        async fn gsi(&mut self, cmd: GsiCommand, _responder: impl InfoSender) -> CommandResult<()> {
+            self.gsi_command = Some(cmd);
+            self.gsi_res.take().unwrap_or(Ok(()))
         }
 
         async fn command_exec(
@@ -3006,5 +3070,93 @@ mod test {
             transport.out_queue,
             VecDeque::<Vec<u8>>::from([b"FAILInvalid parameter to snapshot-update".into()])
         );
+    }
+
+    #[test]
+    fn test_gsi_wipe() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(b"gsi:wipe");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+        assert_eq!(fastboot_impl.gsi_command, Some(GsiCommand::Wipe));
+    }
+
+    #[test]
+    fn test_gsi_disable() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(b"gsi:disable");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+        assert_eq!(fastboot_impl.gsi_command, Some(GsiCommand::Disable));
+    }
+
+    #[test]
+    fn test_gsi_status() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(b"gsi:status");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+        assert_eq!(fastboot_impl.gsi_command, Some(GsiCommand::Status));
+    }
+
+    #[test]
+    fn test_gsi_error() {
+        let mut fastboot_impl =
+            FastbootTest { gsi_res: Some(Err("No DSU is installed".into())), ..Default::default() };
+        let mut transport = TestTransport::new();
+        transport.add_input(b"gsi:status");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([b"FAILNo DSU is installed".into()])
+        );
+        assert_eq!(fastboot_impl.gsi_command, Some(GsiCommand::Status));
+    }
+
+    /// Checks that `input` fails with "Invalid arguments" without calling
+    /// `FastbootImplementation::gsi()`.
+    fn check_gsi_invalid_args(input: &[u8]) {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(input);
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([b"FAILInvalid arguments".into()])
+        );
+        assert_eq!(fastboot_impl.gsi_command, None);
+    }
+
+    #[test]
+    fn test_gsi_missing_subcommand() {
+        check_gsi_invalid_args(b"gsi");
+    }
+
+    #[test]
+    fn test_gsi_empty_subcommand() {
+        check_gsi_invalid_args(b"gsi:");
+    }
+
+    #[test]
+    fn test_gsi_unknown_subcommand() {
+        check_gsi_invalid_args(b"gsi:unknown");
+    }
+
+    #[test]
+    fn test_gsi_extra_argument() {
+        check_gsi_invalid_args(b"gsi:wipe:extra");
+    }
+
+    #[test]
+    fn test_gsi_double_separator() {
+        check_gsi_invalid_args(b"gsi::wipe");
+    }
+
+    #[test]
+    fn test_gsi_trailing_separator() {
+        check_gsi_invalid_args(b"gsi:wipe:");
     }
 }

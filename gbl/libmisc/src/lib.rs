@@ -328,19 +328,39 @@ pub enum MiscGsiStatus {
     Wipe,
 }
 
-#[repr(C, packed)]
-#[derive(
-    Copy, Clone, Debug, PartialEq, Eq, Immutable, FromBytes, IntoBytes, KnownLayout, Unaligned,
-)]
-struct RawMiscGsiMessage {
-    version: u8,
-    magic: u32,
-    status: u8,
-    attempt: u8,
-    flags: u32,
-    active_slot: [u8; GSI_ACTIVE_SLOT_FIELD_SIZE],
-    reserved: [u8; 20],
+#[doc(hidden)]
+pub mod test_utils {
+    //! Test utilities to help users of this library write unit tests.
+
+    use super::{
+        FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, GSI_ACTIVE_SLOT_FIELD_SIZE,
+    };
+
+    /// Raw on-disk `misc_gsi_message` layout without header invariants enforced.
+    ///
+    /// Exposed only for unit tests that need to construct or inspect raw messages.
+    #[repr(C, packed)]
+    #[derive(
+        Copy, Clone, Debug, PartialEq, Eq, Immutable, FromBytes, IntoBytes, KnownLayout, Unaligned,
+    )]
+    pub struct RawMiscGsiMessage {
+        /// Structure version (`MISC_GSI_MESSAGE_VERSION`).
+        pub version: u8,
+        /// Magic signature (`MISC_GSI_MAGIC_HEADER`).
+        pub magic: u32,
+        /// Raw GSI install status (`MISC_GSI_STATUS_*`).
+        pub status: u8,
+        /// Boot attempt counter.
+        pub attempt: u8,
+        /// Bitflags (`MISC_GSI_FLAGS_*`).
+        pub flags: u32,
+        /// NUL-terminated active DSU slot name.
+        pub active_slot: [u8; GSI_ACTIVE_SLOT_FIELD_SIZE],
+        /// Reserved padding bytes.
+        pub reserved: [u8; 20],
+    }
 }
+use test_utils::RawMiscGsiMessage;
 
 /// Android GSI message (`misc_gsi_message`) placed in the system space of the `misc` partition.
 ///
@@ -473,6 +493,12 @@ impl Default for MiscGsiMessage {
             magic: Self::MAGIC,
             ..RawMiscGsiMessage::new_zeroed()
         })
+    }
+}
+
+impl From<MiscGsiMessage> for RawMiscGsiMessage {
+    fn from(msg: MiscGsiMessage) -> Self {
+        msg.0
     }
 }
 

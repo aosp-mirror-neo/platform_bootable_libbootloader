@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Helpers for manipulating the bootloader_message (BCB) and Virtual A/B metadata in `misc`.
+//! Helpers for manipulating the bootloader_message (BCB), Virtual A/B and GSI messages in `misc`.
 
 use crate::{partition::check_part_unique, GblOps};
 use gbl_async::yield_now;
@@ -20,11 +20,11 @@ use liberror::{Error, Result};
 use zerocopy::{error::SizeError, FromBytes, FromZeros, IntoBytes};
 
 pub use misc::{
-    AndroidBootMode, BootloaderMessage, MergeStatus, MiscVirtualAbMessage,
-    SYSTEM_SPACE_OFFSET_IN_MISC,
+    AndroidBootMode, BootloaderMessage, MergeStatus, MiscGsiMessage, MiscGsiStatus,
+    MiscVirtualAbMessage, SYSTEM_SPACE_OFFSET_IN_MISC,
 };
 
-/// The partition that contains the bootloader_message (BCB) and Virtual A/B metadata.
+/// The partition that contains the bootloader_message (BCB), Virtual A/B and GSI messages.
 pub(crate) const MISC_PARTITION: &str = "misc";
 
 /// Reads the bootloader_message (BCB) from `misc` partition into a buffer.
@@ -108,6 +108,35 @@ pub async fn write_virtual_ab_message<'a>(
     io.flush().await
 }
 
+/// Reads and validates the `misc_gsi_message` from the `misc` partition.
+///
+/// Note: This performs synchronous partition I/O (`block_on`). Callers in async contexts (such as
+/// fastboot) must ensure any background disk tasks are synced first to avoid blocking on busy disk
+/// resources.
+///
+/// # Returns
+///
+/// * `Ok(MiscGsiMessage)` if a valid GSI message is present in `misc`.
+/// * `Err(Error::BadMagic)` or `Err(Error::UnsupportedVersion)` if the GSI message header is
+///   uninitialized or invalid.
+/// * `Err(_)` on I/O error, e.g. `Err(Error::PartitionNotFound)` if the `misc` partition does not
+///   exist.
+pub fn read_misc_gsi_message<'a>(ops: &mut impl GblOps<'a>) -> Result<MiscGsiMessage> {
+    let mut buf = [0u8; MiscGsiMessage::SIZE_BYTES];
+    ops.read_from_partition_sync(MISC_PARTITION, MiscGsiMessage::OFFSET_IN_MISC, &mut buf[..])?;
+    MiscGsiMessage::try_from(&buf[..])
+}
+
+/// Writes the `misc_gsi_message` to the `misc` partition.
+///
+/// Note: This performs synchronous partition I/O (`block_on`). Callers in async contexts (such as
+/// fastboot) must ensure any background disk tasks are synced first to avoid blocking on busy disk
+/// resources.
+pub fn write_misc_gsi_message<'a>(ops: &mut impl GblOps<'a>, gsi: MiscGsiMessage) -> Result<()> {
+    let mut buf: [u8; MiscGsiMessage::SIZE_BYTES] = gsi.into();
+    ops.write_to_partition_sync(MISC_PARTITION, MiscGsiMessage::OFFSET_IN_MISC, &mut buf[..])
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
@@ -116,6 +145,8 @@ pub(crate) mod test {
         ops::test::{FakeGblOps, FakeGblOpsStorage},
     };
     use gbl_async::block_on;
+
+    pub(crate) use misc::test_utils::RawMiscGsiMessage;
 
     /// Reads the bootloader_message (BCB) from `misc` partition.
     pub(crate) fn read_bootloader_message<'a>(
@@ -192,5 +223,95 @@ pub(crate) mod test {
                 Err(Error::Unsupported)
             );
         }
+    }
+
+    #[test]
+    fn test_read_misc_gsi_message() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        let mut ops = FakeGblOps::new(&storage);
+
+        // Uninitialized misc partition has no valid GSI message.
+        assert_eq!(read_misc_gsi_message(&mut ops), Err(Error::BadMagic));
+
+        let mut expected = MiscGsiMessage::default();
+        expected.set_status(MiscGsiStatus::BootAttempt(2));
+        expected.set_active_slot("gsi").unwrap();
+        ops.write_to_partition_sync(
+            MISC_PARTITION,
+            MiscGsiMessage::OFFSET_IN_MISC,
+            &mut expected.as_bytes().to_vec(),
+        )
+        .unwrap();
+
+        let gsi = read_misc_gsi_message(&mut ops).unwrap();
+        assert_eq!(gsi, expected);
+        assert_eq!(gsi.status(), Ok(Some(MiscGsiStatus::BootAttempt(2))));
+        assert!(gsi.is_dirty());
+        assert_eq!(gsi.active_slot(), Ok("gsi"));
+    }
+
+    #[test]
+    fn test_write_misc_gsi_message() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
+        let mut ops = FakeGblOps::new(&storage);
+
+        let prev_slot_offset = MiscGsiMessage::OFFSET_IN_MISC - (MiscGsiMessage::SIZE_BYTES as u64);
+        let next_slot_offset = MiscGsiMessage::OFFSET_IN_MISC + (MiscGsiMessage::SIZE_BYTES as u64);
+
+        // Populate BCB and adjacent system-space slots to verify write does not clobber them.
+        let mut bcb = BootloaderMessage::new_zeroed();
+        bcb.update_boot_command(AndroidBootMode::Recovery);
+        write_bootloader_message(&mut ops, &mut bcb).unwrap();
+        ops.write_to_partition_sync(MISC_PARTITION, prev_slot_offset, &mut [0xaau8; 64]).unwrap();
+        ops.write_to_partition_sync(MISC_PARTITION, next_slot_offset, &mut [0xbbu8; 64]).unwrap();
+
+        let mut gsi = MiscGsiMessage::default();
+        gsi.set_status(MiscGsiStatus::BootAttempt(1));
+        gsi.set_active_slot("dsu").unwrap();
+        write_misc_gsi_message(&mut ops, gsi).unwrap();
+
+        let mut raw = [0u8; MiscGsiMessage::SIZE_BYTES];
+        ops.read_from_partition_sync(MISC_PARTITION, MiscGsiMessage::OFFSET_IN_MISC, &mut raw[..])
+            .unwrap();
+        assert_eq!(&raw[..], gsi.as_bytes());
+
+        let read_back = read_misc_gsi_message(&mut ops).unwrap();
+        assert_eq!(read_back, gsi);
+
+        // Verify BCB and neighboring system-space slots are intact.
+        assert_eq!(
+            read_bootloader_message(&mut ops).unwrap().boot_mode(),
+            Ok(AndroidBootMode::Recovery)
+        );
+        let mut prev_slot = [0u8; 64];
+        let mut next_slot = [0u8; 64];
+        ops.read_from_partition_sync(MISC_PARTITION, prev_slot_offset, &mut prev_slot[..]).unwrap();
+        ops.read_from_partition_sync(MISC_PARTITION, next_slot_offset, &mut next_slot[..]).unwrap();
+        assert_eq!(prev_slot, [0xaau8; 64]);
+        assert_eq!(next_slot, [0xbbu8; 64]);
+    }
+
+    #[test]
+    fn test_read_write_misc_gsi_message_missing_partition() {
+        let storage = FakeGblOpsStorage::default();
+        let mut ops = FakeGblOps::new(&storage);
+
+        assert_eq!(read_misc_gsi_message(&mut ops), Err(Error::PartitionNotFound));
+        assert_eq!(
+            write_misc_gsi_message(&mut ops, MiscGsiMessage::default()),
+            Err(Error::PartitionNotFound)
+        );
+    }
+
+    #[test]
+    fn test_read_write_misc_gsi_message_partition_too_small() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"misc", [0u8; KiB!(4)]);
+        let mut ops = FakeGblOps::new(&storage);
+
+        assert!(read_misc_gsi_message(&mut ops).is_err());
+        assert!(write_misc_gsi_message(&mut ops, MiscGsiMessage::default()).is_err());
     }
 }
