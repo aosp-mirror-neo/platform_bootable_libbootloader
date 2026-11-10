@@ -25,6 +25,12 @@ rust_library(
     name = "libc",
     srcs = glob(["src/*.rs"]),
     edition = "2021",
+    # libfdt and libufdt call these in hot loops, e.g. when applying device tree
+    # overlays: keep them fast.
+    rustc_flags = [
+        "-C",
+        "opt-level=3",
+    ],
     deps = [
         ":libc_c_staticlib",
         "@gbl//libsafemath",

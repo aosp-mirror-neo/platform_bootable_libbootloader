@@ -201,6 +201,9 @@ gpt_gen(
 
 qemu_test(
     name = "qemu_boot_memory_test",
+    # opt-level=z inlines less, so traces are ~4x larger and converting them to Perfetto
+    # no longer fits reliably in qemu_launcher.py's default 10s timeout.
+    timeout = 30,
     disk = [
         ":test_gpt_no_boot_image",
         ":test_gpt_misc_normal_mode",
@@ -255,6 +258,9 @@ py_binary(
 
 qemu_test(
     name = "qemu_trace_test",
+    # opt-level=z inlines less, so traces are ~4x larger and converting them to Perfetto
+    # no longer fits reliably in qemu_launcher.py's default 10s timeout.
+    timeout = 30,
     disk = [
         ":test_gpt_misc_fastboot_mode",
         ":test_gpt_no_boot_image",
@@ -269,6 +275,9 @@ qemu_test(
 
 qemu_test(
     name = "qemu_trace_pmu_test",
+    # opt-level=z inlines less, so traces are ~4x larger and converting them to Perfetto
+    # no longer fits reliably in qemu_launcher.py's default 10s timeout.
+    timeout = 30,
     disk = [
         ":test_gpt_misc_fastboot_mode",
         ":test_gpt_no_boot_image",

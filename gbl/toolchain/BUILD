@@ -803,7 +803,9 @@ rust_lto_flag(
 
 rustc_opt_flags = ["-C"] + select({
     ":compilation_mode_dbg": ["opt-level=0"],
-    "//conditions:default": ["opt-level=3"],  # Default to enable optimization
+    # Optimize for size. Hot code (compiler_builtins, libc, kernel decompression) overrides it
+    # with opt-level=3.
+    "//conditions:default": ["opt-level=z"],
 })
 
 wait_gdb_switch = select({

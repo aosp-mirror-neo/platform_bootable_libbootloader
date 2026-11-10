@@ -187,7 +187,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
 
     let images = android_load_verified(ops, slot, unlocked, is_recovery, &verify_data)?;
 
-    let kernel_attrs = loader.kernel_load(ops, images.kernel)?;
+    let kernel_attrs = loader.kernel_load(images.kernel)?;
     let mut pvmfw = match images.pvmfw.is_empty() {
         true => None,
         _ => Some(loader.pvmfw_load(

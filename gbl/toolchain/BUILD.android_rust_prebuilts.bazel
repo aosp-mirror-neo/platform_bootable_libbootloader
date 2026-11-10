@@ -102,6 +102,9 @@ rust_library(
     edition = "2024",
     rustc_flags = [
         "--cap-lints=allow",
+        # memcpy/memmove/memset/memcmp are hot and not part of LTO: keep them fast.
+        "-C",
+        "opt-level=3",
     ] + select(
         {
             # This is needed otherwise x64 can't find __gnu_h2f_ieee/__gnu_f2h_ieee symbols.

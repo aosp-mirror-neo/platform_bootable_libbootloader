@@ -593,6 +593,9 @@ gbl_rust_crate_repository(
     rustc_flags = [
         "-A",
         "dead_code",
+        # Kernel decompression: keep it fast.
+        "-C",
+        "opt-level=3",
     ],
 )
 
@@ -1446,6 +1449,11 @@ gbl_rust_crate_repository(
     name = "zune_inflate",
     crate_features = ["gzip"],
     path = "external/rust/android-crates-io/crates/zune-inflate",
+    # Kernel decompression: keep it fast.
+    rustc_flags = [
+        "-C",
+        "opt-level=3",
+    ],
 )
 
 # We don't register GBL toolchains here because they will be masked by toolchains from

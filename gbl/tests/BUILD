@@ -50,6 +50,7 @@ test_suite(
         "@gbl//libbuild_number:libbuild_number_test",
         "@gbl//libc:libc_c_test",
         "@gbl//libc:libc_test",
+        "@gbl//libdecompress:libdecompress_test",
         "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:efi_avb_test",
         "@gbl//libefi:libefi_test",
