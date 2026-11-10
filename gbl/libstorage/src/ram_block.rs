@@ -22,6 +22,7 @@ use core::{
 };
 use gbl_async::yield_now;
 use liberror::Error;
+use libutils::InfallibleCast;
 use safemath::SafeNum;
 
 /// `RamBlockIo` implements [BlockIo] backed by user provided buffer.
@@ -60,7 +61,7 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
     /// Initial state is to perform I/O operations successfully without blocking.
     pub fn new(block_size: u64, alignment: u64, storage: T) -> Self {
         assert_eq!(
-            storage.len() % usize::try_from(block_size).unwrap(),
+            storage.len() % block_size.cast(),
             0,
             "storage size is not multiple of block size, {}, {}",
             storage.len(),
@@ -129,7 +130,7 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
             yield_now().await;
         }
         self.check_custom_error()?;
-        Ok((SafeNum::from(blk_offset) * self.block_size).try_into().unwrap())
+        Ok((SafeNum::from(blk_offset) * self.block_size).try_into()?)
     }
 }
 
@@ -140,7 +141,7 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
         BlockInfo {
             block_size: self.block_size,
             erase_blocks_num: 2,
-            num_blocks: u64::try_from(self.storage.borrow().len()).unwrap() / self.block_size,
+            num_blocks: self.storage.borrow().len().cast() / self.block_size,
             alignment: self.alignment,
         }
     }
@@ -172,9 +173,9 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
             yield_now().await;
         }
         self.check_custom_error()?;
-        let blk_sz = self.info().erase_block_size().unwrap();
-        let off = (SafeNum::from(blk_offset) * blk_sz).try_into().unwrap();
-        let sz = (SafeNum::from(num_blks) * blk_sz).try_into().unwrap();
+        let blk_sz = self.info().erase_block_size()?;
+        let off = (SafeNum::from(blk_offset) * blk_sz).try_into()?;
+        let sz = (SafeNum::from(num_blks) * blk_sz).try_into()?;
 
         // Erases by flipping the bits.
         self.storage.borrow_mut()[off..][..sz].iter_mut().for_each(|v| *v = !*v);

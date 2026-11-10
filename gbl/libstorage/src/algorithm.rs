@@ -224,13 +224,13 @@ async fn write_aligned_offset_and_buffer(
 fn rotate_left(slice: &mut [u8], sz: usize, scratch: &mut [u8]) {
     scratch[..sz].clone_from_slice(&slice[..sz]);
     slice.copy_within(sz.., 0);
-    let off = slice.len().checked_sub(sz).unwrap();
+    let off = slice.len().checked_sub(sz).expect("Rotation size is larger than the buffer");
     slice[off..].clone_from_slice(&scratch[..sz]);
 }
 
 // Rotates buffer to the right.
 fn rotate_right(slice: &mut [u8], sz: usize, scratch: &mut [u8]) {
-    let off = slice.len().checked_sub(sz).unwrap();
+    let off = slice.len().checked_sub(sz).expect("Rotation size is larger than the buffer");
     scratch[..sz].clone_from_slice(&slice[off..]);
     slice.copy_within(..off, sz);
     slice[..sz].clone_from_slice(&scratch[..sz]);
