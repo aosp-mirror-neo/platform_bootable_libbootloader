@@ -43,7 +43,7 @@ pub struct RamBlockIo<T> {
     ///
     /// Private to make sure that tests don't confuse which field is which.
     num_accesses: RefCell<(usize, usize)>,
-    /// Injected error to be returned by the next read/write/erase IO.
+    /// Injected error to be returned by the next read/write/erase/flush IO.
     /// This is a RefCell because BlockIo methods take &self
     /// but need to call `Option::take` on the error as well.
     pub error: RefCell<Option<Error>>,
@@ -179,6 +179,13 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
         // Erases by flipping the bits.
         self.storage.borrow_mut()[off..][..sz].iter_mut().for_each(|v| *v = !*v);
         Ok(())
+    }
+
+    async fn flush(&self) -> Result<(), Error> {
+        for _ in 0..self.yields {
+            yield_now().await;
+        }
+        self.check_custom_error()
     }
 }
 
