@@ -26,6 +26,7 @@ rust_library(
     edition = "2021",
     deps = [
         "@gbl//liberror",
+        "@gbl//libutils",
         "@static_assertions",
         "@zerocopy",
     ],
