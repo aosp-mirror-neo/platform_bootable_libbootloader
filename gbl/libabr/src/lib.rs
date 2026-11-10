@@ -299,9 +299,14 @@ impl AbrSlotData {
         [self.priority, self.tries_remaining, self.successful_boot, self.unbootable_reason]
     }
 
+    /// Returns whether this slot is marked as having booted successfully (non-zero wire value).
+    fn is_marked_successful(&self) -> bool {
+        self.successful_boot != 0
+    }
+
     /// Returns if slot is bootable
     fn is_slot_bootable(&self) -> bool {
-        self.priority > 0 && (self.successful_boot == 1 || self.tries_remaining > 0)
+        self.priority > 0 && (self.is_marked_successful() || self.tries_remaining > 0)
     }
 
     fn set_slot_unbootable(&mut self, reason: UnbootableReason) {
@@ -322,7 +327,7 @@ impl AbrSlotData {
     /// That is priority=0, tries_remaining=0, and successful_boot=0.
     fn slot_normalize(&mut self) {
         if self.priority > 0 {
-            if self.tries_remaining > 0 && self.successful_boot == 1 {
+            if self.tries_remaining > 0 && self.is_marked_successful() {
                 // Illegal state. Reset to not successful state
                 self.tries_remaining = ABR_MAX_TRIES_REMAINING;
                 self.successful_boot = 0;
@@ -600,7 +605,7 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
     match slot_to_boot {
         SlotIndex::R => {}
         v => {
-            is_slot_marked_successful = abr_data.slot_data(v).successful_boot == 1;
+            is_slot_marked_successful = abr_data.slot_data(v).is_marked_successful();
         }
     };
 
@@ -622,7 +627,7 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
         // "successful_boot", which would prevent the system from automatically booting into
         // recovery.
         for slot in [SlotIndex::A, SlotIndex::B] {
-            if slot != slot_to_boot && abr_data.slot_data(slot).successful_boot == 1 {
+            if slot != slot_to_boot && abr_data.slot_data(slot).is_marked_successful() {
                 abr_data.slot_data_mut(slot).tries_remaining = ABR_MAX_TRIES_REMAINING;
                 abr_data.slot_data_mut(slot).successful_boot = 0;
             }
@@ -745,7 +750,7 @@ pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<Slo
         },
         _ => {
             let slot_data = abr_data.slot_data(slot_index);
-            let state = match slot_data.successful_boot == 1 {
+            let state = match slot_data.is_marked_successful() {
                 true => SlotState::Successful,
                 _ if slot_data.is_slot_bootable() => SlotState::Bootable(slot_data.tries_remaining),
                 _ => SlotState::Unbootable(slot_data.unbootable_reason.into()),
@@ -826,5 +831,31 @@ mod test {
         set_one_shot_recovery(&mut meta, true).unwrap();
         assert!(get_and_clear_one_shot_bootloader(&mut meta).unwrap());
         assert_eq!(get_and_clear_one_shot_flag(&mut meta).unwrap(), ONE_SHOT_RECOVERY);
+    }
+
+    #[test]
+    fn test_nonzero_successful_boot() {
+        let mut data = AbrData::default();
+        data.slot_data[0] = AbrSlotData {
+            priority: ABR_MAX_PRIORITY,
+            tries_remaining: 0,
+            successful_boot: 0xff,
+            unbootable_reason: 0,
+        };
+        let mut meta = data.serialize();
+        assert_eq!(
+            get_slot_info(&mut meta, SlotIndex::A).unwrap(),
+            SlotInfo { state: SlotState::Successful, is_active: true }
+        );
+        assert_eq!(get_boot_slot(&mut meta, true), (SlotIndex::A, true));
+
+        // Non-zero successful_boot alongside non-zero tries_remaining is normalized back to
+        // bootable with max tries remaining and successful_boot cleared.
+        data.slot_data[0].tries_remaining = 3;
+        let mut meta_contradictory = data.serialize();
+        assert_eq!(
+            get_slot_info(&mut meta_contradictory, SlotIndex::A).unwrap(),
+            SlotInfo { state: SlotState::Bootable(ABR_MAX_TRIES_REMAINING), is_active: true }
+        );
     }
 }

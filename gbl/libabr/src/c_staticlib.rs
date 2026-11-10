@@ -219,7 +219,7 @@ impl Ops for AbrOpsSafe<'_> {
                     abr_data.one_shot_flags,
                 )
             } {
-                false => Err("read_abr_metadata_custom() failed".into()),
+                false => Err("write_abr_metadata_custom() failed".into()),
                 _ => Ok(()),
             }
         } else {
