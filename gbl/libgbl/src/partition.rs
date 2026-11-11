@@ -223,6 +223,14 @@ where
         self.is_gpt
     }
 
+    /// Returns whether the disk is a GPT device that currently holds a valid GPT.
+    pub fn has_valid_gpt(&self) -> bool {
+        match self.partitions.try_borrow().ok().as_deref() {
+            Some(PartitionTable::Gpt(gpt)) => gpt.partition_iter().is_ok(),
+            _ => false,
+        }
+    }
+
     /// Gets the cached `BlockInfo`.
     pub fn block_info(&self) -> BlockInfo {
         self.info_cache
@@ -992,11 +1000,19 @@ pub(crate) mod test {
     #[test]
     fn test_partition_iter() {
         let raw = raw_disk(c"raw", vec![0u8; 1024]);
+        assert!(!raw.is_gpt());
+        assert!(!raw.has_valid_gpt());
         assert_eq!(raw.num_partitions().unwrap(), 1);
         assert_eq!(raw.get_partition_by_idx(0).unwrap().name(), Ok("raw"));
         assert_eq!(raw.get_partition_by_idx(0).unwrap().size(), Ok(1024));
 
+        let unformatted = gpt_disk(vec![0u8; 64 * 1024]);
+        assert!(unformatted.is_gpt());
+        assert!(!unformatted.has_valid_gpt());
+
         let gpt = gpt_disk(include_bytes!("../../libstorage/test/gpt_test_1.bin"));
+        assert!(gpt.is_gpt());
+        assert!(gpt.has_valid_gpt());
         block_on(gpt.sync_gpt()).unwrap();
         assert_eq!(gpt.num_partitions().unwrap(), 2);
         assert_eq!(gpt.get_partition_by_idx(0).unwrap().name().unwrap(), "boot_a");
