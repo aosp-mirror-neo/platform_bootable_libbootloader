@@ -22,6 +22,7 @@ def rust_crate_build_file(
         proc_macro_deps = [],
         features = [],
         edition = "2021",
+        version = "0.0.0",
         rustc_flags = [],
         compile_data = [],
         rustc_env = [],
@@ -41,6 +42,7 @@ def rust_crate_build_file(
         proc_macro_deps (List of strings): The `proc_macro_deps` field.
         features (List of strings): The `features` field.
         edition (String): Rust edition.
+        version (String): Crate version, used for the `CARGO_PKG_VERSION*` environment variables.
         rustc_flags (List of strings): The `rustc_flags` field.
         compile_data (List of strings): The `compile_data` field.
         rustc_env (List of strings): The `rustc_env` field.
@@ -73,6 +75,7 @@ generate_license(
     srcs = glob(["**/*.rs"]),
     crate_features = {features},
     edition = "{edition}",
+    version = "{version}",
     compile_data = {compile_data},
     rustc_flags = {rustc_flags},
     visibility = ["//visibility:public"],
@@ -91,6 +94,7 @@ generate_license(
         aliases = aliases_str,
         proc_macro_deps = proc_macro_deps,
         edition = edition,
+        version = version,
         rule = rule,
         compile_data = compile_data,
         license_bsd_type = license_bsd_type,

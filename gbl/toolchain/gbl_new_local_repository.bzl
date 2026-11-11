@@ -144,6 +144,10 @@ gbl_new_local_repository = repository_rule(
 # matches both Cargo's and rustc's default.
 _DEFAULT_CARGO_EDITION = "2015"
 
+# Version for a crate whose Cargo.toml doesn't declare one. This matches both
+# Cargo's and rules_rust's default.
+_DEFAULT_CARGO_VERSION = "0.0.0"
+
 def _cargo_edition(repo_ctx):
     """Returns the Rust edition declared in the crate's Cargo.toml.
 
@@ -153,27 +157,71 @@ def _cargo_edition(repo_ctx):
     Returns:
         The edition string, e.g. "2021", or `_DEFAULT_CARGO_EDITION` if the
         crate doesn't declare one.
+    """
+    return _cargo_package_value(
+        repo_ctx,
+        "edition",
+        _get_quoted_year,
+        "a quoted year",
+    ) or _DEFAULT_CARGO_EDITION
 
-    Fails if Cargo.toml has no `[package]` section, or declares the edition in
-    any form other than a quoted 4-digit year (e.g. `edition.workspace = true`).
+def _cargo_version(repo_ctx):
+    """Returns the version declared in the crate's Cargo.toml.
+
+    rules_rust sets the `CARGO_PKG_VERSION*` environment variables from it.
+    Some crates need the real value, e.g. thiserror-impl and serde_derive name
+    the pregenerated `__private<CARGO_PKG_VERSION_PATCH>` module of their
+    runtime crate after it.
+
+    Args:
+        repo_ctx: `repository_rule` context for the crate repo.
+
+    Returns:
+        The version without build metadata, e.g. "1.1.8" for "1.1.8+spec-1.1.0",
+        or `_DEFAULT_CARGO_VERSION` if the crate doesn't declare one.
+    """
+    return _cargo_package_value(
+        repo_ctx,
+        "version",
+        _get_quoted_version,
+        "a quoted MAJOR.MINOR.PATCH version",
+    ) or _DEFAULT_CARGO_VERSION
+
+def _cargo_package_value(repo_ctx, key, parse, expected):
+    """Returns a value from the `[package]` section of the crate's Cargo.toml.
+
+    Args:
+        repo_ctx: `repository_rule` context for the crate repo.
+        key: The `[package]` key to read, e.g. "edition".
+        parse: Function that returns the parsed TOML value, or None if the value
+            isn't in the expected form.
+        expected: Description of the expected form, for error messages.
+
+    Returns:
+        `parse(value)` for the declared value, or None if the crate doesn't
+        declare `key`.
+
+    Fails if Cargo.toml has no `[package]` section, or declares `key` in any
+    form that `parse` rejects (e.g. `edition.workspace = true`).
     """
     source_dir = repo_ctx.workspace_root.get_child(repo_ctx.attr.path)
     if not source_dir.exists:
         # Some source dirs are optional and may be absent from the checkout.
-        # The generated repo then has no sources, so the edition is irrelevant.
-        return _DEFAULT_CARGO_EDITION
+        # The generated repo then has no sources, so the value is irrelevant.
+        return None
 
     # We don't build with Cargo, but every vendored crate ships a Cargo.toml
-    # and it's the source of truth for the edition the crate is written for.
+    # and it's the source of truth for the crate's package metadata.
     cargo_toml = source_dir.get_child("Cargo.toml")
     if not cargo_toml.exists:
-        fail("{}: {} has no Cargo.toml to read the Rust edition from".format(
+        fail("{}: {} has no Cargo.toml to read the `{}` from".format(
             repo_ctx.original_name,
             repo_ctx.attr.path,
+            key,
         ))
 
     # This is not a full TOML parser; it only understands the simple
-    # `edition = "YYYY"` form used by vendored (Cargo-normalized) crates and
+    # `key = "value"` form used by vendored (Cargo-normalized) crates and
     # fails on anything else rather than guessing.
     section = None
     has_package = False
@@ -189,34 +237,34 @@ def _cargo_edition(repo_ctx):
         if section != "[package]":
             continue
 
-        key, sep, value = line.partition("=")
+        line_key, sep, value = line.partition("=")
         if not sep:
             continue
-        key = _remove_toml_whitespace(key)
+        line_key = _remove_toml_whitespace(line_key)
 
-        if key.startswith("edition."):
+        if line_key.startswith(key + "."):
             # e.g. `edition.workspace = true`.
-            _cargo_edition_fail(repo_ctx, cargo_toml, "unsupported key `{}`".format(key))
+            _cargo_toml_fail(repo_ctx, cargo_toml, "unsupported key `{}`".format(line_key))
 
-        if key == "edition":
+        if line_key == key:
             value = value.strip()
-            year = _get_quoted_year(value)
-            if year == None:
+            parsed = parse(value)
+            if parsed == None:
                 # e.g. `edition = { workspace = true }` or a trailing comment.
-                _cargo_edition_fail(
+                _cargo_toml_fail(
                     repo_ctx,
                     cargo_toml,
-                    "unsupported edition value `{}`, expected a quoted year".format(value),
+                    "unsupported {} value `{}`, expected {}".format(key, value, expected),
                 )
-            return year
+            return parsed
 
     if not has_package:
-        _cargo_edition_fail(repo_ctx, cargo_toml, "no [package] section")
+        _cargo_toml_fail(repo_ctx, cargo_toml, "no [package] section")
 
-    return _DEFAULT_CARGO_EDITION
+    return None
 
-def _cargo_edition_fail(repo_ctx, cargo_toml, reason):
-    """Fails with a `_cargo_edition` parse error for the given Cargo.toml."""
+def _cargo_toml_fail(repo_ctx, cargo_toml, reason):
+    """Fails with a parse error for the given Cargo.toml."""
     fail("{}: {}: {}".format(repo_ctx.original_name, cargo_toml, reason))
 
 def _remove_toml_whitespace(s):
@@ -232,6 +280,23 @@ def _get_quoted_year(value):
         return value[1:-1]
     return None
 
+def _get_quoted_version(value):
+    """Returns the version in TOML string `value`, or None if it isn't one.
+
+    Accepts "MAJOR.MINOR.PATCH" with an optional "-PRE" suffix. Drops "+BUILD"
+    metadata, which rules_rust would otherwise split into the patch version.
+    """
+    if len(value) < 2 or value[0] not in ("\"", "'") or value[-1] != value[0]:
+        return None
+    version = value[1:-1].partition("+")[0]
+    numbers = version.partition("-")[0].split(".")
+    if len(numbers) != 3:
+        return None
+    for number in numbers:
+        if not number.isdigit():
+            return None
+    return version
+
 def _gbl_rust_crate_repository_impl(repo_ctx):
     _gbl_new_local_repository_common_impl(
         repo_ctx,
@@ -244,6 +309,7 @@ def _gbl_rust_crate_repository_impl(repo_ctx):
             proc_macro_deps = repo_ctx.attr.proc_macro_deps,
             features = repo_ctx.attr.crate_features,
             edition = _cargo_edition(repo_ctx),
+            version = _cargo_version(repo_ctx),
             rustc_flags = repo_ctx.attr.rustc_flags,
             rustc_env = repo_ctx.attr.rustc_env,
             compile_data = repo_ctx.attr.compile_data,
