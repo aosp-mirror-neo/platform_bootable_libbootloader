@@ -43,6 +43,19 @@ pub use gpt::{
     GPT_MAGIC, GPT_MAX_NUM_ENTRIES, GPT_MIN_NUM_ENTRIES, GPT_NAME_LEN_U16,
 };
 
+macro_rules! try_until_resources_available {
+    ($check:expr) => {
+        loop {
+            let res = $check.await;
+            if res == Err($crate::Error::OutOfResources) {
+                $crate::yield_now().await;
+            } else {
+                break res;
+            }
+        }
+    };
+}
+
 mod algorithm;
 use algorithm::{erase_async, read_async, write_async};
 
@@ -452,19 +465,6 @@ impl<T: BlockIo, const N: usize, B: FromIterator<u8> + DerefMut<Target = [u8]>>
     }
 }
 
-macro_rules! try_until_resources_available {
-    ($check:expr) => {
-        loop {
-            let res = $check.await;
-            if res == Err(Error::OutOfResources) {
-                yield_now().await;
-            } else {
-                return res;
-            }
-        }
-    };
-}
-
 impl<T: BlockIo, P: BufferPool> Disk<T, P> {
     /// Creates a new instance with the given IO and scratch buffer pool.
     ///
@@ -508,8 +508,7 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
     /// * Returns success when exactly `out.len()` number of bytes are read.
     pub async fn read<'a>(&self, offset: u64, out: impl Into<&'a mut UninitSlice>) -> Result<()> {
         let mut scratch = self.pool.allocate_async().await;
-        let out = out.into();
-        try_until_resources_available!(read_async(&self.io, offset, &mut *out, &mut scratch))
+        read_async(&self.io, offset, out, &mut scratch).await
     }
 
     /// Writes data to the device.
@@ -524,7 +523,7 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
     /// * Returns success when exactly `data.len()` number of bytes are written.
     pub async fn write(&self, offset: u64, data: &mut [u8]) -> Result<()> {
         let mut scratch = self.pool.allocate_async().await;
-        try_until_resources_available!(write_async(&self.io, offset, data, &mut scratch))
+        write_async(&self.io, offset, data, &mut scratch).await
     }
 
     /// Fills a disk range with the given byte value
@@ -584,13 +583,7 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
     /// * Return Err(Error::BufferTooSmall(_)) if `scratch` is less than block size.
     pub async fn erase(&self, offset: u64, size: u64, erase_scratch: &mut [u8]) -> Result<()> {
         let mut scratch = self.pool.allocate_async().await;
-        try_until_resources_available!(erase_async(
-            &self.io,
-            offset,
-            size,
-            erase_scratch,
-            &mut scratch
-        ))
+        erase_async(&self.io, offset, size, erase_scratch, &mut scratch).await
     }
 
     /// Loads and syncs GPT from a block device.
@@ -673,7 +666,7 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
 
     /// Flushes modified data to the physical block device.
     pub async fn flush(&self) -> Result<()> {
-        self.io.flush().await
+        try_until_resources_available!(self.io.flush())
     }
 
     /// Flushes modified data to the physical block device synchronously.
@@ -1300,6 +1293,77 @@ mod test {
             assert!(future.await.is_ok());
             disk.read(0, buf.as_mut_slice()).await.unwrap();
             assert_eq!(buf, vec![0u8; buf.len()]);
+
+            // Same check for flush.
+            *disk.io().error.borrow_mut() = Some(Error::OutOfResources);
+            let mut future = Box::pin(disk.flush());
+            assert_eq!(poll(&mut future), None);
+            assert!(future.await.is_ok());
         });
+    }
+
+    #[test]
+    fn test_queue_exhaustion_mid_unaligned_io() {
+        let init_storage = || (0..KiB!(4)).map(|i| (i % 251) as u8).collect::<Vec<u8>>();
+        let offset = 513u64;
+        let len = KiB!(1);
+
+        // 1. Unaligned read across 3 blocks: OutOfResources on the 2nd read_blocks() must not
+        // repeat the completed 1st read_blocks().
+        let mut disk = TestDisk::new_ram_alloc(512, 64, init_storage()).unwrap();
+        disk.io_mut().set_blocking(true);
+        let mut out: AlignedBuffer<u8> = AlignedBuffer::new(len, 64);
+        {
+            let mut fut = Box::pin(disk.read(offset, &mut out[..]));
+            while disk.io().num_reads() == 0 {
+                assert_eq!(poll(&mut fut), None);
+            }
+            *disk.io().error.borrow_mut() = Some(Error::OutOfResources);
+            block_on(fut).unwrap();
+        }
+        assert!(disk.io().error.borrow().is_none());
+        assert_eq!(disk.io().num_reads(), 3);
+        assert_eq!(&out[..], &init_storage()[offset as usize..][..len]);
+
+        // 2. Unaligned write with in-place buffer rotation (2 reads, 3 writes): OutOfResources on
+        // the 2nd BlockIo call must not repeat the 1st write_blocks() or corrupt the caller buffer.
+        let mut disk = TestDisk::new_ram_alloc(512, 64, init_storage()).unwrap();
+        disk.io_mut().set_blocking(true);
+        let payload: Vec<u8> = (0..len).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let mut buf: AlignedBuffer<u8> = AlignedBuffer::new(len, 64);
+        buf.copy_from_slice(&payload);
+        {
+            let mut fut = Box::pin(disk.write(offset, &mut buf[..]));
+            while disk.io().num_writes() == 0 {
+                assert_eq!(poll(&mut fut), None);
+            }
+            *disk.io().error.borrow_mut() = Some(Error::OutOfResources);
+            block_on(fut).unwrap();
+        }
+        assert!(disk.io().error.borrow().is_none());
+        assert_eq!((disk.io().num_reads(), disk.io().num_writes()), (2, 3));
+        assert_eq!(&buf[..], payload.as_slice());
+        assert_eq!(&disk.io().storage()[offset as usize..][..len], payload.as_slice());
+
+        // 3. Unaligned erase spanning 1 full erase block (1024 B) + 1 trailing byte: RamBlockIo
+        // erases by flipping bits, so repeating erase_blocks(0, 1) on retry would flip [0..1024)
+        // back to its original un-erased bytes.
+        let orig = init_storage();
+        let mut disk = TestDisk::new_ram_alloc(512, 64, orig.clone()).unwrap();
+        disk.io_mut().set_blocking(true);
+        let erase_blk_sz = usize::try_from(disk.block_info().erase_block_size().unwrap()).unwrap();
+        let mut erase_scratch: AlignedBuffer<u8> = AlignedBuffer::new(erase_blk_sz, 64);
+        {
+            let mut fut = Box::pin(disk.erase(0, 1025, &mut erase_scratch[..]));
+            while disk.io().storage()[0] == orig[0] {
+                assert_eq!(poll(&mut fut), None);
+            }
+            *disk.io().error.borrow_mut() = Some(Error::OutOfResources);
+            block_on(fut).unwrap();
+        }
+        assert!(disk.io().error.borrow().is_none());
+        let expected_erased: Vec<u8> = orig[..1025].iter().map(|v| !*v).collect();
+        assert_eq!(&disk.io().storage()[..1025], expected_erased.as_slice());
+        assert_eq!(&disk.io().storage()[1025..], &orig[1025..]);
     }
 }

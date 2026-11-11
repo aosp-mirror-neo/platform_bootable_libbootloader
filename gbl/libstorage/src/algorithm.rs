@@ -27,7 +27,7 @@ async fn read_aligned_all<'a>(
 ) -> Result<()> {
     let out = out.into();
     let blk_offset = check_range(io.info(), offset, &mut *out)?.try_into()?;
-    io.read_blocks(blk_offset, out).await
+    try_until_resources_available!(io.read_blocks(blk_offset, &mut *out))
 }
 
 /// Read with block-aligned offset and aligned buffer. Size don't need to be block aligned.
@@ -184,7 +184,7 @@ pub(crate) async fn read_async<'a>(
 /// Write bytes from aligned buffer to a block boundary range.
 async fn write_aligned_all(io: &impl BlockIo, offset: u64, data: &mut [u8]) -> Result<()> {
     let blk_offset = check_range(io.info(), offset, &mut *data)?.try_into()?;
-    io.write_blocks(blk_offset, data).await
+    try_until_resources_available!(io.write_blocks(blk_offset, data))
 }
 
 /// Write with block-aligned offset and aligned buffer. `data.len()` can be unaligned.
@@ -363,7 +363,9 @@ pub(crate) async fn erase_async(
     let right = end.round_down(blk_sz).try_into()?;
     let left = off.round_up(blk_sz).try_into()?;
     if left < right {
-        io.erase_blocks(left / blk_sz_u64, (right - left) / blk_sz_u64).await?;
+        try_until_resources_available!(
+            io.erase_blocks(left / blk_sz_u64, (right - left) / blk_sz_u64)
+        )?;
     }
 
     // Erases leading and trailing partial block.
@@ -382,7 +384,7 @@ pub(crate) async fn erase_async(
         read_async(io, start_l, &mut scratch[..size_l], &mut alignment_scratch[..]).await?;
         read_async(io, end, &mut scratch[off_r..], &mut alignment_scratch[..]).await?;
         // Erases the block.
-        io.erase_blocks(start_l / blk_sz_u64, 1).await?;
+        try_until_resources_available!(io.erase_blocks(start_l / blk_sz_u64, 1))?;
         // Read back the erased part of the block. This is necessary because the erased state
         // can be implementation specific and not necessarily, for example, 0.
         read_async(io, start, &mut scratch[size_l..off_r], &mut alignment_scratch[..]).await?;
