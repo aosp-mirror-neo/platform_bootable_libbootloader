@@ -431,7 +431,11 @@ the command; for `flash` and `erase` commands, GBL then best-effort re-reads GPT
 partition tables across existing GPT block devices (`EFI_BLOCK_IO_MEDIA`
 geometry remains cached from boot).
 
-Following commands cannot be overridden:
+The following commands cannot be overridden with
+`GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_CUSTOM_IMPL` (they are still passed to
+`CommandExec()` and may only return
+`GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_DEFAULT_IMPL` or
+`GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_PROHIBITED`):
 
 <!-- LINT.IfChange -->
 
