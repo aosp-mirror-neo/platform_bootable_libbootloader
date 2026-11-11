@@ -1076,12 +1076,12 @@ gbl_rust_crate_repository(
     path = "external/rust/android-crates-io/crates/thiserror-impl",
     rule = "rust_proc_macro",
     rustc_env = {
-        # Android uses a pregenerated `_private18` module named after the
+        # Android uses a pregenerated `__private21` module named after the
         # `CARGO_PKG_VERSION_PATCH`. Thus we need to set the right version so that
         # the derive processor code, which uses
         # `__private<CARGO_PKG_VERSION_PATCH>` to search for the private
         # module, can find it.
-        "CARGO_PKG_VERSION_PATCH": "18",
+        "CARGO_PKG_VERSION_PATCH": "21",
     },
     deps = [
         "@proc_macro2",
