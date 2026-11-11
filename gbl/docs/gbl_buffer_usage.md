@@ -12,34 +12,37 @@ various boot images such as kernel, ramdisk, FDT and pvmfw.
 
 GBL uses this buffer for:
 
-1. Assembling images that do not have a dedicated load buffer. (See below for
-   image specific load buffers).
-2. Temporary scratch buffers for reading BCB boot mode, relocating DT components
-   etc.
+1. Passing fastboot boot items (command line and bootconfig additions).
+2. Temporary scratch buffers for reading BCB boot mode etc.
+3. Relocating DT components that are not 8-byte aligned (from the dtb and dtbo
+   partitions and boot image DTB sections). The buffer should fit all of them.
 
 GBL queries the buffer by calling
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
 `BootBufferType` set to `GENERAL_LOAD`. If buffer is not provided, GBL allocates
-a default 256MB memory via EFI allocation.
+a default 16MB memory via EFI allocation.
 
 ### Kernel Load Buffer
 
 GBL uses this buffer for placing the kernel image (after decompression) from the
-Android Boot image. This will also be the buffer GBL boots OS from.
+Android Boot image. This will also be the buffer GBL boots OS from. On aarch64
+and riscv64, the buffer must be at least the kernel header's `image_size`, which
+includes BSS.
 
 GBL queries the buffer by calling
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
-`BootBufferType` set to `KERNEL`. The buffer is optional. If not provided, GBL
-will look for space from the general load buffer.
+`BootBufferType` set to `KERNEL`. If buffer is not provided, GBL allocates a
+default 128MB memory via EFI allocation.
 
 ### Ramdisk Load Buffer
 
-GBL uses this buffer for assembling ramdisk image for boot.
+GBL uses this buffer for assembling ramdisk image and bootconfig (including
+fastboot bootconfig additions) for boot.
 
 GBL queries the buffer by calling
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
-`BootBufferType` set to `RAMDISK`. The buffer is optional. If not provided, GBL
-will look for space from the general load buffer.
+`BootBufferType` set to `RAMDISK`. If buffer is not provided, GBL allocates a
+default 96MB memory via EFI allocation.
 
 ### FDT Load Buffer
 
@@ -47,8 +50,8 @@ GBL uses this buffer for constructing and fixing up the final FDT for boot.
 
 GBL queries the buffer by calling
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
-`BootBufferType` set to `FDT`. The buffer is optional. If not provided, GBL will
-look for space from the general load buffer.
+`BootBufferType` set to `FDT`. If buffer is not provided, GBL allocates a
+default 4MB memory via EFI allocation.
 
 ### Pvmfw Load Buffer
 
@@ -56,8 +59,8 @@ GBL uses this buffer for assembling the pvmfw image.
 
 GBL queries the buffer by calling
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
-`BootBufferType` set to `PVMFW_DATA`. The buffer is optional. If not provided,
-GBL will look for space from the general load buffer.
+`BootBufferType` set to `PVMFW_DATA`. If buffer is not provided, GBL allocates a
+default 16MB memory via EFI allocation.
 
 ### Fastboot Download Buffer
 

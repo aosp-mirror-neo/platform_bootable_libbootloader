@@ -50,19 +50,6 @@ impl<'a> BootConfigBuilder<'a> {
         Ok(ret)
     }
 
-    /// Initializes from a given buffer with an existing bootconfig.
-    ///
-    /// # Args
-    ///
-    /// * `buffer`: The buffer containing an existing bootconfig.
-    /// * `size`: The size including trailer.
-    pub fn from_prefix_unchecked(buffer: &'a mut [u8], size: usize) -> Result<Self> {
-        Ok(Self {
-            buffer,
-            current_size: size.checked_sub(BOOTCONFIG_TRAILER_SIZE).ok_or(Error::InvalidInput)?,
-        })
-    }
-
     /// Get the remaining capacity for adding new bootconfig.
     pub fn remaining_capacity(&self) -> usize {
         self.buffer
