@@ -94,17 +94,6 @@ gbl_rust_crate_repository(
     ],
 )
 
-gbl_rust_crate_repository(
-    name = "async_trait",
-    path = "external/rust/android-crates-io/crates/async-trait",
-    rule = "rust_proc_macro",
-    deps = [
-        "@proc_macro2",
-        "@quote",
-        "@syn",
-    ],
-)
-
 gbl_new_local_repository(
     name = "avb",
     build_file = "@gbl//libavb:BUILD.avb.bazel",
@@ -232,28 +221,6 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
-    name = "config",
-    crate_features = [
-        "json",
-        "serde_json",
-        "toml",
-        "yaml",
-        "yaml-rust",
-    ],
-    path = "external/rust/android-crates-io/crates/config",
-    proc_macro_deps = ["@async_trait"],
-    deps = [
-        "@lazy_static",
-        "@nom",
-        "@pathdiff",
-        "@serde",
-        "@serde_json",
-        "@toml",
-        "@yaml_rust",
-    ],
-)
-
-gbl_rust_crate_repository(
     name = "const_fn",
     path = "external/rust/android-crates-io/crates/const_fn",
     rule = "rust_proc_macro",
@@ -280,13 +247,6 @@ gbl_rust_crate_repository(
         "default",
         "use_std",
     ],
-    path = "external/rust/android-crates-io/crates/either",
-)
-
-gbl_rust_crate_repository(
-    name = "either_noalloc",
-    crate_features = [],
-    crate_name = "either",
     path = "external/rust/android-crates-io/crates/either",
 )
 
@@ -367,11 +327,6 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
-    name = "flagset",
-    path = "external/rust/android-crates-io/crates/flagset",
-)
-
-gbl_rust_crate_repository(
     name = "foldhash",
     crate_features = [
         "default",
@@ -434,6 +389,7 @@ gbl_rust_crate_repository(
     path = "external/rust/android-crates-io/crates/heck",
 )
 
+# Not used by GBL itself, but by @zbi//:zbi_test (prebuilts/fuchsia_sdk/BUILD.bazel).
 gbl_rust_crate_repository(
     name = "hex",
     crate_features = [
@@ -471,18 +427,6 @@ gbl_rust_crate_repository(
         "dead_code",
     ],
     deps = ["@either"],
-)
-
-gbl_rust_crate_repository(
-    name = "itertools_noalloc",
-    crate_features = [],
-    crate_name = "itertools",
-    path = "external/rust/android-crates-io/crates/itertools",
-    rustc_flags = [
-        "-A",
-        "dead_code",
-    ],
-    deps = ["@either_noalloc"],
 )
 
 gbl_rust_crate_repository(
@@ -548,11 +492,6 @@ gbl_new_local_repository(
     name = "libufdt_c",
     build_file = "@gbl//libfdt:BUILD.libufdt_c.bazel",
     path = "external/libufdt",
-)
-
-gbl_rust_crate_repository(
-    name = "linked_hash_map",
-    path = "external/rust/android-crates-io/crates/linked-hash-map",
 )
 
 gbl_new_local_repository(
@@ -626,15 +565,6 @@ gbl_rust_crate_repository(
 gbl_rust_crate_repository(
     name = "memoffset",
     path = "external/rust/android-crates-io/crates/memoffset",
-)
-
-gbl_rust_crate_repository(
-    name = "minimal_lexical",
-    crate_features = [
-        "default",
-        "std",
-    ],
-    path = "external/rust/android-crates-io/crates/minimal-lexical",
 )
 
 gbl_new_local_repository(
@@ -716,15 +646,6 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
-    name = "nom",
-    path = "external/rust/android-crates-io/crates/nom",
-    deps = [
-        "@memchr",
-        "@minimal_lexical",
-    ],
-)
-
-gbl_rust_crate_repository(
     name = "once_cell",
     crate_features = [
         "alloc",
@@ -762,11 +683,6 @@ gbl_rust_crate_repository(
         "@libc",
         "@smallvec",
     ],
-)
-
-gbl_rust_crate_repository(
-    name = "pathdiff",
-    path = "external/rust/android-crates-io/crates/pathdiff",
 )
 
 gbl_rust_crate_repository(
@@ -1075,26 +991,6 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
-    name = "toml",
-    crate_features = [
-        "default",
-        "display",
-        "parse",
-        "serde",
-        "std",
-    ],
-    path = "external/rust/android-crates-io/crates/toml",
-    deps = [
-        "@serde_core",
-        "@serde_spanned",
-        "@toml_datetime",
-        "@toml_parser",
-        "@toml_writer",
-        "@winnow",
-    ],
-)
-
-gbl_rust_crate_repository(
     name = "toml_datetime",
     crate_features = [
         "alloc",
@@ -1369,12 +1265,6 @@ gbl_rust_crate_repository(
         "@bitflags",
         "@volatile",
     ],
-)
-
-gbl_rust_crate_repository(
-    name = "yaml_rust",
-    path = "external/rust/android-crates-io/crates/yaml-rust",
-    deps = ["@linked_hash_map"],
 )
 
 local_repository(
