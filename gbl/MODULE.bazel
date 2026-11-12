@@ -86,12 +86,6 @@ gbl_new_local_repository(
 gbl_rust_crate_repository(
     name = "arrayvec",
     path = "external/rust/android-crates-io/crates/arrayvec",
-    rustc_flags = [
-        "-A",
-        "dead_code",
-        "-A",
-        "mismatched_lifetime_syntaxes",
-    ],
 )
 
 gbl_new_local_repository(
@@ -422,10 +416,6 @@ gbl_rust_crate_repository(
         "use_alloc",
     ],
     path = "external/rust/android-crates-io/crates/itertools",
-    rustc_flags = [
-        "-A",
-        "dead_code",
-    ],
     deps = ["@either"],
 )
 
@@ -469,10 +459,6 @@ gbl_rust_crate_repository(
     name = "ciborium_ll",
     crate_features = [],
     path = "external/rust/android-crates-io/crates/ciborium-ll",
-    rustc_flags = [
-        "-A",
-        "mismatched_lifetime_syntaxes",
-    ],
     deps = [
         "@ciborium_io",
         "@half",
@@ -529,10 +515,8 @@ gbl_rust_crate_repository(
     name = "lz4_flex",
     crate_features = ["safe-decode"],
     path = "external/rust/android-crates-io/crates/lz4_flex",
+    # Kernel decompression: keep it fast.
     rustc_flags = [
-        "-A",
-        "dead_code",
-        # Kernel decompression: keep it fast.
         "-C",
         "opt-level=3",
     ],
@@ -542,14 +526,6 @@ gbl_rust_crate_repository(
     name = "managed",
     crate_features = ["map"],
     path = "external/rust/android-crates-io/crates/managed",
-    rustc_flags = [
-        "-A",
-        "unused_macros",
-        "-A",
-        "redundant_semicolons",
-        "-A",
-        "mismatched_lifetime_syntaxes",
-    ],
 )
 
 gbl_rust_crate_repository(
@@ -635,7 +611,6 @@ gbl_rust_crate_repository(
     rustc_flags = [
         "--cfg=linux",
         "--cfg=linux_android",
-        "--cap-lints=allow",
     ],
     deps = [
         "@bitflags",
@@ -871,10 +846,6 @@ gbl_rust_crate_repository(
 gbl_rust_crate_repository(
     name = "serde_yaml",
     path = "external/rust/android-crates-io/crates/serde_yaml",
-    rustc_flags = [
-        "-A",
-        "dangerous_implicit_autorefs",
-    ],
     deps = [
         "@indexmap",
         "@itoa",
@@ -908,12 +879,6 @@ gbl_rust_crate_repository(
         "spin_mutex",
     ],
     path = "external/rust/android-crates-io/crates/spin",
-    rustc_flags = [
-        "-A",
-        "unused_imports",
-        "-A",
-        "mismatched_lifetime_syntaxes",
-    ],
 )
 
 gbl_rust_crate_repository(
@@ -1138,16 +1103,6 @@ gbl_rust_crate_repository(
     crate_features = ["alloc"],
     path = "external/rust/android-crates-io/crates/virtio-drivers",
     proc_macro_deps = ["@enumn"],
-    rustc_flags = [
-        "-A",
-        "unused_imports",
-        "-A",
-        "mismatched_lifetime_syntaxes",
-        "-A",
-        "unused_macros",
-        "-A",
-        "unused_variables",
-    ],
     deps = [
         "@bitflags",
         "@log_no_std",
@@ -1259,7 +1214,6 @@ gbl_rust_crate_repository(
         "@const_fn",
         "@rustversion",
     ],
-    rustc_flags = ["--cap-lints=allow"],
     deps = [
         "@bit_field",
         "@bitflags",
@@ -1311,7 +1265,6 @@ gbl_rust_crate_repository(
     name = "zeroize",
     compile_data = ["README.md"],
     path = "external/rust/android-crates-io/crates/zeroize",
-    rustc_flags = ["--cap-lints=allow"],
 )
 
 gbl_rust_crate_repository(
