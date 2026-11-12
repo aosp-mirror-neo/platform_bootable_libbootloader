@@ -37,7 +37,7 @@ use efi_types::EfiMemoryType;
 use efi_types::{
     EfiInputKey, GBL_EFI_BOOT_BUFFER_TYPE_FASTBOOT_DOWNLOAD, GBL_EFI_BOOT_BUFFER_TYPE_FDT,
     GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL,
-    GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA, GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK,
+    GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK,
 };
 use liberror::Error;
 use libgbl::{android_boot::BootBuffer, metrics::GblTime};
@@ -185,15 +185,17 @@ pub(crate) fn get_efi_mem_attr(entry: &EfiEntry) -> Option<EfiMemoryAttributesTa
 pub(crate) const SZ_MB: usize = 1024 * 1024;
 
 /// Helper for getting boot buffer.
-// TODO(b/576841274): Request image buffers when they are needed.
+// TODO(b/576841274): Request the remaining image buffers via `GblOps::get_boot_buffer()` if and
+// when they are needed.
 pub(crate) fn get_boot_buffer(entry: &EfiEntry) -> Result<BootBuffer<'static>> {
+    // LINT.IfChange
     Ok(BootBuffer::new(
         gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_GENERAL_LOAD, 16 * SZ_MB)?.leak(),
         gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, 128 * SZ_MB)?.leak(),
         gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_RAMDISK, 96 * SZ_MB)?.leak(),
         gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_FDT, 4 * SZ_MB)?.leak(),
-        gbl_get_boot_buffer(entry, GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA, 16 * SZ_MB)?.leak(),
     ))
+    // LINT.ThenChange(/gbl/docs/gbl_buffer_usage.md)
 }
 
 /// Represents a fastboot buffer
@@ -206,11 +208,13 @@ pub(crate) struct FastbootBuffer<'a> {
 impl<'a> FastbootBuffer<'a> {
     /// Requests the buffer.
     pub(crate) fn new(entry: &'a EfiEntry) -> Result<Self> {
+        // LINT.IfChange
         let buffer = Some(gbl_get_boot_buffer(
             entry,
             GBL_EFI_BOOT_BUFFER_TYPE_FASTBOOT_DOWNLOAD,
             512 * SZ_MB,
         )?);
+        // LINT.ThenChange(/gbl/docs/gbl_buffer_usage.md)
         Ok(FastbootBuffer { entry, buffer })
     }
 

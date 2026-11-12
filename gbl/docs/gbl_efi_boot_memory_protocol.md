@@ -333,7 +333,7 @@ Memory for assembling the finalized FDT. Must be 8-byte aligned.
 
 Memory for loading finalized protected VM firmware. The address must be aligned
 to the page size used by the hypervisor (typically 4KB or 16KB depending on
-kernel configuration).
+kernel configuration). GBL requests this buffer only when it loads pvmfw.
 
 ##### GBL_EFI_BOOT_BUFFER_TYPE_FASTBOOT_DOWNLOAD
 
