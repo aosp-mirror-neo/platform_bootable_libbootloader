@@ -14,7 +14,11 @@
 
 //! Implements [Gbl::Ops] for the EFI environment.
 
-use crate::{efi, efi_blocks::EfiGblDisk, utils::EfiTime};
+use crate::{
+    efi,
+    efi_blocks::EfiGblDisk,
+    utils::{EfiTime, SZ_MB},
+};
 use arrayvec::ArrayVec;
 use core::{convert::Infallible, ffi::CStr, fmt::Write, ops::DerefMut, ptr::null};
 use efi::{
@@ -25,7 +29,9 @@ use efi::{
         gbl_efi_avb::GblAvbProtocol,
         gbl_efi_avf::GblAvfProtocol,
         gbl_efi_boot_control::GblBootControlProtocol,
-        gbl_efi_boot_memory::{gbl_get_partition_buffer, gbl_sync_partition_buffer},
+        gbl_efi_boot_memory::{
+            gbl_get_boot_buffer, gbl_get_partition_buffer, gbl_sync_partition_buffer,
+        },
         gbl_efi_fastboot::GblFastbootProtocol,
         gbl_efi_os_configuration::GblOsConfigurationProtocol,
         random_number_generator::{RandomNumberGeneratorProtocol, RngAlgorithm as EfiRngAlgorithm},
@@ -38,7 +44,7 @@ use efi::{
 use efi_types::{
     GblEfiAvbDeviceStatus, GblEfiAvbKeyValidationStatus, GblEfiAvbLoadedPartition,
     GblEfiAvbProperty, GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata,
-    GblEfiFastbootMessageType, GblEfiVerifiedDeviceTree,
+    GblEfiFastbootMessageType, GblEfiVerifiedDeviceTree, GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA,
     GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_CUSTOM_IMPL,
     GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_DEFAULT_IMPL,
     GBL_EFI_FASTBOOT_COMMAND_EXEC_RESULT_PROHIBITED, GBL_EFI_FASTBOOT_MESSAGE_TYPE_FAIL,
@@ -65,9 +71,9 @@ use libgbl::{
     gbl_println,
     metrics::{FirmwareVersion, FirmwareVersionMetrics, GblMetrics, GblTime},
     ops::{
-        AvbIoError, AvbIoResult, CertPermanentAttributes, FailSender, FastbootPartitionType,
-        InfoSender, LockState, LockType, OkaySender, OneShotBootMode, PartitionBuffer,
-        RngAlgorithm as GblRngAlgorithm, Slot, SHA256_DIGEST_SIZE,
+        AvbIoError, AvbIoResult, BootBufferType, CertPermanentAttributes, FailSender,
+        FastbootPartitionType, InfoSender, LockState, LockType, OkaySender, OneShotBootMode,
+        PartitionBuffer, RngAlgorithm as GblRngAlgorithm, Slot, SHA256_DIGEST_SIZE,
     },
     partition::{GblDisk, RawName},
     GblOps, Os,
@@ -764,6 +770,16 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
             v if v.is_preloaded() => PartitionBuffer::Preloaded(v),
             v => PartitionBuffer::Designated(v),
         })
+    }
+
+    fn get_boot_buffer(&self, ty: BootBufferType) -> Result<impl DerefMut<Target = [u8]> + 'b> {
+        // The default size is allocated if firmware neither provides a buffer nor suggests a size.
+        // LINT.IfChange
+        let (buf_type, default_size) = match ty {
+            BootBufferType::PvmfwData => (GBL_EFI_BOOT_BUFFER_TYPE_PVMFW_DATA, 16 * SZ_MB),
+        };
+        // LINT.ThenChange(/gbl/docs/gbl_buffer_usage.md)
+        gbl_get_boot_buffer(self.efi_entry, buf_type, default_size)
     }
 
     fn sync_partition_buffer(&mut self, sync_preloaded: bool) -> Result<()> {

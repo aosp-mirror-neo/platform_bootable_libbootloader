@@ -57,7 +57,8 @@ default 4MB memory via EFI allocation.
 
 GBL uses this buffer for assembling the pvmfw image.
 
-GBL queries the buffer by calling
+GBL queries the buffer only when it loads pvmfw, which requires
+[GBL_EFI_AVF_PROTOCOL][gbl_avf_protocol] and a `pvmfw` partition. It calls
 [GBL_EFI_BOOT_MEMORY_PROTOCOL.GetBootBuffer()][get_boot_buffer] with parameter
 `BootBufferType` set to `PVMFW_DATA`. If buffer is not provided, GBL allocates a
 default 16MB memory via EFI allocation.
@@ -138,3 +139,4 @@ verification. The memory is allocated via EFI memory allocation.
 [sync_partition_buffer]:
   ./gbl_efi_boot_memory_protocol.md#gbl_efi_boot_memory_protocol_syncpartitionbuffer
 [gbl_os_configuration_protocol]: ./gbl_efi_os_configuration_protocol.md
+[gbl_avf_protocol]: ./gbl_efi_avf_protocol.md
