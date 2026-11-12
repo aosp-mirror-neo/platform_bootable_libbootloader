@@ -82,30 +82,35 @@ rust_library(
         ["lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/**/*.md"],
         allow_empty = True,
     ),
+    # `rules_rust` does not expand Cargo feature dependencies (`default = ["arch"]`,
+    # `compiler-builtins = ["dep:core", "unmangled-names"]`), so list them explicitly.
     crate_features = [
+        "arch",
         "compiler-builtins",
         "core",
         "default",
         "mem",
-    ] + select(
-        {
-            # Cargo's compiler-builtins build.rs enables `mem-unaligned` on
-            # targets with hardware unaligned access (x86, x86_64, aarch64).
-            # That build script does not run here, so mirror it: without the
-            # feature, memcpy/memmove fall back to the strict-alignment
-            # shift-and-OR word reassembly path for misaligned sources.
-            "@gbl//toolchain:gbl_rust_elf_riscv64": [],
-            "//conditions:default": ["mem-unaligned"],
-        },
-    ),
+        "unmangled-names",
+    ],
     crate_name = "compiler_builtins",
     edition = "2024",
     rustc_flags = [
         "--cap-lints=allow",
+        "--cfg=intrinsics_enabled",
         # memcpy/memmove/memset/memcmp are hot and not part of LTO: keep them fast.
         "-C",
         "opt-level=3",
     ] + select(
+        {
+            # Cargo's compiler-builtins build.rs enables `--cfg=mem_unaligned` on
+            # targets with hardware unaligned access (x86, x86_64, aarch64).
+            # That build script does not run here, so mirror it: without the
+            # cfg, memcpy/memmove fall back to the strict-alignment
+            # shift-and-OR word reassembly path for misaligned sources.
+            "@gbl//toolchain:gbl_rust_elf_riscv64": [],
+            "//conditions:default": ["--cfg=mem_unaligned"],
+        },
+    ) + select(
         {
             # This is needed otherwise x64 can't find __gnu_h2f_ieee/__gnu_f2h_ieee symbols.
             "@gbl//toolchain:gbl_rust_uefi_x86_64": ["--cfg=f16_enabled"],

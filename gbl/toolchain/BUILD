@@ -421,6 +421,9 @@ gbl_clang_cc_toolchain(
     ld_flags = [
         "-stdlib=libc++",
         "-static-libstdc++",
+        # `rustc` passes `-nodefaultlibs` when linking self-contained musl host
+        # binaries, making `-static-libstdc++` unused and triggering `linker_messages`.
+        "-Wno-unused-command-line-argument",
     ],
     target_cpu = "x86_64",
     target_system_triple = "x86_64-unknown-linux-gnu",
@@ -925,7 +928,6 @@ rust_toolchain(
     target_json = """
                 {
                     "abi-return-struct-as-int": true,
-                    "allows-weak-linkage": false,
                     "arch": "x86_64",
                     "archive-format": "coff",
                     "binary-format": "coff",
@@ -969,7 +971,7 @@ rust_toolchain(
                         "/subsystem:efi_application"
                         ]
                     },
-                    "rustc-abi": "x86-softfloat",
+                    "rustc-abi": "softfloat",
                     "singlethread": true,
                     "split-debuginfo": "unpacked",
                     "stack-probes": {
@@ -1084,7 +1086,6 @@ rust_toolchain(
     target_json = """
                 {
                     "abi-return-struct-as-int": true,
-                    "allows-weak-linkage": false,
                     "arch": "aarch64",
                     "archive-format": "coff",
                     "binary-format": "coff",
