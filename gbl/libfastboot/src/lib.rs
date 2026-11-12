@@ -554,6 +554,18 @@ pub trait FastbootImplementation {
         responder: impl InfoSender,
     ) -> core::result::Result<(), Self::Error>;
 
+    /// Backend for `fastboot snapshot-update ...`.
+    ///
+    /// # Args
+    ///
+    /// * `cmd`: The subcommand string after `"snapshot-update:"` (e.g. `""` or `"cancel"`).
+    /// * `responder`: An instance of `InfoSender`.
+    async fn snapshot_update(
+        &mut self,
+        cmd: &str,
+        responder: impl InfoSender,
+    ) -> core::result::Result<(), Self::Error>;
+
     /// Backend for `fastboot boot`
     ///
     /// # Args
@@ -1317,6 +1329,21 @@ async fn set_active(
     }
 }
 
+/// Helper for handling "fastboot snapshot-update ...".
+async fn snapshot_update(
+    cmd: &str,
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let subcmd = cmd.strip_prefix("snapshot-update").unwrap_or("");
+    let subcmd = subcmd.strip_prefix(':').unwrap_or(subcmd);
+    match fb_impl.snapshot_update(subcmd, &mut resp).await {
+        Ok(_) => reply_okay!(resp, ""),
+        Err(e) => reply_fail!(resp, "{}", e),
+    }
+}
+
 /// Helper for handling "fastboot oem ...".
 async fn oem(
     cmd: &str,
@@ -1555,6 +1582,7 @@ pub async fn process_next_command(
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
         "reboot-recovery" => reboot(RebootMode::Recovery, transport, fb_impl).await,
         "set_active" => set_active(args, transport, fb_impl).await,
+        "snapshot-update" => snapshot_update(cmd_str, transport, fb_impl).await,
         "upload" => upload(transport, fb_impl).await,
         _ if cmd_str.starts_with("flashing ") => {
             flashing(cmd_str.strip_prefix("flashing ").unwrap(), transport, fb_impl).await
@@ -1652,6 +1680,8 @@ mod test {
         oem_command: String,
         reboot_mode: Option<RebootMode>,
         active_slot: Option<String>,
+        snapshot_update_cmd: Option<String>,
+        snapshot_update_output: (Vec<String>, Option<CommandResult<()>>),
         boot_result: Option<CommandResult<()>>,
         unlockability: Option<Unlockability>,
         last_write_lock_state_call: Option<(LockType, LockState)>,
@@ -1789,6 +1819,19 @@ mod test {
         async fn set_active(&mut self, slot: &str, _: impl InfoSender) -> CommandResult<()> {
             self.active_slot = Some(slot.into());
             Ok(())
+        }
+
+        async fn snapshot_update(
+            &mut self,
+            cmd: &str,
+            mut responder: impl InfoSender,
+        ) -> CommandResult<()> {
+            self.snapshot_update_cmd = Some(cmd.into());
+            let (infos, res) = &mut self.snapshot_update_output;
+            for ele in infos {
+                responder.send_info(ele.as_ref()).await?;
+            }
+            res.take().unwrap_or(Ok(()))
         }
 
         async fn oem(
@@ -2738,5 +2781,52 @@ mod test {
 
         // Size is not a multiple of 4.
         stream_test_helper("stream-fill:boot_a:400:5:200", None);
+    }
+
+    #[test]
+    fn test_snapshot_update() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(b"snapshot-update:cancel");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(fastboot_impl.snapshot_update_cmd, Some("cancel".into()));
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+    }
+
+    #[test]
+    fn test_snapshot_update_no_arg() {
+        for input in [b"snapshot-update:".as_slice(), b"snapshot-update".as_slice()] {
+            let mut fastboot_impl = FastbootTest {
+                snapshot_update_output: (vec!["snapshotted".into()], Some(Ok(()))),
+                ..Default::default()
+            };
+            let mut transport = TestTransport::new();
+            transport.add_input(input);
+            block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+            assert_eq!(fastboot_impl.snapshot_update_cmd, Some("".into()));
+            assert_eq!(
+                transport.out_queue,
+                VecDeque::<Vec<u8>>::from([b"INFOsnapshotted".into(), b"OKAY".into()])
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_update_error() {
+        let mut fastboot_impl = FastbootTest {
+            snapshot_update_output: (
+                vec![],
+                Some(Err("Invalid parameter to snapshot-update".into())),
+            ),
+            ..Default::default()
+        };
+        let mut transport = TestTransport::new();
+        transport.add_input(b"snapshot-update:invalid");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(fastboot_impl.snapshot_update_cmd, Some("invalid".into()));
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([b"FAILInvalid parameter to snapshot-update".into()])
+        );
     }
 }
