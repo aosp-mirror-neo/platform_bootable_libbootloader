@@ -25,7 +25,7 @@ use crate::{
     gbl_println,
     metrics::{FirmwareVersionMetrics, GblMetrics, GblTime},
     misc::{read_bootloader_message_to, write_bootloader_message},
-    ops::{OneShotBootMode, PartitionBuffer},
+    ops::{BootBufferType, OneShotBootMode, PartitionBuffer},
     slots::{slotted_part, Slot},
     GblOps, IntegrationError, Result,
 };
@@ -86,7 +86,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
     is_recovery: bool,
     boot_buffer: BootBuffer<'a>,
 ) -> Result<(&'a [u8], &'a [u8], &'a [u8])> {
-    let BootBuffer { mut boot_items, kernel, ramdisk, fdt: fdt_load, pvmfw_data } = boot_buffer;
+    let BootBuffer { mut boot_items, kernel, ramdisk, fdt: fdt_load } = boot_buffer;
     let scratch = boot_items.split_unused();
 
     // Get the list of device-specific partitions to verify.
@@ -186,17 +186,19 @@ pub fn android_load_verify_fixup<'a, 'b>(
     let images = android_load_verified(ops, slot, unlocked, is_recovery, &verify_data)?;
 
     let (kernel, kernel_attrs) = kernel_load(ops, images.kernel, kernel)?;
-    let mut pvmfw = match images.pvmfw.is_empty() {
-        true => None,
-        _ => Some(pvmfw_load(
+    let mut pvmfw_buffer = None;
+    let mut pvmfw = None;
+    if !images.pvmfw.is_empty() {
+        let load = pvmfw_buffer.insert(ops.get_boot_buffer(BootBufferType::PvmfwData)?);
+        pvmfw = Some(pvmfw_load(
             ops,
             images.pvmfw,
-            pvmfw_data,
+            load,
             &kernel_attrs,
             &BootInfo::new(unlocked, is_recovery, status.color, &verify_data),
             images.dtbo,
-        )?),
-    };
+        )?);
+    }
     let ramdisk_len = ramdisk_load(&images.ramdisks[..], ramdisk)?;
 
     // Updates bootconfig with AVB results and GBL metadata.
@@ -624,8 +626,6 @@ pub struct BootBuffer<'a> {
     pub ramdisk: &'a mut [u8],
     /// FDT load buffer.
     pub fdt: &'a mut [u8],
-    /// Pvmfw load buffer.
-    pub pvmfw_data: &'a mut [u8],
 }
 
 impl<'a> BootBuffer<'a> {
@@ -635,10 +635,9 @@ impl<'a> BootBuffer<'a> {
         kernel: &'a mut [u8],
         ramdisk: &'a mut [u8],
         fdt: &'a mut [u8],
-        pvmfw_data: &'a mut [u8],
     ) -> Self {
         let boot_items = BootItemContainer::new(buffer);
-        Self { boot_items, kernel, ramdisk, fdt, pvmfw_data }
+        Self { boot_items, kernel, ramdisk, fdt }
     }
 
     /// Creates an instance that borrows internal fields.
@@ -648,7 +647,6 @@ impl<'a> BootBuffer<'a> {
             kernel: &mut *self.kernel,
             ramdisk: &mut *self.ramdisk,
             fdt: &mut *self.fdt,
-            pvmfw_data: &mut *self.pvmfw_data,
         }
     }
 
@@ -872,7 +870,6 @@ pub(crate) mod tests {
         kernel: AlignedBuffer,
         ramdisk: AlignedBuffer,
         fdt: AlignedBuffer,
-        pvmfw_data: AlignedBuffer,
     }
 
     impl TestBootBuffer {
@@ -883,19 +880,12 @@ pub(crate) mod tests {
                 kernel: AlignedBuffer::new(MiB!(64), KERNEL_ALIGNMENT),
                 ramdisk: AlignedBuffer::new(MiB!(8), PAGE_SIZE),
                 fdt: AlignedBuffer::new(MiB!(1), FDT_ALIGNMENT),
-                pvmfw_data: AlignedBuffer::new(KiB!(32), PVMFW_DATA_ALIGNMENT),
             }
         }
 
         /// Gets the `BootBuffer`.
         pub(crate) fn get(&mut self) -> BootBuffer<'_> {
-            BootBuffer::new(
-                &mut self.general,
-                &mut self.kernel,
-                &mut self.ramdisk,
-                &mut self.fdt,
-                &mut self.pvmfw_data,
-            )
+            BootBuffer::new(&mut self.general, &mut self.kernel, &mut self.ramdisk, &mut self.fdt)
         }
     }
 
@@ -2326,17 +2316,23 @@ pub(crate) mod tests {
             dummy_pvmfw_partition(TEST_PVMFW_FILL_VALUE, TEST_PVMFW_FILL_COUNT);
         storage.add_raw_device(c"pvmfw_a", pvmfw_part);
 
+        let pvmfw_data = RefCell::new(AlignedBuffer::new(KiB!(32), PVMFW_DATA_ALIGNMENT));
+        let expected_addr = pvmfw_data.borrow().as_ptr() as usize;
+        let get_boot_buffer_handler = |ty: BootBufferType| {
+            assert_eq!(ty, BootBufferType::PvmfwData);
+            Ok(into_refmut_bytes(pvmfw_data.borrow_mut()))
+        };
+
         let mut ops = default_test_gbl_ops(&storage);
         // Rollback required by `vbmeta_disabled.img`.
         ops.avb_ops.rollbacks = HashMap::from([(0, Ok(0))]);
         ops.avf_is_supported = true;
         ops.avb_device_status.is_unlocked = true;
         ops.avf_vendor_dice_handover = Some(&DUMMY_VENDOR_HANDOVER[..]);
+        ops.get_boot_buffer_handler = Some(&get_boot_buffer_handler);
         let mut buffers = TestBootBuffer::new();
-        let boot_buffer = buffers.get();
-        let expected_addr = boot_buffer.pvmfw_data.as_ptr() as usize;
         let (ramdisk, fdt, _) =
-            android_load_verify_fixup(&mut ops, Some(slot('a')), false, boot_buffer).unwrap();
+            android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).unwrap();
 
         let bootconfig = extract_bootconfig(ramdisk).unwrap();
         bootconfig.find(&format!("{PROTECTED_PROP}=1")).unwrap();
@@ -2364,8 +2360,42 @@ pub(crate) mod tests {
         length_bytes.resize(8, 0);
         assert!(usize::from_le_bytes(length_bytes.try_into().unwrap()) >= min_exp_size);
 
-        let pvmfw_data = &buffers.pvmfw_data;
+        let pvmfw_data = pvmfw_data.borrow();
         assert!(pvmfw_data[..TEST_PVMFW_FILL_COUNT].iter().all(|&b| b == TEST_PVMFW_FILL_VALUE));
+    }
+
+    /// Runs `android_load_verify_fixup()` and checks that it doesn't request the pvmfw buffer.
+    fn check_android_load_verify_fixup_no_pvmfw_buffer(avf_is_supported: bool, has_pvmfw: bool) {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("android/boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_disabled.img"));
+        if has_pvmfw {
+            let (pvmfw_part, _) =
+                dummy_pvmfw_partition(TEST_PVMFW_FILL_VALUE, TEST_PVMFW_FILL_COUNT);
+            storage.add_raw_device(c"pvmfw_a", pvmfw_part);
+        }
+
+        let get_boot_buffer_handler =
+            |ty: BootBufferType| panic!("Unexpected request for the {ty:?} buffer");
+
+        let mut ops = default_test_gbl_ops(&storage);
+        // Rollback required by `vbmeta_disabled.img`.
+        ops.avb_ops.rollbacks = HashMap::from([(0, Ok(0))]);
+        ops.avf_is_supported = avf_is_supported;
+        ops.avb_device_status.is_unlocked = true;
+        ops.get_boot_buffer_handler = Some(&get_boot_buffer_handler);
+        let mut buffers = TestBootBuffer::new();
+        android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).unwrap();
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_no_pvmfw_buffer_if_avf_unsupported() {
+        check_android_load_verify_fixup_no_pvmfw_buffer(false, true);
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_no_pvmfw_buffer_if_no_pvmfw_partition() {
+        check_android_load_verify_fixup_no_pvmfw_buffer(true, false);
     }
 
     /// Runs `android_load_verify_fixup()` with a pvmfw partition and the given pvmfw buffer.
@@ -2376,15 +2406,19 @@ pub(crate) mod tests {
         let (pvmfw_part, _) = dummy_pvmfw_partition(TEST_PVMFW_FILL_VALUE, TEST_PVMFW_FILL_COUNT);
         storage.add_raw_device(c"pvmfw_a", pvmfw_part);
 
+        let pvmfw_data = RefCell::new(pvmfw_data);
+        let get_boot_buffer_handler =
+            |_: BootBufferType| Ok(into_refmut_bytes(pvmfw_data.borrow_mut()));
+
         let mut ops = default_test_gbl_ops(&storage);
         // Rollback required by `vbmeta_disabled.img`.
         ops.avb_ops.rollbacks = HashMap::from([(0, Ok(0))]);
         ops.avf_is_supported = true;
         ops.avb_device_status.is_unlocked = true;
         ops.avf_vendor_dice_handover = Some(&DUMMY_VENDOR_HANDOVER[..]);
+        ops.get_boot_buffer_handler = Some(&get_boot_buffer_handler);
         let mut buffers = TestBootBuffer::new();
-        let boot_buffer = BootBuffer { pvmfw_data, ..buffers.get() };
-        android_load_verify_fixup(&mut ops, Some(slot('a')), false, boot_buffer).err()
+        android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).err()
     }
 
     #[test]

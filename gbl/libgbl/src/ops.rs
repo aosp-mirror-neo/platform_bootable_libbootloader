@@ -86,6 +86,13 @@ pub enum PartitionBuffer<T> {
     Designated(T),
 }
 
+/// Types of boot buffers for `GblOps::get_boot_buffer()`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BootBufferType {
+    /// Buffer for assembling the pvmfw image and its configuration data.
+    PvmfwData,
+}
+
 /// Requested random number generator algorithm.
 pub enum RngAlgorithm {
     /// No specific algorithm is required. Up to implementation to decide.
@@ -460,6 +467,20 @@ pub trait GblOps<'a> {
         &self,
         img: LoadPartition,
     ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error>;
+
+    /// Gets the buffer for the given type of boot image.
+    ///
+    /// Implementation should always return the same and unique buffer for `ty`. If caller has not
+    /// dropped a previously returned instance, implementation should return `Err(Error::NotReady)`.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Err(Error::NotReady)`, if a previous returned instance is still in scope.
+    /// Returns `Err(Error::NotFound)`, if buffer is not found.
+    fn get_boot_buffer(
+        &self,
+        ty: BootBufferType,
+    ) -> Result<impl DerefMut<Target = [u8]> + 'a, Error>;
 
     /// Notifies the firmware to inspect or update buffer for return by `get_partition_buffer()`.
     ///
@@ -847,6 +868,13 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         img: LoadPartition,
     ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
         self.ops.get_partition_buffer(img)
+    }
+
+    fn get_boot_buffer(
+        &self,
+        ty: BootBufferType,
+    ) -> Result<impl DerefMut<Target = [u8]> + 'a, Error> {
+        self.ops.get_boot_buffer(ty)
     }
 
     fn sync_partition_buffer(&mut self, sync_preloaded: bool) -> Result<(), Error> {
@@ -1389,6 +1417,10 @@ pub(crate) mod test {
         pub get_partition_buffer_handler:
             Option<&'a dyn Fn(LoadPartition) -> Result<PartitionBuffer<RefMut<'a, [u8]>>, Error>>,
 
+        /// Handler for `get_boot_buffer`
+        pub get_boot_buffer_handler:
+            Option<&'a dyn Fn(BootBufferType) -> Result<RefMut<'a, [u8]>, Error>>,
+
         /// Handler for `sync_partition_buffer`
         pub sync_partition_buffer_handler:
             Option<&'a mut dyn FnMut(&mut FakeGblOps, bool) -> Result<(), Error>>,
@@ -1721,6 +1753,13 @@ pub(crate) mod test {
             img: LoadPartition,
         ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
             self.get_partition_buffer_handler.as_ref().ok_or(Error::NotFound)?(img)
+        }
+
+        fn get_boot_buffer(
+            &self,
+            ty: BootBufferType,
+        ) -> Result<impl DerefMut<Target = [u8]> + 'a, Error> {
+            self.get_boot_buffer_handler.as_ref().ok_or(Error::NotFound)?(ty)
         }
 
         fn sync_partition_buffer(&mut self, sync: bool) -> Result<(), Error> {
@@ -2116,6 +2155,13 @@ pub(crate) mod test {
             _: LoadPartition,
         ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
             Err::<PartitionBuffer<&mut [u8]>, _>(Error::Unsupported)
+        }
+
+        fn get_boot_buffer(
+            &self,
+            _: BootBufferType,
+        ) -> Result<impl DerefMut<Target = [u8]> + 'a, Error> {
+            Err::<&mut [u8], _>(Error::Unsupported)
         }
 
         fn sync_partition_buffer(&mut self, _: bool) -> Result<(), Error> {
