@@ -642,8 +642,8 @@ pub trait FastbootImplementation {
     ///
     /// * DefaultImpl - Default implementation will run for the command if available.
     /// * CustomImpl - Vendor has overridden the command. `fastboot oem ...` is one of the cases
-    ///   that is implemented using this approach.
-    /// * Prohibited - shortcut for CustomImpl that just bans the command.
+    ///   that is implemented using this approach. Disallowed for protected commands.
+    /// * Prohibited - Command is not allowed and GBL sends a generic failure response.
     async fn command_exec(
         &mut self,
         args: impl Iterator<Item = &'_ CStr> + Clone,
@@ -844,6 +844,7 @@ enum DownloadState {
 /// `Responder` implements APIs for fastboot backend to send fastboot messages and uploading data.
 struct Responder<'a, T: Transport> {
     result_message_sent: bool,
+    allow_result_message: bool,
     buffer: [u8; MAX_RESPONSE_SIZE],
     transport: &'a mut T,
     transport_error: Result<()>,
@@ -855,6 +856,7 @@ impl<'a, T: Transport> Responder<'a, T> {
     fn new(transport: &'a mut T) -> Self {
         Self {
             result_message_sent: false,
+            allow_result_message: true,
             buffer: [0u8; MAX_RESPONSE_SIZE],
             transport,
             transport_error: Ok(()),
@@ -940,6 +942,9 @@ impl<T: Transport> InfoSender for &mut Responder<'_, T> {
 
 impl<T: Transport> OkaySender for &mut Responder<'_, T> {
     async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()> {
+        if !self.allow_result_message {
+            return Err(Error::InvalidInput);
+        }
         self.result_message_sent = true;
         self.send_formatted_msg("OKAY", cb).await
     }
@@ -947,6 +952,9 @@ impl<T: Transport> OkaySender for &mut Responder<'_, T> {
 
 impl<T: Transport> FailSender for &mut Responder<'_, T> {
     async fn send_formatted_fail<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()> {
+        if !self.allow_result_message {
+            return Err(Error::InvalidInput);
+        }
         self.result_message_sent = true;
         self.send_formatted_msg("FAIL", cb).await
     }
@@ -1369,11 +1377,9 @@ async fn command_exec(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<CommandExecType> {
-    if is_protected_command(args.clone()) {
-        return Ok(CommandExecType::DefaultImpl);
-    }
-
+    let is_protected = is_protected_command(args.clone());
     let mut resp = Responder::new(transport);
+    resp.allow_result_message = !is_protected;
     let cmd_res = fb_impl.command_exec(args, &mut resp).await;
     if resp.result_message_sent {
         match cmd_res {
@@ -1390,6 +1396,16 @@ async fn command_exec(
     } else {
         match cmd_res {
             Ok(CommandExecType::DefaultImpl) => (),
+            Ok(CommandExecType::CustomImpl) if is_protected => {
+                fb_impl.log_line(
+                    "ERROR: Incorrect `CustomImpl` usage. Protected command cannot be overridden.",
+                );
+                reply_fail!(
+                    resp,
+                    "Internal error: firmware attempted to override a protected command"
+                )?;
+                return Err(Error::Other(None));
+            }
             Ok(CommandExecType::CustomImpl) => {
                 reply_okay!(resp, "")?;
             }
@@ -1686,6 +1702,9 @@ mod test {
         unlockability: Option<Unlockability>,
         last_write_lock_state_call: Option<(LockType, LockState)>,
         command_exec_args: String,
+        command_exec_output: Option<OemResponse>,
+        command_exec_send_res: Option<Result<()>>,
+        ignore_command_exec_send_err: bool,
         command_exec_res: Option<CommandResult<CommandExecType>>,
         log_lines: Vec<String>,
         predownload_handler: Option<&'a mut dyn FnMut(&mut dyn TestInfoSender) -> Result<()>>,
@@ -1878,10 +1897,20 @@ mod test {
         async fn command_exec(
             &mut self,
             args: impl Iterator<Item = &'_ CStr> + Clone,
-            _responder: impl InfoSender + OkaySender + FailSender,
+            responder: impl InfoSender + OkaySender + FailSender,
         ) -> CommandResult<CommandExecType> {
             self.command_exec_args =
                 args.map(|v| String::from(v.to_str().unwrap())).collect::<Vec<_>>().join(":");
+            if let Some(output) = self.command_exec_output.take() {
+                let res = match output {
+                    OemResponse::Okay(v) => responder.send_okay(&v).await,
+                    OemResponse::Fail(v) => responder.send_fail(&v).await,
+                };
+                self.command_exec_send_res = Some(res);
+                if !self.ignore_command_exec_send_err {
+                    res?;
+                }
+            }
             self.command_exec_res.take().unwrap_or(Ok(Default::default()))
         }
 
@@ -2675,6 +2704,131 @@ mod test {
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
         assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"FAILtest".into()]));
         assert_eq!(&fastboot_impl.command_exec_args, "flash test");
+    }
+
+    #[test]
+    fn test_command_exec_protected_prohibited() {
+        for cmd in [
+            "continue",
+            "download:00000400",
+            "fetch:boot_a:0:400",
+            "getvar:all",
+            "reboot",
+            "reboot-bootloader",
+            "reboot-fastboot",
+            "reboot-recovery",
+            "set_active:a",
+            "upload",
+        ] {
+            let mut fastboot_impl = FastbootTest {
+                command_exec_res: Some(Ok(CommandExecType::Prohibited)),
+                ..Default::default()
+            };
+            let mut transport = TestTransport::new();
+            transport.add_input(cmd.as_bytes());
+            assert_eq!(
+                block_on(process_next_command(&mut transport, &mut fastboot_impl)),
+                Ok(false),
+                "cmd: {cmd}",
+            );
+            assert_eq!(
+                transport.out_queue,
+                VecDeque::<Vec<u8>>::from([b"FAILCommand not allowed.".into()]),
+                "cmd: {cmd}",
+            );
+            assert_eq!(&fastboot_impl.command_exec_args, cmd);
+            assert_eq!(fastboot_impl.reboot_mode, None);
+            assert_eq!(fastboot_impl.active_slot, None);
+        }
+    }
+
+    #[test]
+    fn test_command_exec_protected_custom_impl_disallowed() {
+        for cmd in [
+            "continue",
+            "download:00000400",
+            "fetch:boot_a:0:400",
+            "getvar:all",
+            "reboot",
+            "reboot-bootloader",
+            "reboot-fastboot",
+            "reboot-recovery",
+            "set_active:a",
+            "upload",
+        ] {
+            let mut fastboot_impl = FastbootTest {
+                command_exec_res: Some(Ok(CommandExecType::CustomImpl)),
+                ..Default::default()
+            };
+            let mut transport = TestTransport::new();
+            transport.add_input(cmd.as_bytes());
+            assert_eq!(
+                block_on(process_next_command(&mut transport, &mut fastboot_impl)),
+                Ok(false),
+                "cmd: {cmd}",
+            );
+            assert_eq!(
+                transport.out_queue,
+                VecDeque::<Vec<u8>>::from([
+                    b"FAILInternal error: firmware attempted to override a protected command"
+                        .into()
+                ]),
+                "cmd: {cmd}",
+            );
+            assert!(
+                fastboot_impl
+                    .log_lines
+                    .iter()
+                    .any(|l| l.contains("Protected command cannot be overridden")),
+                "cmd: {cmd}, logs: {:?}",
+                fastboot_impl.log_lines,
+            );
+        }
+    }
+
+    #[test]
+    fn test_command_exec_protected_result_sender_disallowed() {
+        // Firmware propagates the error returned by `OkaySender` / `FailSender`.
+        for output in [OemResponse::Okay("ok".into()), OemResponse::Fail("err".into())] {
+            let mut fastboot_impl = FastbootTest {
+                command_exec_output: Some(output),
+                command_exec_res: Some(Ok(CommandExecType::CustomImpl)),
+                ..Default::default()
+            };
+            let mut transport = TestTransport::new();
+            transport.add_input(b"fetch:boot_a:0:400");
+            assert_eq!(
+                block_on(process_next_command(&mut transport, &mut fastboot_impl)),
+                Ok(false),
+            );
+            assert_eq!(fastboot_impl.command_exec_send_res, Some(Err(Error::InvalidInput)));
+            assert_eq!(
+                transport.out_queue,
+                VecDeque::<Vec<u8>>::from([b"FAILInvalidInput".into()])
+            );
+        }
+
+        // Firmware ignores the `Sender` error and still returns `CustomImpl`.
+        let mut fastboot_impl = FastbootTest {
+            command_exec_output: Some(OemResponse::Okay("ok".into())),
+            ignore_command_exec_send_err: true,
+            command_exec_res: Some(Ok(CommandExecType::CustomImpl)),
+            ..Default::default()
+        };
+        let mut transport = TestTransport::new();
+        transport.add_input(b"fetch:boot_a:0:400");
+        assert_eq!(block_on(process_next_command(&mut transport, &mut fastboot_impl)), Ok(false));
+        assert_eq!(fastboot_impl.command_exec_send_res, Some(Err(Error::InvalidInput)));
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"FAILInternal error: firmware attempted to override a protected command".into()
+            ]),
+        );
+        assert!(fastboot_impl
+            .log_lines
+            .iter()
+            .any(|l| l.contains("Protected command cannot be overridden")));
     }
 
     fn get_unlock_ability_helper(unlockability: Unlockability, expected: &str) {
