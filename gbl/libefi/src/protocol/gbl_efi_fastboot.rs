@@ -109,7 +109,7 @@ impl Protocol<'_, GblFastbootProtocol> {
                 .iter()
                 .map(|v| unsafe { CStr::from_ptr(*v as _) });
             // SAFETY: By requirement of this function, `ctx` points to a `Callback`.
-            let cb = unsafe { (ctx as *mut Callback).as_mut() }.unwrap();
+            let cb = unsafe { (ctx as *mut Callback).as_mut() }.expect("Callback context is null");
             // Checks number of arguments and stores them in an array.
             let mut args_arr = [c""; MAX_ARGS];
             match args_arr.get_mut(..num_args) {
@@ -194,13 +194,13 @@ impl Protocol<'_, GblFastbootProtocol> {
             msg: *const u8,
         ) -> EfiStatus {
             // SAFETY: By safety requirement of this function, `ctx` points to a `SenderCtx`.
-            let cb = unsafe { (context as *mut SenderCtx).as_mut() }.unwrap();
-            result_to_efi_status((cb.0)(
-                msg_type,
-                // SAFETY: By safety requirement of this function, `msg` point to a valid
-                // initialized buffer of length `msg_len`;
-                from_utf8(unsafe { from_raw_parts(msg as _, msg_len) }).unwrap(),
-            ))
+            let cb =
+                unsafe { (context as *mut SenderCtx).as_mut() }.expect("Sender context is null");
+            // SAFETY: By safety requirement of this function, `msg` point to a valid initialized
+            // buffer of length `msg_len`;
+            let msg = from_utf8(unsafe { from_raw_parts(msg as _, msg_len) })
+                .map_err(|_| Error::InvalidInput);
+            result_to_efi_status(msg.and_then(|msg| (cb.0)(msg_type, msg)))
         }
 
         // SAFETY:

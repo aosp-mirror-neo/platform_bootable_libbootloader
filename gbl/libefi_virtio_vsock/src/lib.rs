@@ -18,7 +18,7 @@
 extern crate alloc;
 
 use acpi::{sdt::mcfg::Mcfg, AcpiTables, Handler as AcpiHandler, PciAddress, PhysicalMapping};
-use alloc::alloc::{alloc, dealloc, Layout};
+use alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use core::{ptr::NonNull, time::Duration};
 use efi::{
     utils::{find_acpi_configuration_table, find_fdt_configuration_table},
@@ -60,7 +60,8 @@ impl AcpiHandler for GblAcpiHandler {
     ) -> PhysicalMapping<Self, T> {
         PhysicalMapping {
             physical_start: physical_address,
-            virtual_start: NonNull::new(physical_address as _).unwrap(),
+            virtual_start: NonNull::new(physical_address as _)
+                .expect("ACPI physical address is null"),
             region_length: size,
             mapped_length: size,
             handler: GblAcpiHandler,
@@ -136,8 +137,8 @@ pub struct GblVirtIoHal {}
 /// otherwise return valid memory, or if the allocation size overflows.
 fn dma_layout(pages: usize) -> Layout {
     assert_ne!(pages, 0, "DMA allocation must be at least one page");
-    let size = pages.checked_mul(EFI_PAGE_SIZE).unwrap();
-    Layout::from_size_align(size, EFI_PAGE_SIZE).unwrap()
+    let size = pages.checked_mul(EFI_PAGE_SIZE).expect("DMA allocation size overflows usize");
+    Layout::from_size_align(size, EFI_PAGE_SIZE).expect("DMA allocation size is too large")
 }
 
 /// SAFETY:
@@ -151,7 +152,8 @@ unsafe impl Hal for GblVirtIoHal {
         let layout = dma_layout(pages);
         // SAFETY: `dma_layout()` asserts `pages != 0` and checks the size for overflow, so
         // `layout` has a nonzero size. The allocation will be deallocated by `dma_dealloc`.
-        let ptr = NonNull::new(unsafe { alloc(layout) }).unwrap();
+        let ptr =
+            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout));
         // SAFETY: The pointer is non-null and points to a valid allocated region of
         // `layout.size()` bytes. The allocation is fresh and nothing else references it yet.
         unsafe { ptr.write_bytes(0, layout.size()) };
@@ -177,7 +179,7 @@ unsafe impl Hal for GblVirtIoHal {
     /// virtio_drivers::Hal::mmio_phys_to_virt.
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
         // NA. GBL operates on physical or identity map address space.
-        NonNull::new(paddr as _).unwrap()
+        NonNull::new(paddr as _).expect("MMIO physical address is null")
     }
 
     /// # Safety: Caller should follow the safety requirements in

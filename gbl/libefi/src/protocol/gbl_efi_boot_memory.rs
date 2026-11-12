@@ -151,7 +151,7 @@ impl<'b, const N: usize> BufferPool<'b, N> {
             None if add => {
                 let idx = names.iter().position(|v| v.is_none()).ok_or(Error::OutOfResources)?;
                 names[idx] = Some(ArrayString::from(name).map_err(|_| Error::InvalidInput)?);
-                Ok(BufferGuard(self.buffers[idx].try_lock().unwrap())) // Should not be in use.
+                Ok(BufferGuard(self.buffers[idx].try_lock().expect("New buffer is already in use")))
             }
             _ => Err(Error::NotFound),
         }
@@ -299,7 +299,8 @@ fn partition_buffer_op(
 
 /// Gets GBL partition buffer for the given partition name
 pub fn gbl_get_partition_buffer(entry: &EfiEntry, part: &str) -> Result<GblVendorReservedMemory> {
-    partition_buffer_op(entry, PartitionBufferOps::Get(part)).map(|v| v.unwrap())
+    partition_buffer_op(entry, PartitionBufferOps::Get(part))
+        .map(|v| v.expect("Get always returns a buffer"))
 }
 
 /// Syncs GBL partition buffer.
@@ -422,7 +423,8 @@ pub fn gbl_get_boot_buffer(
     buf_type: GblEfiBootBufferType,
     default: usize,
 ) -> Result<GblVendorReservedMemory> {
-    boot_buffer_op(entry, BootBufferOp::Get(buf_type, default)).map(|v| v.unwrap())
+    boot_buffer_op(entry, BootBufferOp::Get(buf_type, default))
+        .map(|v| v.expect("Get always returns a buffer"))
 }
 
 /// Releases the buffer identified by the given type.

@@ -273,7 +273,7 @@ impl Drop for DevicePathText<'_> {
                 .system_table()
                 .boot_services()
                 .free_pool(text.as_ptr() as *mut _)
-                .unwrap();
+                .expect("Failed to free device path text");
         }
     }
 }

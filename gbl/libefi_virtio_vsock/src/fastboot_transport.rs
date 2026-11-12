@@ -25,6 +25,7 @@ use efi_types::{
     GBL_EFI_FASTBOOT_TRANSPORT_PROTOCOL_REVISION,
 };
 use liberror::Error;
+use libutils::InfallibleCast;
 use spin::{Mutex, Spin};
 
 type MutexGuard<'a, T> = spin::MutexGuard<'a, T, Spin>;
@@ -58,12 +59,21 @@ impl Shared {
     }
 }
 
+/// Locks `mutex`, yielding to other tasks until the lock is available.
+async fn yield_until_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    loop {
+        if let Some(guard) = mutex.try_lock() {
+            return guard;
+        }
+        gbl_async::yield_now().await;
+    }
+}
+
 /// An async process that listens for new connections and reads data.
 ///
 /// Vsock is a stream transport. Because fastboot requires knowing the boundary of packet, we reuse
 /// the TCP length-prefixed wire format protocol.
 async fn listener_task(port: u32, shared: &Mutex<Shared>) {
-    let get_shared = || shared.try_lock().ok_or(Error::NotReady);
     loop {
         // Listens for a new connection.
         let Ok(sid) = gbl_vsock_accept(port, Duration::from_secs(5)).await else {
@@ -71,7 +81,7 @@ async fn listener_task(port: u32, shared: &Mutex<Shared>) {
         };
         // Wait until the reader acknowledges the previous session result. This is to prevent
         // caller from treating new session data as a continuation of previous ones.
-        while wait(get_shared).await.unwrap().session_status.is_err() {
+        while yield_until_lock(shared).await.session_status.is_err() {
             gbl_async::yield_now().await;
         }
 
@@ -87,9 +97,9 @@ async fn listener_task(port: u32, shared: &Mutex<Shared>) {
             // Keep reading for packet
             loop {
                 // Aborts if there is io error.
-                wait(get_shared).await.unwrap().last_io_res?;
+                yield_until_lock(shared).await.last_io_res?;
                 // Checks if current packet has been read completely.
-                if wait(get_shared).await.unwrap().curr_pkt_len > 0 {
+                if yield_until_lock(shared).await.curr_pkt_len > 0 {
                     gbl_async::yield_now().await;
                     continue;
                 }
@@ -97,12 +107,12 @@ async fn listener_task(port: u32, shared: &Mutex<Shared>) {
                 let mut curr_pkt_len_prefix = [0u8; 8];
                 gbl_vsock_read_exact(sid, &mut curr_pkt_len_prefix).await?;
                 let curr_pkt_len = usize::try_from(u64::from_be_bytes(curr_pkt_len_prefix))?;
-                wait(get_shared).await.unwrap().sid = sid;
-                wait(get_shared).await.unwrap().curr_pkt_len = curr_pkt_len;
+                yield_until_lock(shared).await.sid = sid;
+                yield_until_lock(shared).await.curr_pkt_len = curr_pkt_len;
             }
         }
         .await;
-        wait(get_shared).await.unwrap().session_status = res;
+        yield_until_lock(shared).await.session_status = res;
         let _ = wait(|| gbl_vsock_close(sid)).await;
     }
 }
@@ -197,7 +207,7 @@ impl GblEfiFastbootTransport for FastbootTransport {
 
     /// Sends data to the transport channel.
     fn send(&self, buffer: &[u8]) -> EfiResult<usize> {
-        let length_prefix = u64::try_from(buffer.len()).unwrap().to_be_bytes();
+        let length_prefix = u64::to_be_bytes(buffer.len().cast());
         gbl_vsock_write(self.poll()?.sid, &[&length_prefix, buffer])?;
         Ok(buffer.len())
     }

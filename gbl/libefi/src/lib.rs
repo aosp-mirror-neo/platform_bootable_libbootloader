@@ -147,7 +147,7 @@ use efi_types::{
 };
 use liberror::{Error, Result};
 use libgblutils::aligned_subslice;
-use libutils::base_type_name;
+use libutils::{base_type_name, InfallibleCast};
 use protocol::{
     loaded_image::LoadedImageProtocol, simple_text_output::SimpleTextOutputProtocol,
     ExclusiveProtocol, Protocol, ProtocolImpl, ProtocolInfo, Revision,
@@ -207,7 +207,7 @@ impl EfiEntry {
     ///
     /// Panics if the pointer is NULL.
     pub fn system_table(&self) -> SystemTable<'_> {
-        self.system_table_checked().unwrap()
+        self.system_table_checked().expect("EFI system table pointer is null")
     }
 
     /// Gets an instance of `SystemTable` if pointer is valid.
@@ -361,7 +361,7 @@ impl<'a> SystemTable<'a> {
     ///
     /// Panics if not implemented by UEFI.
     pub fn boot_services(&self) -> BootServices<'a> {
-        self.boot_services_checked().unwrap()
+        self.boot_services_checked().expect("EFI boot services are not available")
     }
 
     /// Creates an instance of `BootServices`
@@ -380,7 +380,7 @@ impl<'a> SystemTable<'a> {
     ///
     /// Panics if run time services is not implemented.
     pub fn runtime_services(&self) -> RuntimeServices {
-        self.runtime_services_checked().unwrap()
+        self.runtime_services_checked().expect("EFI runtime services are not available")
     }
 
     /// Creates an instance of `RuntimeServices` if available from system table.
@@ -1091,8 +1091,8 @@ impl LoadedEfiImage<'_> {
     /// Returns the memory range occupied by the loaded EFI image.
     pub fn loaded_range(&self) -> core::ops::Range<usize> {
         let base = self.protocol.image_base();
-        let size = usize::try_from(self.protocol.interface().image_size).unwrap();
-        base..base.checked_add(size).unwrap()
+        let size: usize = self.protocol.interface().image_size.cast();
+        base..base.checked_add(size).expect("Loaded image range overflows usize")
     }
 }
 
@@ -1159,17 +1159,13 @@ impl RuntimeServices {
             Some(v) => (v.len(), v.as_ptr() as _),
             _ => (0, null_mut()),
         };
+        let reset_system = self.runtime_services.reset_system.ok_or(Error::Unsupported)?;
         // SAFETY:
         // * `reset_data_ptr` is either a valid pointer or NULL which by UEFI spec is allowed.
         // * `ResetData` is an `IN` parameter per the UEFI spec, so firmware only reads from it.
         // * The call reboots the device and thus is not expected to return.
         unsafe {
-            self.runtime_services.reset_system.unwrap()(
-                reset_type,
-                reset_status,
-                reset_data_len,
-                reset_data_ptr,
-            );
+            reset_system(reset_type, reset_status, reset_data_len, reset_data_ptr);
         }
 
         Err(Error::Aborted)
@@ -1270,7 +1266,12 @@ impl<'a, 'n> Event<'a, 'n> {
 impl Drop for Event<'_, '_> {
     fn drop(&mut self) {
         if let Some(efi_entry) = self.efi_entry {
-            efi_entry.system_table().boot_services().close_event(self).unwrap();
+            // Panics rather than leak the event, which could then call a dropped callback.
+            efi_entry
+                .system_table()
+                .boot_services()
+                .close_event(self)
+                .expect("Failed to close EFI event");
         }
     }
 }
@@ -1285,7 +1286,7 @@ impl Drop for Event<'_, '_> {
 unsafe extern "efiapi" fn efi_event_cb(event: EfiEvent, ctx: *mut core::ffi::c_void) {
     // SAFETY: By safety requirement of this function, ctx points to a valid `EventNotify` object,
     // outlives the event/the function call, and there is no other borrows.
-    let event_cb = unsafe { (ctx as *mut EventNotify).as_mut() }.unwrap();
+    let event_cb = unsafe { (ctx as *mut EventNotify).as_mut() }.expect("Event context is null");
     (event_cb.cb)(event);
 }
 
@@ -1313,7 +1314,11 @@ impl<'a, 'b> Iterator for EfiMemoryMapIter<'a, 'b> {
         }
         let bytes = &self.memory_map.buffer[self.offset..][..self.memory_map.descriptor_size];
         self.offset += self.memory_map.descriptor_size;
-        Some(Ref::into_ref(Ref::<_, EfiMemoryDescriptor>::new_from_prefix(bytes).unwrap().0))
+        Some(Ref::into_ref(
+            Ref::<_, EfiMemoryDescriptor>::new_from_prefix(bytes)
+                .expect("Memory descriptor size is smaller than EfiMemoryDescriptor")
+                .0,
+        ))
     }
 }
 
@@ -1390,7 +1395,9 @@ impl<'a> Iterator for EfiMemoryAttributesTableIter<'a> {
         // corresponding type.
         if let Some((desc_bytes, tail_new)) = self.tail.split_at_checked(self.descriptor_size) {
             let desc = Ref::into_ref(
-                Ref::<_, EfiMemoryDescriptor>::new_from_prefix(desc_bytes).unwrap().0,
+                Ref::<_, EfiMemoryDescriptor>::new_from_prefix(desc_bytes)
+                    .expect("Descriptor size was checked by EfiMemoryAttributesTable::new()")
+                    .0,
             );
             self.tail = tail_new;
             Some(desc)
@@ -1430,8 +1437,11 @@ impl<'a> EfiMemoryAttributesTable<'a> {
         };
 
         // Note: `descriptor_size` may be bigger than `EfiMemoryDescriptor`.
-        let descriptor_size: usize = header.descriptor_size.try_into().unwrap();
-        let descriptors_count: usize = header.number_of_entries.try_into().unwrap();
+        let descriptor_size: usize = header.descriptor_size.cast();
+        if descriptor_size < size_of::<EfiMemoryDescriptor>() {
+            return Err(Error::InvalidInput);
+        }
+        let descriptors_count: usize = header.number_of_entries.cast();
         let tail_size =
             descriptors_count.checked_mul(descriptor_size).ok_or(Error::InvalidInput)?;
 
@@ -1449,7 +1459,7 @@ impl<'a> IntoIterator for &EfiMemoryAttributesTable<'a> {
     type IntoIter = EfiMemoryAttributesTableIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let descriptor_size = usize::try_from(self.header.descriptor_size).unwrap();
+        let descriptor_size = self.header.descriptor_size.cast();
         let tail = self.tail;
         EfiMemoryAttributesTableIter { descriptor_size, tail }
     }
@@ -1518,7 +1528,11 @@ impl<'a> LocatedHandles<'a> {
 impl Drop for LocatedHandles<'_> {
     fn drop(&mut self) {
         if let Self::Allocated { handles, efi_entry } = self {
-            efi_entry.system_table().boot_services().free_pool(handles.as_ptr() as *mut _).unwrap();
+            efi_entry
+                .system_table()
+                .boot_services()
+                .free_pool(handles.as_ptr() as *mut _)
+                .expect("Failed to free located handles");
         }
     }
 }
@@ -3282,5 +3296,23 @@ mod test {
                 )
             });
         });
+    }
+
+    #[test]
+    fn test_memory_attributes_table_rejects_small_descriptor_size() {
+        let header = EfiMemoryAttributesTableHeader {
+            version: 1,
+            number_of_entries: 0,
+            descriptor_size: 1,
+            reserved: 0,
+        };
+        // SAFETY: `header` is a valid `EfiMemoryAttributesTableHeader` with no descriptors.
+        let res = unsafe {
+            EfiMemoryAttributesTable::new(EfiConfigurationTable {
+                vendor_guid: EFI_MEMORY_ATTRIBUTES_GUID,
+                vendor_table: (&header as *const EfiMemoryAttributesTableHeader) as *mut _,
+            })
+        };
+        assert!(matches!(res, Err(Error::InvalidInput)));
     }
 }

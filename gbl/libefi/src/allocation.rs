@@ -19,7 +19,6 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     mem::size_of,
     ptr::{copy, null_mut},
-    slice::from_raw_parts,
     sync::atomic::{AtomicBool, Ordering},
 };
 use efi_types::EFI_MEMORY_TYPE_LOADER_DATA;
@@ -202,7 +201,7 @@ impl EfiAllocator {
         let _ = entry
             .system_table_checked()
             .and_then(|v| v.boot_services_checked())
-            .and_then(|v| v.free_pages(ptr as *mut _, Self::pages(size).unwrap()))
+            .and_then(|v| v.free_pages(ptr as *mut _, Self::pages(size)?))
             .inspect_err(|e| efi_try_print!("Failed to deallocate pages: {e}\r\n"));
     }
 
@@ -254,7 +253,7 @@ static HEAP_USAGE: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: This meets the `GlobalAlloc` safety requirements:
 // * It does not unwind. Allocation failures are returned as null and deallocation failures are
-//   logged and ignored. The remaining `unwrap()`/`assert!()` calls cannot fail for a layout that
+//   logged and ignored. The remaining `expect()`/`assert!()` calls cannot fail for a layout that
 //   `alloc()` already succeeded with, and `EfiAllocator` is only used as the global allocator in
 //   UEFI applications built with `panic=abort`.
 // * Layout calculations are correct. `alloc()` returns either null or a pointer to at least
@@ -303,7 +302,8 @@ unsafe impl GlobalAlloc for EfiAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let (by_pages, alloc_sz) = Self::select_alloc_type(&layout).unwrap();
+        let (by_pages, alloc_sz) =
+            Self::select_alloc_type(&layout).expect("Layout was already accepted by alloc()");
         #[cfg(feature = "gbl_tracing")]
         {
             let total = HEAP_USAGE.fetch_sub(alloc_sz, Ordering::Relaxed);
@@ -317,8 +317,8 @@ unsafe impl GlobalAlloc for EfiAllocator {
                 // SAFETY:
                 // `ptr` guarantees to point to a buffer big enough to contain `layout.size()`,
                 // plus a valid usize value.
-                let addr_bytes = unsafe { from_raw_parts(ptr.add(sz), size_of::<usize>()) };
-                usize::from_ne_bytes(addr_bytes.try_into().unwrap()) as _
+                let addr_bytes = unsafe { ptr.add(sz).cast::<[u8; size_of::<usize>()]>().read() };
+                usize::from_ne_bytes(addr_bytes) as _
             }
         };
 
