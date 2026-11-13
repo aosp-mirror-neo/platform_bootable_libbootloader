@@ -563,13 +563,18 @@ where
         Ok(blk_id)
     }
 
-    /// Returns the ID of the only GPT block device, or `None` if there are zero or multiple.
+    /// Returns the ID of the only GPT block device, or if multiple GPT-capable block devices
+    /// exist, the only one that currently holds a valid GPT. Returns `None` if zero or multiple
+    /// devices match.
     fn unique_gpt_blk_id(&self) -> Option<usize> {
-        let mut gpt_ids = self.disks.iter().enumerate().filter(|(_, v)| v.is_gpt()).map(|(i, _)| i);
-        match (gpt_ids.next(), gpt_ids.next()) {
-            (Some(id), None) => Some(id),
-            _ => None,
-        }
+        let unique_disk = |pred: fn(&GblDisk<_, _>) -> bool| {
+            let mut ids = self.disks.iter().enumerate().filter_map(|(i, v)| pred(v).then_some(i));
+            match (ids.next(), ids.next()) {
+                (Some(id), None) => Some(id),
+                _ => None,
+            }
+        };
+        unique_disk(GblDisk::is_gpt).or_else(|| unique_disk(GblDisk::has_valid_gpt))
     }
 
     /// Parses and checks the argument for "fastboot flash gpt/<blk_idx>/"resize".
@@ -590,8 +595,8 @@ where
         if next_arg(&mut args).filter(|v| *v == FLASH_GPT_PART).is_none() {
             return Ok(None);
         }
-        // Parses block device ID. Falls back to the only GPT device if not resolved, so that raw
-        // devices do not make the target ambiguous.
+        // Parses block device ID. Falls back to `unique_gpt_blk_id()` if not resolved, so that raw
+        // or unformatted devices do not make a single valid GPT target ambiguous.
         let blk_id = self
             .check_next_arg_blk_id(&mut args)?
             .or_else(|| self.unique_gpt_blk_id())
@@ -1014,7 +1019,7 @@ where
     async fn sync_gpts(&mut self) {
         for (idx, disk) in self.disks.iter().enumerate().filter(|(_, d)| d.is_gpt()) {
             // GPT operations are not scheduled as background tasks. No need to wait.
-            let had_valid_gpt = disk.num_partitions().is_ok();
+            let had_valid_gpt = disk.has_valid_gpt();
             match disk.sync_gpt().await {
                 Ok(Some(GptSyncResult::BothValid)) | Ok(None) => {}
                 Ok(Some(GptSyncResult::NoValidGpt { .. })) if !had_valid_gpt => {}
@@ -5429,6 +5434,114 @@ pub(crate) mod test {
         assert_eq!(
             storage[2].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
             &raw_1
+        );
+    }
+
+    #[test]
+    fn test_update_gpt_single_valid_gpt_with_unformatted_gpt_blks() {
+        let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let disk_2 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
+        let mut unformatted = disk_1.to_vec();
+        unformatted[512..][..512].fill(0);
+        unformatted.last_chunk_mut::<512>().unwrap().fill(0);
+        let mut valid_disk = disk_2.to_vec();
+        valid_disk.resize(disk_1.len() * 2, 0);
+        let raw_0 = [0xaau8; KiB!(4)];
+
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw_0", raw_0);
+        storage.add_gpt_device(&unformatted);
+        storage.add_gpt_device(&valid_disk);
+        storage.add_gpt_device(&unformatted);
+        let buffers = vec![Some(vec![0u8; KiB!(128)]); 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+
+        let gpt_1 = &disk_1[..34 * 512];
+        listener.add_transport_input(format!("download:{:#x}", gpt_1.len()).as_bytes());
+        listener.add_transport_input(gpt_1);
+        listener.add_transport_input(b"flash:gpt");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        listener.add_transport_input(b"getvar:partition-size:vendor_boot_a");
+        listener.add_transport_input(format!("download:{:#x}", gpt_1.len()).as_bytes());
+        listener.add_transport_input(gpt_1);
+        listener.add_transport_input(b"flash:gpt//resize");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        listener.add_transport_input(b"erase:gpt");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        // Once the only valid GPT is erased, multiple unformatted GPT disks are ambiguous.
+        listener.add_transport_input(format!("download:{:#x}", gpt_1.len()).as_bytes());
+        listener.add_transport_input(gpt_1);
+        listener.add_transport_input(b"flash:gpt");
+        listener.add_transport_input(b"erase:gpt");
+        // Flashing with an explicit block ID restores a single valid GPT on disk 2.
+        listener.add_transport_input(b"flash:gpt/2");
+        listener.add_transport_input(b"getvar:partition-size:boot_b");
+        // When a second GPT-capable disk also receives a valid GPT, bare `flash:gpt` and
+        // `erase:gpt` become ambiguous again.
+        listener.add_transport_input(format!("download:{:#x}", gpt_1.len()).as_bytes());
+        listener.add_transport_input(gpt_1);
+        listener.add_transport_input(b"flash:gpt/1");
+        listener.add_transport_input(format!("download:{:#x}", gpt_1.len()).as_bytes());
+        listener.add_transport_input(gpt_1);
+        listener.add_transport_input(b"flash:gpt");
+        listener.add_transport_input(b"erase:gpt");
+        listener.add_transport_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x3000",
+                b"FAILNotFound",
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x15a00",
+                b"OKAY",
+                b"FAILNotFound",
+                b"DATA00004400",
+                b"OKAY",
+                b"FAILBlock ID is required for flashing GPT",
+                b"FAILBlock ID is required for flashing GPT",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x3000",
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"DATA00004400",
+                b"OKAY",
+                b"FAILBlock ID is required for flashing GPT",
+                b"FAILBlock ID is required for flashing GPT",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+
+        assert_eq!(
+            storage[0].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &raw_0
+        );
+        assert_eq!(
+            storage[3].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &unformatted
         );
     }
 
