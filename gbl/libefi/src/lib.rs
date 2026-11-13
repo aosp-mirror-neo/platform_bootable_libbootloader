@@ -140,8 +140,8 @@ use efi_types::{
         EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES, EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
         EFI_EVENT_TYPE_TIMER, EFI_INTERFACE_TYPE_EFI_NATIVE_INTERFACE,
         EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
-        EFI_RESET_TYPE_COLD, EFI_RESET_TYPE_SHUTDOWN, EFI_STATUS_DEVICE_ERROR, EFI_STATUS_SUCCESS,
-        GBL_EFI_DEBUG_ERROR_TAG_BOOT_ERROR,
+        EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE, EFI_RESET_TYPE_COLD, EFI_RESET_TYPE_SHUTDOWN,
+        EFI_STATUS_DEVICE_ERROR, EFI_STATUS_SUCCESS, GBL_EFI_DEBUG_ERROR_TAG_BOOT_ERROR,
     },
     tpl::TplControl,
 };
@@ -149,8 +149,8 @@ use liberror::{Error, Result};
 use libgblutils::aligned_subslice;
 use libutils::base_type_name;
 use protocol::{
-    loaded_image::LoadedImageProtocol, simple_text_output::SimpleTextOutputProtocol, Protocol,
-    ProtocolImpl, ProtocolInfo, Revision,
+    loaded_image::LoadedImageProtocol, simple_text_output::SimpleTextOutputProtocol,
+    ExclusiveProtocol, Protocol, ProtocolImpl, ProtocolInfo, Revision,
 };
 use zerocopy::{FromBytes, Ref};
 
@@ -510,8 +510,82 @@ impl<'a> BootServices<'a> {
 
     /// Wrapper of `EFI_BOOT_SERVICES.OpenProtocol()`.
     pub fn open_protocol<T: ProtocolImpl>(&self, handle: DeviceHandle) -> Result<Protocol<'a, T>> {
+        // Cannot open exclusively because firmware may require the protocol as well.
+        self.open_protocol_inner(handle, false)
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICES.OpenProtocol()` with `EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE`.
+    ///
+    /// Before granting access, firmware stops every driver that has the protocol open `BY_DRIVER`,
+    /// e.g. EDK2's Managed Network driver on a simple network handle. Returns an
+    /// [`ExclusiveProtocol`] RAII guard that calls `CloseProtocol` when dropped; while that guard
+    /// is alive, opening the same `(handle, T)` exclusively again fails with
+    /// [`Error::AccessDenied`].
+    ///
+    /// # Safety
+    ///
+    /// No live [`Protocol`] or `RawProtocol` may reference an interface installed by a driver
+    /// that `DisconnectController` stops when disconnecting `BY_DRIVER` agents on `(handle, T)`.
+    pub unsafe fn open_protocol_exclusive<T: ProtocolImpl>(
+        &self,
+        handle: DeviceHandle,
+    ) -> Result<ExclusiveProtocol<'a, T>> {
+        self.open_protocol_inner(handle, true).map(ExclusiveProtocol::new)
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
+    ///
+    /// Closes all open-protocol entries recorded for `(self.efi_entry.image_handle(), NULL)` on
+    /// `(handle, T::GUID)`. Kept `pub(crate)` for [`ExclusiveProtocol`]'s `Drop` implementation
+    /// because UEFI `CloseProtocol` is not reference-counted.
+    pub(crate) fn close_protocol<T: ProtocolImpl>(&self, handle: DeviceHandle) -> Result<()> {
+        // SAFETY:
+        // * Contract (`EFI_BOOT_SERVICES.CloseProtocol`, UEFI Spec §7.3.10): boot services must be
+        //   active; `protocol` (`*const EfiGuid`) must be non-null, aligned, and valid for reads of
+        //   one `EfiGuid` during the call; and `handle`, `agent_handle`, and `controller_handle`
+        //   (`NULL` for non-driver opens) are opaque `EFI_HANDLE` keys validated against firmware's
+        //   handle database without dereferencing invalid handles.
+        // * By `BootServices<'a>` invariant (established in `initialize`), `self.boot_services`
+        //   references a valid firmware `EFI_BOOT_SERVICES` table and `'a` cannot outlive
+        //   `exit_boot_services`.
+        // * `&T::GUID` is a valid aligned shared reference to a static `EfiGuid` that outlives the
+        //   call and is not retained by firmware.
+        unsafe {
+            efi_call!(
+                self.boot_services.close_protocol,
+                handle.0,
+                &T::GUID,
+                self.efi_entry.image_handle().0,
+                null()
+            )
+        }
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICES.OpenProtocol()` with either `BY_HANDLE_PROTOCOL` or
+    /// `EXCLUSIVE` attributes.
+    fn open_protocol_inner<T: ProtocolImpl>(
+        &self,
+        handle: DeviceHandle,
+        exclusive: bool,
+    ) -> Result<Protocol<'a, T>> {
+        let attributes = if exclusive {
+            EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE
+        } else {
+            EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
+        };
         let mut out_handle: EfiHandle = null();
-        // SAFETY: EFI_BOOT_SERVICES method call.
+        // SAFETY:
+        // * Contract (`EFI_BOOT_SERVICES.OpenProtocol`, UEFI Spec §7.3.9): boot services must be
+        //   active; `protocol` (`*const EfiGuid`) must be non-null, aligned, and valid for reads of
+        //   one `EfiGuid` during the call; `intf` (`*mut *const c_void`) must be non-null, aligned,
+        //   and valid for writes during the call; and `handle`, `agent_handle`, and
+        //   `controller_handle` (`NULL` for non-driver opens) are opaque `EFI_HANDLE` keys
+        //   validated against firmware's handle database.
+        // * By `BootServices<'a>` invariant (established in `initialize`), `self.boot_services`
+        //   references a valid firmware `EFI_BOOT_SERVICES` table and `'a` cannot outlive
+        //   `exit_boot_services`.
+        // * `&T::GUID` and `&mut out_handle` are non-null, aligned, unaliased pointers to static /
+        //   initialized stack values that outlive the call and are not retained by firmware.
         unsafe {
             efi_call!(
                 self.boot_services.open_protocol,
@@ -519,24 +593,23 @@ impl<'a> BootServices<'a> {
                 &T::GUID,
                 &mut out_handle,
                 self.efi_entry.image_handle().0,
-                null_mut(),
-                // Cannot open exclusively because firmware may require the protocol as well.
-                EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
+                null(),
+                attributes
             )?;
         }
+        let c_interface = NonNull::new(out_handle.cast_mut().cast()).ok_or(Error::NotFound)?;
         // SAFETY:
-        // * `EFI_SYSTEM_TABLE.OpenProtocol` returns a valid pointer to
-        //   `T::InterfaceType` on success.
-        // * The pointer remains valid until ExitBootServices.
-        // * Due to the 'a lifetime, the returned protocol will always be dropped
-        //   before ExitBootServices.
-        Ok(unsafe {
-            Protocol::<T>::new(
-                handle,
-                core::ptr::NonNull::new(out_handle as *mut _).ok_or(Error::NotFound)?,
-                self.efi_entry,
-            )
-        })
+        // * Contract (`Protocol::<T>::new`): `c_interface` must be non-null, properly aligned for
+        //   `T::CInterface`, point to a valid `T::CInterface` that outlives `'a`, and ownership must be
+        //   transferred without conflicting accesses outside the returned `Protocol<'a, T>`.
+        // * `c_interface` was checked non-null above. By UEFI Spec §7.3.9, a successful `OpenProtocol`
+        //   for `T::GUID` guarantees the returned interface pointer is properly aligned and points to a
+        //   valid, live `T::CInterface`.
+        // * When opened with `EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE`, firmware enforces that no other
+        //   agent has conflicting access to the interface.
+        // * Firmware protocol interfaces remain live until `ExitBootServices`, which consumes `EfiEntry`
+        //   by value and cannot occur while `'a` is live.
+        Ok(unsafe { Protocol::<T>::new(handle, c_interface, self.efi_entry) })
     }
 
     /// Call `EFI_BOOT_SERVICES.LocateHandle()` with fixed
@@ -1632,6 +1705,7 @@ mod test {
     pub struct EfiCallTraces {
         pub check_event_trace: CheckEventTrace,
         pub close_event_trace: CloseEventTrace,
+        pub close_protocol_trace: CloseProtocolTrace,
         // Special case
         pub console_out_trace: ConsoleOutTrace,
         pub create_event_trace: CreateEventTrace,
@@ -1683,6 +1757,8 @@ mod test {
     pub struct OpenProtocolTrace {
         // Capture `handle`, `protocol_guid`, `agent_handle`.
         pub inputs: VecDeque<(DeviceHandle, EfiGuid, EfiHandle)>,
+        // Capture `attr`.
+        pub attributes: VecDeque<EfiOpenProtocolAttributes>,
         // Return `intf`, EfiStatus.
         pub outputs: VecDeque<(EfiHandle, EfiStatus)>,
     }
@@ -1700,7 +1776,6 @@ mod test {
         _: EfiHandle,
         attr: EfiOpenProtocolAttributes,
     ) -> EfiStatus {
-        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL);
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().open_protocol_trace;
             trace.inputs.push_back((
@@ -1709,12 +1784,46 @@ mod test {
                 unsafe { *protocol_guid },
                 agent_handle,
             ));
+            trace.attributes.push_back(attr);
 
             let (intf_handle, status) = trace.outputs.pop_front().unwrap();
             // SAFETY: function safety docs require valid `intf`.
             unsafe { *intf = intf_handle };
 
             status
+        })
+    }
+
+    /// `EFI_BOOT_SERVICE.CloseProtocol()` test trace.
+    #[derive(Default)]
+    pub struct CloseProtocolTrace {
+        // Capture `handle`, `protocol_guid`, `agent_handle`, `controller_handle`.
+        pub inputs: VecDeque<(DeviceHandle, EfiGuid, EfiHandle, EfiHandle)>,
+        // Optional queued statuses; defaults to `EFI_STATUS_SUCCESS` when empty.
+        pub outputs: VecDeque<EfiStatus>,
+    }
+
+    /// Mock of the `EFI_BOOT_SERVICE.CloseProtocol` C API in test environment.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `protocol_guid` is non-null, properly aligned for [`EfiGuid`],
+    /// and valid for reads of one initialized [`EfiGuid`] for the duration of this call.
+    unsafe extern "efiapi" fn close_protocol(
+        handle: EfiHandle,
+        protocol_guid: *const EfiGuid,
+        agent_handle: EfiHandle,
+        controller_handle: EfiHandle,
+    ) -> EfiStatus {
+        // SAFETY:
+        // * Contract (raw pointer read `*protocol_guid`): `protocol_guid` must be non-null, aligned
+        //   for `EfiGuid`, and valid for reads of an initialized `EfiGuid` (`EfiGuid: Copy`).
+        // * Discharged directly by this function's `# Safety` precondition at function entry.
+        let guid = unsafe { *protocol_guid };
+        EFI_CALL_TRACES.with(|traces| {
+            let trace = &mut traces.borrow_mut().close_protocol_trace;
+            trace.inputs.push_back((DeviceHandle(handle), guid, agent_handle, controller_handle));
+            trace.outputs.pop_front().unwrap_or(EFI_STATUS_SUCCESS)
         })
     }
 
@@ -2073,6 +2182,7 @@ mod test {
         let mut boot_services = EfiBootService {
             free_pool: Some(free_pool),
             open_protocol: Some(open_protocol),
+            close_protocol: Some(close_protocol),
             handle_protocol: Some(handle_protocol),
             locate_handle_buffer: Some(locate_handle_buffer),
             locate_handle: Some(locate_handle),
@@ -2166,8 +2276,100 @@ mod test {
                             image_handle
                         ),]
                     );
+                    assert_eq!(
+                        trace.borrow_mut().open_protocol_trace.attributes,
+                        [EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL]
+                    );
                 });
             }
+        })
+    }
+
+    #[test]
+    fn test_open_protocol_exclusive() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let mut block_io: EfiBlockIoProtocol = Default::default();
+            EFI_CALL_TRACES.with(|traces| {
+                traces.borrow_mut().open_protocol_trace.outputs =
+                    VecDeque::from([(as_efi_handle(&mut block_io), EFI_STATUS_SUCCESS)]);
+            });
+
+            let mut device_handle: usize = 0; // Don't care
+            let dev = DeviceHandle(as_efi_handle(&mut device_handle));
+            {
+                // SAFETY: No other `Protocol` or `RawProtocol` is live in this test.
+                let _exclusive = unsafe {
+                    efi_entry
+                        .system_table()
+                        .boot_services()
+                        .open_protocol_exclusive::<BlockIoProtocol>(dev)
+                }
+                .unwrap();
+
+                EFI_CALL_TRACES.with(|trace| {
+                    let traces = trace.borrow();
+                    assert_eq!(
+                        traces.open_protocol_trace.inputs,
+                        [(dev, BlockIoProtocol::GUID, image_handle)]
+                    );
+                    assert_eq!(
+                        traces.open_protocol_trace.attributes,
+                        [EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE]
+                    );
+                    assert!(traces.close_protocol_trace.inputs.is_empty());
+                });
+            }
+
+            // Dropping `ExclusiveProtocol` calls `CloseProtocol` for `(dev, GUID, image_handle)`.
+            EFI_CALL_TRACES.with(|trace| {
+                let traces = trace.borrow();
+                assert_eq!(
+                    traces.close_protocol_trace.inputs,
+                    [(dev, BlockIoProtocol::GUID, image_handle, null())]
+                );
+                assert!(!traces
+                    .console_out_trace
+                    .as_single_string()
+                    .contains("Failed to close exclusive Protocol"));
+            });
+        })
+    }
+
+    #[test]
+    fn test_open_protocol_exclusive_logs_close_error() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let mut block_io: EfiBlockIoProtocol = Default::default();
+            EFI_CALL_TRACES.with(|traces| {
+                let mut traces = traces.borrow_mut();
+                traces.open_protocol_trace.outputs =
+                    VecDeque::from([(as_efi_handle(&mut block_io), EFI_STATUS_SUCCESS)]);
+                traces.close_protocol_trace.outputs = VecDeque::from([EFI_STATUS_NOT_FOUND]);
+            });
+
+            let mut device_handle: usize = 0;
+            let dev = DeviceHandle(as_efi_handle(&mut device_handle));
+            // SAFETY: No other `Protocol` or `RawProtocol` is live in this test.
+            drop(unsafe {
+                efi_entry
+                    .system_table()
+                    .boot_services()
+                    .open_protocol_exclusive::<BlockIoProtocol>(dev)
+                    .unwrap()
+            });
+
+            EFI_CALL_TRACES.with(|trace| {
+                let out_str = trace.borrow().console_out_trace.as_single_string();
+                assert!(
+                    out_str.contains(&format!(
+                        "Failed to close exclusive Protocol<{}>: {}",
+                        core::any::type_name::<BlockIoProtocol>(),
+                        Error::NotFound,
+                    )),
+                    "unexpected console output: {out_str:?}",
+                );
+            });
         })
     }
 

@@ -21,12 +21,14 @@
 // it imports them all with `use super::*` instead of repeating long import lists.
 #![allow(clippy::wildcard_imports)]
 
-use crate::{DeviceHandle, MOCK_EFI};
+use crate::{efi_println, passthrough_efi_entry, DeviceHandle, MOCK_EFI};
 use alloc::{sync::Arc, vec::Vec};
 use arrayvec::ArrayVec;
 use core::{
     ffi::{c_void, CStr},
     fmt::Write,
+    marker::PhantomData,
+    ops::Deref,
     ptr::null_mut,
 };
 pub use efi::protocol::{Revision, Versioned};
@@ -42,6 +44,47 @@ use mockall::mock;
 
 /// Mock `Protocol` type.
 pub type Protocol<'a, T> = T;
+
+/// Mock [`efi::protocol::ExclusiveProtocol`] RAII guard.
+///
+/// Derefs to the mocked protocol `T` and calls `BootServices::close_protocol::<T>(device)` on drop
+/// while a [`MockEfi`](crate::MockEfi) is installed, logging any close failure via [`efi_println!`].
+#[must_use]
+pub struct ExclusiveProtocol<'a, T: 'static> {
+    device: DeviceHandle,
+    inner: T,
+    _lifetime: PhantomData<&'a ()>,
+}
+
+impl<'a, T: 'static> ExclusiveProtocol<'a, T> {
+    /// Creates a mock exclusive protocol guard for `device`.
+    pub fn new(device: DeviceHandle, inner: T) -> Self {
+        Self { device, inner, _lifetime: PhantomData }
+    }
+}
+
+impl<T: 'static> Deref for ExclusiveProtocol<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T: 'static> Drop for ExclusiveProtocol<'_, T> {
+    fn drop(&mut self) {
+        let res = MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().map(|efi| efi.boot_services.close_protocol::<T>(self.device))
+        });
+        if let Some(Err(e)) = res {
+            efi_println!(
+                &passthrough_efi_entry(),
+                "Failed to close exclusive Protocol<{}>: {e}",
+                core::any::type_name::<T>(),
+            );
+        }
+    }
+}
 
 /// Constructs a mock pre-set to the given [`Versioned::revision`].
 pub trait WithRevision: Default {

@@ -399,6 +399,44 @@ impl<'a, T: ProtocolImpl> Protocol<'a, T> {
     }
 }
 
+/// RAII guard for an EFI protocol opened with `EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE`.
+///
+/// Calls `EFI_BOOT_SERVICES.CloseProtocol()` on drop (logging any error) so subsequent callers can
+/// open the protocol exclusively again, while firmware drivers disconnected by the exclusive open
+/// stay disconnected unless explicitly reconnected.
+///
+/// Note that UEFI `CloseProtocol` is not reference-counted: dropping this guard closes all
+/// `(image_handle, NULL)` open entries recorded for this image on `(handle, T::GUID)`.
+#[must_use]
+pub struct ExclusiveProtocol<'a, T: ProtocolImpl>(Protocol<'a, T>);
+
+impl<'a, T: ProtocolImpl> ExclusiveProtocol<'a, T> {
+    pub(crate) fn new(protocol: Protocol<'a, T>) -> Self {
+        Self(protocol)
+    }
+}
+
+impl<'a, T: ProtocolImpl> Deref for ExclusiveProtocol<'a, T> {
+    type Target = Protocol<'a, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: ProtocolImpl> Drop for ExclusiveProtocol<'_, T> {
+    fn drop(&mut self) {
+        let entry = self.0.efi_entry;
+        if let Err(e) = entry.system_table().boot_services().close_protocol::<T>(self.0.device) {
+            efi_println!(
+                entry,
+                "Failed to close exclusive Protocol<{}>: {e}",
+                core::any::type_name::<T>(),
+            );
+        }
+    }
+}
+
 /// Detached [`Protocol`] state without an `&EfiEntry` borrow.
 ///
 /// Storing a `Protocol<'static, T>` in a C FFI context that lives across multiple calls would

@@ -40,6 +40,7 @@ use protocol::{
     simple_network::SimpleNetworkProtocol,
     simple_text_output::{passthrough_con_out, MockSimpleTextOutputProtocol},
     timestamp::TimestampProtocol,
+    ExclusiveProtocol,
 };
 use std::cell::RefCell;
 
@@ -253,6 +254,19 @@ mock! {
         /// that looks like the protocol object.
         pub fn open_protocol<T: 'static>(&self, handle: DeviceHandle) -> Result<T>;
 
+        /// Similar to [open_protocol], returns an [`ExclusiveProtocol`] guard for `T`.
+        ///
+        /// # Safety
+        ///
+        /// See [`efi::BootServices::open_protocol_exclusive`].
+        pub unsafe fn open_protocol_exclusive<T: 'static>(
+            &self,
+            handle: DeviceHandle,
+        ) -> Result<ExclusiveProtocol<'static, T>>;
+
+        /// Mock [`efi::BootServices::close_protocol`].
+        pub fn close_protocol<T: 'static>(&self, handle: DeviceHandle) -> Result<()>;
+
         /// Similar to [open_protocol], returns the type `T`.
         pub fn find_first_and_open<T: 'static>(&self) -> Result<T>;
 
@@ -344,6 +358,22 @@ fn passthrough_boot_services() -> MockBootServices {
     services.expect_open_protocol::<SimpleNetworkProtocol>().returning(|handle| {
         MOCK_EFI.with_borrow_mut(|efi| {
             efi.as_mut().unwrap().boot_services.open_protocol::<SimpleNetworkProtocol>(handle)
+        })
+    });
+    services.expect_open_protocol_exclusive::<SimpleNetworkProtocol>().returning(|handle| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            // SAFETY: Forwarding call to the inner mock `BootServices`.
+            unsafe {
+                efi.as_mut()
+                    .unwrap()
+                    .boot_services
+                    .open_protocol_exclusive::<SimpleNetworkProtocol>(handle)
+            }
+        })
+    });
+    services.expect_close_protocol::<SimpleNetworkProtocol>().returning(|handle| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().unwrap().boot_services.close_protocol::<SimpleNetworkProtocol>(handle)
         })
     });
     services.expect_locate_handle_buffer_by_protocol::<SimpleNetworkProtocol>().returning(|| {
