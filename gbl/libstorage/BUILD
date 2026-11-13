@@ -37,6 +37,7 @@ rust_library(
         "@gbl//liberror",
         "@gbl//libgblutils",
         "@gbl//libsafemath",
+        "@gbl//libutils",
         "@static_assertions",
         "@zerocopy",
     ],

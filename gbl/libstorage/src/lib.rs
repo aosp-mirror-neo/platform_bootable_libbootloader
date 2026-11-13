@@ -33,6 +33,7 @@ use libgblutils::{
     buffer_pool::{BufferPool, PoolRef},
     shared::Shared,
 };
+use libutils::InfallibleCast;
 use safemath::SafeNum;
 
 // Selective export of submodule types.
@@ -558,11 +559,11 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
             _ => scratch,
         };
         let sz = min(size, buf.len().try_into()?);
-        buf[..usize::try_from(sz).unwrap()].fill(val);
+        buf[..sz.cast()].fill(val);
         let end: u64 = (SafeNum::from(offset) + size).try_into()?;
         while offset < end {
             let to_write = min(sz, end - offset);
-            self.write(offset, &mut buf[..usize::try_from(to_write).unwrap()]).await?;
+            self.write(offset, &mut buf[..to_write.cast()]).await?;
             offset += to_write;
         }
         Ok(())
@@ -661,7 +662,8 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
 
     /// Creates a view of self as a purely synchronous disk.
     pub fn as_sync(&self) -> Disk<BlockIoSync<&T>, PoolRef<'_, P>> {
-        Disk::new(BlockIoSync(&self.io), PoolRef::new(self.pool.borrow_mut())).unwrap()
+        Disk::new(BlockIoSync(&self.io), PoolRef::new(self.pool.borrow_mut()))
+            .expect("Failed to create a synchronous view of the disk")
     }
 
     /// Flushes modified data to the physical block device.
