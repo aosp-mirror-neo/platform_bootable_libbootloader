@@ -31,6 +31,7 @@ use efi::{
         gbl_efi_boot_control::GblBootControlProtocol,
         gbl_efi_boot_memory::{
             gbl_get_boot_buffer, gbl_get_partition_buffer, gbl_sync_partition_buffer,
+            GblVendorReservedMemory,
         },
         gbl_efi_fastboot::GblFastbootProtocol,
         gbl_efi_os_configuration::GblOsConfigurationProtocol,
@@ -800,10 +801,12 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         }
     }
 
+    type ReservedMemory = GblVendorReservedMemory;
+
     fn get_partition_buffer(
         &self,
         part: LoadPartition,
-    ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'b>> {
+    ) -> Result<PartitionBuffer<Self::ReservedMemory>> {
         Ok(match gbl_get_partition_buffer(self.efi_entry, part.name())? {
             v if v.is_preloaded() => PartitionBuffer::Preloaded(v),
             v => PartitionBuffer::Designated(v),

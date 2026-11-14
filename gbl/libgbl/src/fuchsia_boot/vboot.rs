@@ -14,7 +14,7 @@
 
 use crate::{
     fuchsia_boot::{zbi_split_unused_buffer_mut, zircon_part_name, SlotIndex},
-    gbl_avb::ops::{GblAvbOps, PreloadBufferState},
+    gbl_avb::ops::{GblAvbOps, PartitionBufferState},
     gbl_println, GblOps, Result as GblResult,
 };
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
@@ -53,7 +53,7 @@ fn zircon_verify_kernel_internal<'a, 'b, B: SplitByteSliceMut + PartialEq>(
     // Verifies the kernel.
     let part = zircon_part_name(slot);
     let slotless_part = zircon_part_name(None);
-    let mut preloaded = [(slotless_part, PreloadBufferState::Loaded(&kernel[..]))];
+    let mut preloaded = [(slotless_part, PartitionBufferState::Loaded(&kernel[..]))];
     let mut avb_ops = GblAvbOps::new(gbl_ops, slot, &mut preloaded[..], true);
 
     // Determines verify flags and error mode.

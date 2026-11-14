@@ -16,12 +16,12 @@
 
 use crate::{
     gbl_avb::{
-        ops::{GblAvbOps, PreloadBufferState, AVB_DIGEST_KEY},
+        ops::{GblAvbOps, PartitionBufferSlot, PartitionBufferState, AVB_DIGEST_KEY},
         state::{BootStateColor, KeyValidationStatus, VerificationStatus},
         ArrayMaxParts, LoadPartition, Verification, MAX_PARTITIONS_TO_VERIFY,
     },
     gbl_println,
-    ops::{PartitionBuffer, Slot},
+    ops::Slot,
     slots::Bootability,
     GblOps, IntegrationError, Result,
 };
@@ -31,17 +31,26 @@ use avb::{
     SlotVerifyResult,
 };
 use bootparams::entry::CommandlineParser;
-use core::{ffi::CStr, ops::DerefMut};
+use core::ffi::CStr;
 use liberror::Error;
 
 /// A container holding partitions for libavb verification
-#[derive(Default)]
-pub struct PartitionsToVerify<'a> {
+pub struct PartitionsToVerify<'a, B> {
     partitions: ArrayMaxParts<LoadPartition<'a>>,
-    preloaded: ArrayMaxParts<(&'a str, PreloadBufferState<'a>)>,
+    /// Guards of the buffers of `partitions`, queried from [GblOps] when libavb first needs them.
+    buffers: [PartitionBufferSlot<B>; MAX_PARTITIONS_TO_VERIFY],
 }
 
-impl<'a> PartitionsToVerify<'a> {
+impl<B> Default for PartitionsToVerify<'_, B> {
+    fn default() -> Self {
+        Self {
+            partitions: Default::default(),
+            buffers: core::array::from_fn(|_| Default::default()),
+        }
+    }
+}
+
+impl<'a, B> PartitionsToVerify<'a, B> {
     /// Appends a partition to verify
     pub fn try_push(&mut self, partition: LoadPartition<'a>) -> Result<()> {
         self.partitions
@@ -50,20 +59,22 @@ impl<'a> PartitionsToVerify<'a> {
         Ok(())
     }
 
-    /// Appends a preloaded partition buffer.
-    pub fn try_push_preloaded(
+    /// Resets the buffers and returns the partitions and the states of their buffers for
+    /// [GblAvbOps].
+    fn reset_buffers(
         &mut self,
-        partition: LoadPartition<'a>,
-        buf: &'a mut PartitionBuffer<impl DerefMut<Target = [u8]>>,
-    ) -> Result<()> {
-        let buf = match buf {
-            PartitionBuffer::Preloaded(v) => PreloadBufferState::Loaded(&v[..]),
-            PartitionBuffer::Designated(v) => PreloadBufferState::ToLoad(&mut v[..]),
-        };
-        let err = Err(Error::TooManyPartitions(MAX_PARTITIONS_TO_VERIFY));
-        self.partitions.try_push(partition).or(err)?;
-        self.preloaded.try_push((partition.name(), buf)).or(err)?;
-        Ok(())
+    ) -> (&[LoadPartition<'a>], ArrayMaxParts<(&str, PartitionBufferState<'_, B>)>) {
+        // Releases the buffers of a previous verification so that they can be queried again. Only
+        // the dev fake-AVB fallback runs a second verification, and libavb then reads designated
+        // partitions from disk again.
+        self.buffers.iter_mut().for_each(PartitionBufferSlot::reset);
+        let states = self
+            .partitions
+            .iter()
+            .zip(&mut self.buffers)
+            .map(|(p, buffer)| (p.name(), PartitionBufferState::ToQuery(*p, buffer)))
+            .collect();
+        (&self.partitions, states)
     }
 }
 
@@ -82,29 +93,26 @@ pub(crate) fn into_verify_data<'a>(
 
 /// Android verified boot flow.
 ///
-/// All relevant images from disk must be preloaded and provided as `partitions`; in its final
-/// state `ops` will provide the necessary callbacks for where the images should go in RAM and
-/// which ones are preloaded.
+/// Partition buffers are queried from `ops` when libavb first needs them.
 ///
 /// # Arguments
 /// * `ops`: [GblOps] providing device-specific backend.
 /// * `slot`: Current slot.
-/// * `partitions`: [PartitionsToVerify] providing pre-loaded partitions.
+/// * `partitions`: [PartitionsToVerify] providing partitions and their buffers.
 ///
 /// # Returns
 ///
 /// * On success, returns a tuple of (verification result, BootStateColor, is_unlocked).
 /// * Returns an error if verification process failed and boot cannot continue.
-pub fn avb_verify_slot<'a, 'b: 'c, 'c>(
-    ops: &mut impl GblOps<'a>,
+pub fn avb_verify_slot<'a, 'b: 'c, 'c, G: GblOps<'a>>(
+    ops: &mut G,
     slot: Option<Slot>,
-    partitions: &'c mut PartitionsToVerify<'b>,
+    partitions: &'c mut PartitionsToVerify<'b, G::ReservedMemory>,
 ) -> Result<(SlotVerifyData<'c>, VerificationStatus, bool)> {
     let slot_index = slot.map(|s| slot_to_index(ops, s)).transpose()?;
 
-    let PartitionsToVerify { partitions, preloaded } = partitions;
-
-    let mut avb_ops = GblAvbOps::new(ops, slot_index, preloaded, false);
+    let (partitions, mut buffers) = partitions.reset_buffers();
+    let mut avb_ops = GblAvbOps::new(ops, slot_index, &mut buffers, false);
     let status = avb_ops.avb_read_device_status()?;
 
     let mut flags = SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE;
@@ -261,17 +269,17 @@ pub fn avb_verify_slot<'a, 'b: 'c, 'c>(
 /// Used only by the DEV GBL to boot the device even if a critical AVB error is encountered,
 /// by using a custom precompiled vbmeta image to work around on-device issues.
 #[cfg(feature = "gbl_dev")]
-pub fn avb_fake_verify_slot<'a, 'b: 'c, 'c>(
-    ops: &mut impl GblOps<'a>,
+pub fn avb_fake_verify_slot<'a, 'b: 'c, 'c, G: GblOps<'a>>(
+    ops: &mut G,
     slot: Option<Slot>,
-    partitions: &'c mut PartitionsToVerify<'b>,
+    partitions: &'c mut PartitionsToVerify<'b, G::ReservedMemory>,
 ) -> Result<(SlotVerifyData<'c>, VerificationStatus, bool)> {
     use crate::gbl_avb::ops::custom_vbmeta::CustomVbmetaAvbOps;
     use crate::slots::slotted_part;
 
     let slot_index = slot.map(|s| slot_to_index(ops, s)).transpose()?;
 
-    let PartitionsToVerify { partitions, preloaded } = partitions;
+    let (partitions, mut buffers) = partitions.reset_buffers();
 
     let mut names: ArrayMaxParts<&'c CStr> = ArrayMaxParts::new();
     for partition in partitions.iter() {
@@ -282,7 +290,7 @@ pub fn avb_fake_verify_slot<'a, 'b: 'c, 'c>(
         }
     }
 
-    let mut avb_ops = GblAvbOps::new(ops, slot_index, preloaded, false);
+    let mut avb_ops = GblAvbOps::new(ops, slot_index, &mut buffers, false);
     let status = avb_ops.avb_read_device_status()?;
 
     // Uses pre-compiled fake vbmeta image with disabled verification, so rely on libavb to
@@ -357,6 +365,7 @@ mod test {
     };
     use avb::{IoError, SlotVerifyError};
     use std::{
+        cell::RefMut,
         collections::{HashMap, HashSet},
         ffi::CStr,
         string::String,
@@ -379,7 +388,7 @@ mod test {
     /// Helper for testing avb_verify_slot
     fn test_avb_verify_slot<'a>(
         partitions: &[(&CStr, &str)],
-        partitions_to_verify: &mut PartitionsToVerify<'a>,
+        partitions_to_verify: &mut PartitionsToVerify<'a, RefMut<'a, [u8]>>,
         device_status: std::result::Result<AvbDeviceStatus, IoError>,
         key_validation_status: KeyValidationStatus,
         fw_rollback_result: std::result::Result<u64, IoError>,
@@ -638,22 +647,15 @@ mod test {
     }
 
     #[test]
-    fn test_avb_verify_slot_from_preloaded_success() {
-        let mut boot = read_test_data("android/boot_no_ramdisk_v4_a.img");
-        let mut init_boot = read_test_data("android/init_boot_a.img");
-        let mut vendor_boot = read_test_data("android/vendor_boot_v4_a.img");
-
-        let mut preloaded = [
-            (LoadPartition::Boot, PartitionBuffer::Preloaded(&mut boot[..])),
-            (LoadPartition::InitBoot, PartitionBuffer::Preloaded(&mut init_boot[..])),
-            (LoadPartition::VendorBoot, PartitionBuffer::Preloaded(&mut vendor_boot[..])),
-        ];
+    fn test_avb_verify_slot_success_first_boot() {
         let mut partitions_to_verify = PartitionsToVerify::default();
-        for (p, v) in &mut preloaded {
-            partitions_to_verify.try_push_preloaded(*p, v).unwrap();
-        }
+        partitions_to_verify.try_push(LoadPartition::Boot).unwrap();
+        partitions_to_verify.try_push(LoadPartition::InitBoot).unwrap();
+        partitions_to_verify.try_push(LoadPartition::VendorBoot).unwrap();
         let partitions_data = [
-            // Required images aren't presented. Have to rely on preloaded.
+            (c"boot_a", "android/boot_no_ramdisk_v4_a.img"),
+            (c"init_boot_a", "android/init_boot_a.img"),
+            (c"vendor_boot_a", "android/vendor_boot_v4_a.img"),
             (c"vbmeta_a", "android/vbmeta_v4_v4_init_boot_a.img"),
         ];
         assert_eq!(

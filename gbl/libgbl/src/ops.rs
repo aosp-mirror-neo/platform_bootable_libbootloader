@@ -423,6 +423,9 @@ pub trait GblOps<'a> {
         buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error>;
 
+    /// Memory of the buffers returned by `get_partition_buffer()`.
+    type ReservedMemory: DerefMut<Target = [u8]> + 'a;
+
     /// Gets platform reserved buffer for loading the given type of partition image.
     ///
     /// Implementation should always return the same and unique buffer for `img` until
@@ -439,7 +442,7 @@ pub trait GblOps<'a> {
     fn get_partition_buffer(
         &self,
         img: LoadPartition,
-    ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error>;
+    ) -> Result<PartitionBuffer<Self::ReservedMemory>, Error>;
 
     /// Gets the buffer for the given type of boot image.
     ///
@@ -840,10 +843,12 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         self.ops.avb_cert_read_permanent_attributes_hash()
     }
 
+    type ReservedMemory = T::ReservedMemory;
+
     fn get_partition_buffer(
         &self,
         img: LoadPartition,
-    ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
+    ) -> Result<PartitionBuffer<Self::ReservedMemory>, Error> {
         self.ops.get_partition_buffer(img)
     }
 
@@ -1303,7 +1308,7 @@ pub(crate) mod test {
 
     /// Fake [GblOps] implementation for testing.
     #[derive(Default)]
-    pub(crate) struct FakeGblOps<'a> {
+    pub(crate) struct FakeGblOps<'a, 'p> {
         /// Partition data to expose.
         pub partitions: &'a [TestGblDisk],
 
@@ -1406,9 +1411,9 @@ pub(crate) mod test {
         /// Stores the inputs of `avb_write_lock_state()` call.
         pub write_lock_state_traces: Vec<(LockType, LockState)>,
 
-        /// Handler for `get_partition_buffer`
+        /// Handler for `get_partition_buffer`. `'p` is the lifetime of the returned buffers.
         pub get_partition_buffer_handler:
-            Option<&'a dyn Fn(LoadPartition) -> Result<PartitionBuffer<RefMut<'a, [u8]>>, Error>>,
+            Option<&'a dyn Fn(LoadPartition) -> Result<PartitionBuffer<RefMut<'p, [u8]>>, Error>>,
 
         /// Handler for `get_boot_buffer`
         pub get_boot_buffer_handler:
@@ -1457,10 +1462,16 @@ pub(crate) mod test {
 
         /// Captured console output written via `console_out`.
         pub console_logs: String,
+
+        /// For return by `get_time`.
+        pub time: Option<FakeGblTime>,
+
+        /// For return by `get_metrics`.
+        pub metrics: Option<RefCell<GblMetrics>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging, and capture it for tests.
-    impl<'a> Write for FakeGblOps<'a> {
+    impl<'a> Write for FakeGblOps<'a, '_> {
         fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
             self.console_logs.push_str(s);
             print!("{s}");
@@ -1468,7 +1479,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> FakeGblOps<'a> {
+    impl<'a> FakeGblOps<'a, '_> {
         /// For now we've just hardcoded the `zircon_add_device_zbi_items()` callback to add a
         /// single commandline ZBI item with these contents; if necessary we can generalize this
         /// later and allow tests to configure the ZBI modifications.
@@ -1555,7 +1566,7 @@ pub(crate) mod test {
         fn report(&self, _: &'static str, _: &'static str, _: Duration) {}
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a> {
+    impl<'a, 'p: 'a> GblOps<'a> for FakeGblOps<'a, 'p> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -1762,10 +1773,12 @@ pub(crate) mod test {
             Ok(Some(out))
         }
 
+        type ReservedMemory = RefMut<'p, [u8]>;
+
         fn get_partition_buffer(
             &self,
             img: LoadPartition,
-        ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
+        ) -> Result<PartitionBuffer<Self::ReservedMemory>, Error> {
             self.get_partition_buffer_handler.as_ref().ok_or(Error::NotFound)?(img)
         }
 
@@ -2073,11 +2086,11 @@ pub(crate) mod test {
         }
 
         fn get_time(&self) -> Option<&impl GblTime> {
-            None::<&FakeGblTime>
+            self.time.as_ref()
         }
 
         fn get_metrics(&self) -> Option<impl DerefMut<Target = GblMetrics> + '_> {
-            None::<Box<GblMetrics>>
+            self.metrics.as_ref().map(RefCell::borrow_mut)
         }
 
         fn get_firmware_version_metrics(&self) -> FirmwareVersionMetrics {
@@ -2110,7 +2123,7 @@ pub(crate) mod test {
 
     // An ops implementation where all interfaces are unsupported.
     #[derive(Default)]
-    pub(crate) struct OpsAllUnsupported<'a>(FakeGblOps<'a>);
+    pub(crate) struct OpsAllUnsupported<'a>(FakeGblOps<'a, 'a>);
 
     impl<'a> GblOps<'a> for OpsAllUnsupported<'_> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
@@ -2194,11 +2207,13 @@ pub(crate) mod test {
             Err(AvbIoError::NotImplemented)
         }
 
+        type ReservedMemory = &'a mut [u8];
+
         fn get_partition_buffer(
             &self,
             _: LoadPartition,
-        ) -> Result<PartitionBuffer<impl DerefMut<Target = [u8]> + 'a>, Error> {
-            Err::<PartitionBuffer<&mut [u8]>, _>(Error::Unsupported)
+        ) -> Result<PartitionBuffer<Self::ReservedMemory>, Error> {
+            Err(Error::Unsupported)
         }
 
         fn get_boot_buffer(

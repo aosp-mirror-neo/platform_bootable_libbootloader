@@ -17,10 +17,11 @@
 use crate::{
     gbl_avb::{
         state::{KeyValidationStatus, VerificationStatus},
-        AvbDeviceStatus, AvbPartition, AvbProperty,
+        AvbDeviceStatus, AvbPartition, AvbProperty, LoadPartition,
     },
+    gbl_println,
     metrics::GblTime,
-    ops::RngAlgorithm,
+    ops::{PartitionBuffer, RngAlgorithm},
     partition::split_partition_suffix,
     GblOps,
 };
@@ -35,15 +36,13 @@ use core::{
     cmp::{max, min},
     ffi::CStr,
     fmt::Write,
-    mem::take,
+    mem::{replace, take},
     ops::Range,
 };
 use liberror::Error;
 use safemath::SafeNum;
 use uuid::Uuid;
 
-#[cfg(feature = "gbl_dev")]
-use crate::gbl_println;
 #[cfg(feature = "gbl_dev")]
 use core::fmt::Debug;
 
@@ -53,23 +52,50 @@ pub const AVB_DIGEST_KEY: &str = "androidboot.vbmeta.digest";
 // AVB cert tracks versions for the PIK and PSK; PRK cannot be changed so has no version info.
 const AVB_CERT_NUM_KEY_VERSIONS: usize = 2;
 
-/// Represents the state of preloaded buffer
-pub enum PreloadBufferState<'a> {
+/// Represents the state of a partition buffer
+pub enum PartitionBufferState<'a, B> {
+    /// Not queried with `GblOps::get_partition_buffer()` yet. The buffer will be stored in the
+    /// referenced [PartitionBufferSlot].
+    ToQuery(LoadPartition<'a>, &'a mut PartitionBufferSlot<B>),
     /// Loaded already
     Loaded(&'a [u8]),
     /// To be loaded.
     ToLoad(&'a mut [u8]),
+    /// `GblOps::get_partition_buffer()` has no buffer for the partition.
+    NoBuffer,
+}
+
+/// Storage for a buffer queried with `GblOps::get_partition_buffer()`. It lives outside
+/// [GblAvbOps], so that the buffer outlives [GblAvbOps].
+pub struct PartitionBufferSlot<B>(Option<B>);
+
+impl<B> Default for PartitionBufferSlot<B> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<B> PartitionBufferSlot<B> {
+    /// Releases the buffer, if any.
+    pub fn reset(&mut self) {
+        self.0 = None;
+    }
+
+    /// Moves `buffer` into the slot and returns a reference to it.
+    fn insert(&mut self, buffer: B) -> &mut B {
+        self.0.insert(buffer)
+    }
 }
 
 /// Implements avb ops callbacks for [GblOps].
-pub struct GblAvbOps<'a: 'c, 'b, 'c, T> {
+pub struct GblAvbOps<'a: 'c, 'b, 'c, T, B> {
     /// The underlying [GblOps].
     /// TODO(b/578053084): Make private to ensure GblAvbOps methods are used
     /// instead of accessing the underlying `gbl_ops` directly.
     pub gbl_ops: &'b mut T,
     slot: Option<SlotIndex>,
     /// Slotless partitions pre-loaded by the implementation. Provided to avoid redundant IO.
-    preloaded_partitions: &'c mut [(&'a str, PreloadBufferState<'a>)],
+    preloaded_partitions: &'c mut [(&'a str, PartitionBufferState<'a, B>)],
     /// Used for storing key versions to be set (location, version).
     ///
     /// These will initially be `None`, but if using the cert extensions they will be updated during
@@ -85,12 +111,12 @@ pub struct GblAvbOps<'a: 'c, 'b, 'c, T> {
     key_validation_status: Option<KeyValidationStatus>,
 }
 
-impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
+impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T, T::ReservedMemory> {
     /// Creates a new [GblAvbOps].
     pub fn new(
         gbl_ops: &'b mut T,
         slot: Option<SlotIndex>,
-        preloaded_partitions: &'c mut [(&'a str, PreloadBufferState<'a>)],
+        preloaded_partitions: &'c mut [(&'a str, PartitionBufferState<'a, T::ReservedMemory>)],
         use_cert: bool,
     ) -> Self {
         Self {
@@ -274,6 +300,57 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
             .position(|(name, _)| *name == partition_name)
             .ok_or(IoError::NotImplemented)
     }
+
+    /// Queries the buffer of the partition at `pos` with `GblOps::get_partition_buffer()` if it
+    /// hasn't been queried yet.
+    fn query_buffer(&mut self, pos: usize) -> IoResult<()> {
+        let state = &mut self.preloaded_partitions[pos].1;
+        let (part, slot) = match replace(state, PartitionBufferState::NoBuffer) {
+            PartitionBufferState::ToQuery(part, slot) => (part, slot),
+            v => {
+                *state = v;
+                return Ok(());
+            }
+        };
+        *state = match query_partition_buffer(self.gbl_ops, part) {
+            Ok(PartitionBuffer::Preloaded(buf)) => {
+                gbl_println!(self.gbl_ops, "Found preloaded buffer for {:?}", part.name());
+                PartitionBufferState::Loaded(&slot.insert(buf)[..])
+            }
+            Ok(PartitionBuffer::Designated(buf)) => {
+                gbl_println!(self.gbl_ops, "Found designated load buffer for {:?}", part.name());
+                PartitionBufferState::ToLoad(&mut slot.insert(buf)[..])
+            }
+            Err(Error::NotFound) => PartitionBufferState::NoBuffer,
+            Err(e) => {
+                *state = PartitionBufferState::ToQuery(part, slot);
+                gbl_println!(self.gbl_ops, "Failed to get buffer for {:?}: {e}", part.name());
+                return Err(IoError::Io);
+            }
+        };
+        Ok(())
+    }
+}
+
+/// Queries the buffer of `part` with `GblOps::get_partition_buffer()`.
+///
+/// The firmware may block until the partition is preloaded, so the time it takes to return a
+/// preloaded buffer is recorded as I/O time of the partition. A designated buffer is timed when
+/// GBL reads into it.
+pub fn query_partition_buffer<'a, G: GblOps<'a>>(
+    ops: &G,
+    part: LoadPartition,
+) -> Result<PartitionBuffer<G::ReservedMemory>, Error> {
+    let start = ops.get_time().and_then(|t| t.current_tick().ok());
+    let res = ops.get_partition_buffer(part);
+    if matches!(res, Ok(PartitionBuffer::Preloaded(_)))
+        && let Some(start) = start
+        && let Some(delta) = ops.get_time().and_then(|t| t.elapsed_ticks(start).ok())
+        && let Some(mut metrics) = ops.get_metrics()
+    {
+        metrics.add_io_timing_ticks(part.name(), delta);
+    }
+    res
 }
 
 /// A helper function for converting `CStr` to `str`
@@ -324,9 +401,9 @@ fn calculate_partition_read_range(
 }
 
 /// # Lifetimes
-/// * `'a`: preloaded data lifetime
+/// * `'a`: preloaded data and buffer slot lifetime
 /// * `'b`: [GblOps] partition lifetime
-impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
+impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T, T::ReservedMemory> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -364,12 +441,14 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
         partition: &CStr,
         num_bytes: usize,
     ) -> IoResult<&'a [u8]> {
-        let res = &mut self.preloaded_partitions[self.get_preloaded_pos(partition)?].1;
+        let pos = self.get_preloaded_pos(partition)?;
+        self.query_buffer(pos)?;
+        let res = &mut self.preloaded_partitions[pos].1;
         match res {
-            PreloadBufferState::Loaded(v) => {
+            PartitionBufferState::Loaded(v) => {
                 v.get(..num_bytes).ok_or(IoError::RangeOutsidePartition)
             }
-            PreloadBufferState::ToLoad(v) => {
+            PartitionBufferState::ToLoad(v) => {
                 let out = v.get_mut(..num_bytes).ok_or(IoError::RangeOutsidePartition)?;
                 let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
                 let start = self.gbl_ops.get_time().and_then(|t| t.current_tick().ok());
@@ -387,8 +466,11 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
                 // Note: we only take from v after everything is successful. If we take first and
                 // then there is error and we return early, the buffer is lost.
                 let buf = &mut take(v)[..num_bytes];
-                *res = PreloadBufferState::Loaded(buf);
+                *res = PartitionBufferState::Loaded(buf);
                 Ok(buf)
+            }
+            PartitionBufferState::ToQuery(..) | PartitionBufferState::NoBuffer => {
+                Err(IoError::NotImplemented)
             }
         }
     }
@@ -467,9 +549,13 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
     }
 
     fn get_size_of_partition(&mut self, partition: &CStr) -> IoResult<u64> {
-        match self.get_preloaded_pos(partition).map(|v| &mut self.preloaded_partitions[v].1) {
-            Ok(PreloadBufferState::ToLoad(v)) => Ok(v.len().try_into().unwrap()),
-            Ok(PreloadBufferState::Loaded(v)) => Ok(v.len().try_into().unwrap()),
+        let pos = self.get_preloaded_pos(partition);
+        if let Ok(pos) = pos {
+            self.query_buffer(pos)?;
+        }
+        match pos.map(|v| &mut self.preloaded_partitions[v].1) {
+            Ok(PartitionBufferState::ToLoad(v)) => Ok(v.len().try_into().unwrap()),
+            Ok(PartitionBufferState::Loaded(v)) => Ok(v.len().try_into().unwrap()),
             _ => self.partition_size(cstr_to_str(partition, IoError::NoSuchPartition)?),
         }
     }
@@ -528,7 +614,7 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
 }
 
 /// [GblAvbOps] always implements [CertOps], but it's only used if `use_cert` is set.
-impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, '_, '_, T> {
+impl<'a, T: GblOps<'a>, B> CertOps for GblAvbOps<'_, '_, '_, T, B> {
     fn read_permanent_attributes(
         &mut self,
         attributes: &mut CertPermanentAttributes,
@@ -709,12 +795,13 @@ pub(crate) mod custom_vbmeta {
 mod test {
     use super::*;
     use crate::{
-        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        ops::test::{FakeGblOps, FakeGblOpsStorage, FakeGblTime},
         tests::{
             read_test_data, TEST_PERMANENT_ATTRIBUTES_HASH_PATH, TEST_PERMANENT_ATTRIBUTES_PATH,
         },
     };
     use avb::{CERT_PIK_VERSION_LOCATION, CERT_PSK_VERSION_LOCATION};
+    use core::cell::{Cell, RefCell, RefMut};
     use zerocopy::FromBytes;
 
     const TEST_CERT_PUBLIC_KEY_PATH: &str = "testkey_cert_psk.bin";
@@ -814,7 +901,7 @@ mod test {
 
         let data = &test_data(512);
         let slice = &data[..];
-        let mut preloaded = [(preloaded_partition, PreloadBufferState::Loaded(slice))];
+        let mut preloaded = [(preloaded_partition, PartitionBufferState::Loaded(slice))];
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, slot, &mut preloaded, false);
 
         match expect_success {
@@ -902,7 +989,7 @@ mod test {
         storage.add_raw_device(part, &data[..]);
 
         let mut out = vec![0u8; data.len()];
-        let mut preloaded = [(part.to_str().unwrap(), PreloadBufferState::ToLoad(&mut out[..]))];
+        let mut preloaded = [(part.to_str().unwrap(), PartitionBufferState::ToLoad(&mut out[..]))];
 
         let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, None, &mut preloaded[..], false);
@@ -910,6 +997,85 @@ mod test {
         assert_eq!(avb_ops.get_size_of_partition(part), Ok(data.len().try_into().unwrap()));
         assert_eq!(avb_ops.get_preloaded_partition(part, data.len()).unwrap(), data);
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn test_query_partition_buffer_error() {
+        let queries = Cell::new(0);
+        let handler = |_: LoadPartition| {
+            queries.set(queries.get() + 1);
+            Err(Error::DeviceError)
+        };
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.get_partition_buffer_handler = Some(&handler);
+        let mut slot = PartitionBufferSlot::default();
+        let mut preloaded =
+            [("boot", PartitionBufferState::ToQuery(LoadPartition::Boot, &mut slot))];
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, None, &mut preloaded, false);
+
+        assert_eq!(avb_ops.get_preloaded_partition(c"boot", 512), Err(IoError::Io));
+        // Queried again on the next request.
+        assert_eq!(avb_ops.get_size_of_partition(c"boot"), Err(IoError::Io));
+        assert_eq!(queries.get(), 2);
+    }
+
+    #[test]
+    fn test_query_partition_buffer_not_found_queried_once() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot", test_data(512));
+        let queries = Cell::new(0);
+        let handler = |_: LoadPartition| {
+            queries.set(queries.get() + 1);
+            Err(Error::NotFound)
+        };
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.get_partition_buffer_handler = Some(&handler);
+        gbl_ops.time = Some(FakeGblTime::new(vec![100, 130]));
+        gbl_ops.metrics = Some(Default::default());
+        let mut slot = PartitionBufferSlot::default();
+        let mut preloaded =
+            [("boot", PartitionBufferState::ToQuery(LoadPartition::Boot, &mut slot))];
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, None, &mut preloaded, false);
+
+        assert_eq!(avb_ops.get_size_of_partition(c"boot"), Ok(512));
+        assert_eq!(avb_ops.get_preloaded_partition(c"boot", 512), Err(IoError::NotImplemented));
+        assert_eq!(queries.get(), 1);
+        // No I/O time is recorded for a partition without a buffer.
+        assert!(gbl_ops.metrics.unwrap().into_inner().io_timings_ticks.is_empty());
+    }
+
+    /// Queries the `boot` buffer, which takes 30 ticks, and returns the recorded I/O times.
+    fn query_partition_buffer_io_times(is_preloaded: bool) -> Vec<u64> {
+        let buffer = RefCell::new(test_data(512));
+        let handler = |_: LoadPartition| {
+            let buf = RefMut::map(buffer.borrow_mut(), |v| &mut v[..]);
+            Ok(match is_preloaded {
+                true => PartitionBuffer::Preloaded(buf),
+                false => PartitionBuffer::Designated(buf),
+            })
+        };
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.get_partition_buffer_handler = Some(&handler);
+        gbl_ops.time = Some(FakeGblTime::new(vec![100, 130]));
+        gbl_ops.metrics = Some(Default::default());
+        let mut slot = PartitionBufferSlot::default();
+        let mut preloaded =
+            [("boot", PartitionBufferState::ToQuery(LoadPartition::Boot, &mut slot))];
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, None, &mut preloaded, false);
+
+        assert_eq!(avb_ops.get_size_of_partition(c"boot"), Ok(512));
+        gbl_ops.metrics.unwrap().into_inner().io_timings_ticks.iter().map(|v| v.1).collect()
+    }
+
+    #[test]
+    fn test_query_preloaded_buffer_records_io_time() {
+        assert_eq!(query_partition_buffer_io_times(true), [30]);
+    }
+
+    #[test]
+    fn test_query_designated_buffer_records_no_io_time() {
+        // I/O into a designated buffer is timed when it is read.
+        assert!(query_partition_buffer_io_times(false).is_empty());
     }
 
     #[test]
@@ -1034,7 +1200,7 @@ mod test {
     /// * the [FakeGblOps]
     /// * the corresponding vbmeta public key
     /// * the corresponding vbmeta public key metadata
-    fn create_fake_gbl_ops_with_cert() -> (FakeGblOps<'static>, Vec<u8>, Vec<u8>) {
+    fn create_fake_gbl_ops_with_cert() -> (FakeGblOps<'static, 'static>, Vec<u8>, Vec<u8>) {
         let mut gbl_ops = FakeGblOps::new(&[]);
 
         // Cert verification requires both permanent attribute ops plus reading

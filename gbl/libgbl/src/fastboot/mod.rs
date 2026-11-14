@@ -3166,7 +3166,7 @@ pub(crate) mod test {
 
     /// Same as [resolve_slotted_partition] but uses the caller's (possibly customized) `gbl_ops`.
     fn resolve_slotted_partition_with_ops<'a>(
-        gbl_ops: &mut FakeGblOps<'_>,
+        gbl_ops: &mut FakeGblOps<'_, '_>,
         target: Option<&'a str>,
         block_id: Option<usize>,
         mode: ResolveMode,
@@ -4792,7 +4792,7 @@ pub(crate) mod test {
 
     /// Builds critically-locked fake ops with attributes `critical` and `protect_f` marked
     /// `Critical::Yes`.
-    fn critical_lock_test_ops(storage: &FakeGblOpsStorage) -> FakeGblOps<'_> {
+    fn critical_lock_test_ops(storage: &FakeGblOpsStorage) -> FakeGblOps<'_, '_> {
         let mut gbl_ops = FakeGblOps::new(storage);
         gbl_ops.avb_device_status.is_unlocked = true;
         gbl_ops.avb_device_status.is_unlockable = true;

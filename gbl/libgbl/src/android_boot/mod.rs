@@ -22,11 +22,11 @@ use crate::{
         GblFastbootResult, GblFbData, GblGenericTransport, GblTcpStream, LoadedImageInfo,
         PinFutContainer,
     },
-    gbl_avb::{ArrayMaxParts, ArrayMaxSpecializedParts, LoadPartition, Verification},
+    gbl_avb::{ops::query_partition_buffer, ArrayMaxSpecializedParts, LoadPartition, Verification},
     gbl_println,
     metrics::{FirmwareVersionMetrics, GblMetrics, GblTime},
     misc::{read_bootloader_message_to, write_bootloader_message},
-    ops::{BootBufferType, OneShotBootMode, PartitionBuffer, RebootMode},
+    ops::{BootBufferType, OneShotBootMode, RebootMode},
     slots::{slotted_part, Slot},
     GblOps, IntegrationError, Result,
 };
@@ -101,52 +101,35 @@ pub fn android_load_verify_fixup<'a, 'b>(
         requested_partitions.len()
     );
 
-    let mut partitions: ArrayMaxParts<(LoadPartition, Option<PartitionBuffer<_>>)> =
-        ArrayMaxParts::new();
-
-    // We need to first store all buffers and then create slices from them. Because they are
-    // opaque objects that need to be dereferenced to yield slices.
+    // Holds the partitions to verify and their firmware-provided buffers. A buffer is queried when
+    // libavb first accesses its partition, so verification overlaps with firmware preloading. The
+    // exception is an optional partition that isn't on disk, see below.
+    let mut partitions_to_verify = PartitionsToVerify::default();
     for partition in STANDARD_PARTITIONS
         .iter()
         .copied()
         .chain(requested_partitions.iter().map(LoadPartition::PlatformSpecific))
     {
-        let b = match ops.get_partition_buffer(partition) {
-            Ok(b) => {
-                let info = match b {
-                    PartitionBuffer::Preloaded(_) => "preloaded",
-                    PartitionBuffer::Designated(_) => "designated load",
-                };
-                gbl_println!(ops, "Found {info} buffer for {:?}", partition.name());
-                Some(b)
+        // TODO(b/578053084): libavb lacks a required/optional partition concept: with verification
+        // enabled it requires only requested partitions listed in vbmeta descriptors, whereas with
+        // verification disabled it requires all requested partitions. Because of this, GBL has to
+        // pre-check the existence of optional partitions before requesting them. Remove this once
+        // the required/optional partition concept is introduced into libavb.
+        if partition.verification() == Verification::Required
+            || ops
+                .partition_size(&slotted_part(partition.name(), slot.map(|s| s.suffix)))?
+                .is_some()
+            // Not on disk, but firmware may provide it as a virtual partition that exists only as
+            // a preloaded buffer. GBL must know whether it exists before requesting it (see the
+            // TODO above), so its buffer is queried up front. The buffer is released right away
+            // and queried again when libavb reads the partition.
+            || match query_partition_buffer(ops, partition) {
+                Ok(_) => true,
+                Err(Error::NotFound) => false,
+                Err(e) => return Err(e.into()),
             }
-            Err(Error::NotFound) => None,
-            Err(e) => return Err(e.into()),
-        };
-        partitions
-            .try_push((partition, b))
-            .map_err(|_| Error::TooManyPartitions(partitions.len()))?;
-    }
-
-    let mut partitions_to_verify = PartitionsToVerify::default();
-    // Adds partitions for verification. AVB will only verify partitions that contain a hash
-    // descriptor in vbmeta. Missing firmware-specific partitions will cause a verification
-    // failure on locked devices.
-    for (partition, buffer) in partitions.iter_mut() {
-        match buffer {
-            Some(buffer) => partitions_to_verify.try_push_preloaded(*partition, buffer)?,
-            None => {
-                // TODO(b/578053084): Android partitions listed in vbmeta must be loaded or boot
-                // fails, so this size check should be removed. For now, it's kept to allow reusing
-                // the same vbmeta in unit tests without providing all partitions.
-                if partition.verification() == Verification::Required
-                    || ops
-                        .partition_size(&slotted_part(partition.name(), slot.map(|s| s.suffix)))?
-                        .is_some()
-                {
-                    partitions_to_verify.try_push(*partition)?
-                }
-            }
+        {
+            partitions_to_verify.try_push(partition)?
         }
     }
 
@@ -295,7 +278,6 @@ pub fn android_load_verify_fixup<'a, 'b>(
     drop(images);
     drop(verify_data);
     drop(partitions_to_verify);
-    drop(partitions);
     ops.sync_partition_buffer(false)?;
 
     // Looking up /chosen walks every node before it, which takes milliseconds on large device
@@ -2266,8 +2248,10 @@ pub(crate) mod tests {
         let vendor_boot_addr = image_buffers[2].1.borrow_mut().as_ptr_range();
         let init_boot_addr = image_buffers[3].1.borrow_mut().as_ptr_range();
 
+        let queried = RefCell::new(vec![]);
         let get_partition_buffer_handler = |img: LoadPartition| {
             let (_, buf, pre) = image_buffers.iter().find(|v| v.0 == img).ok_or(Error::NotFound)?;
+            queried.borrow_mut().push(img.name().to_string());
             match pre {
                 true => Ok(PartitionBuffer::Preloaded(into_refmut_bytes(buf.borrow_mut()))),
                 _ => Ok(PartitionBuffer::Designated(into_refmut_bytes(buf.borrow_mut()))),
@@ -2281,6 +2265,10 @@ pub(crate) mod tests {
         const TEST_CMDLINE_FIXUP: &str = "fixup-by-sync-partition-buffer=1";
         let mut sync_partition_buffer_handler = |ops: &mut FakeGblOps, sync_preloaded: bool| {
             assert!(!sync_preloaded);
+            assert!(
+                image_buffers.iter().all(|v| v.1.try_borrow_mut().is_ok()),
+                "GBL must release all partition buffers before calling sync_partition_buffer()"
+            );
             // Checks that this is called after images are loaded.
             // Designated buffers are loaded with the correct image.
             assert_eq!(
@@ -2302,7 +2290,14 @@ pub(crate) mod tests {
         };
 
         let mut ops = default_test_gbl_ops(&storage);
+        let device_status = ops.avb_device_status.0.clone();
+        let mut queried_before_avb = None;
+        let mut avb_read_device_status_handler = || {
+            queried_before_avb.get_or_insert_with(|| queried.borrow().clone());
+            device_status.clone()
+        };
         ops.get_partition_buffer_handler = Some(&get_partition_buffer_handler);
+        ops.avb_read_device_status_handler = Some(&mut avb_read_device_status_handler);
         ops.sync_partition_buffer_handler = Some(&mut sync_partition_buffer_handler);
 
         let mut buffers = TestBootBuffer::new();
@@ -2347,6 +2342,89 @@ pub(crate) mod tests {
                 FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
             )));
         assert!(sync_partition_called);
+        assert_eq!(
+            queried_before_avb,
+            Some(vec![]),
+            "partition buffers must not be queried before AVB starts"
+        );
+        assert_eq!(
+            *queried.borrow(),
+            ["boot", "init_boot", "vendor_boot", "vendor_kernel_boot"],
+            "partition buffers must be queried in vbmeta descriptor order"
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_partition_buffer_error() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("android/boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_v2_a.img"));
+        let get_partition_buffer_handler = |img: LoadPartition| match img {
+            LoadPartition::Boot => Err(Error::DeviceError),
+            _ => Err(Error::NotFound),
+        };
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.get_partition_buffer_handler = Some(&get_partition_buffer_handler);
+        let mut buffers = TestBootBuffer::new();
+        assert_eq!(
+            android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).err(),
+            Some(avb::SlotVerifyError::Io.into())
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_unlocked_partition_buffer_size() {
+        let mut storage = FakeGblOpsStorage::default();
+        let boot = read_test_data("android/boot_v2_a.img");
+        // Zeroes only and larger than the preloaded buffer.
+        storage.add_raw_device(c"boot_a", vec![0; boot.len() + 4096]);
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_v2_a.img"));
+        let buf = RefCell::new(boot);
+        let get_partition_buffer_handler = |img: LoadPartition| match img {
+            LoadPartition::Boot => {
+                Ok(PartitionBuffer::Preloaded(into_refmut_bytes(buf.borrow_mut())))
+            }
+            _ => Err(Error::NotFound),
+        };
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.avb_device_status.is_unlocked = true;
+        ops.get_partition_buffer_handler = Some(&get_partition_buffer_handler);
+        let mut buffers = TestBootBuffer::new();
+        let (_, _, kernel) =
+            android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).unwrap();
+        assert_eq!(kernel, read_test_data("android/kernel_a.img"));
+    }
+
+    #[test]
+    #[cfg(feature = "gbl_dev")]
+    fn test_android_load_verify_fixup_partition_buffer_fake_avb() {
+        let mut storage = FakeGblOpsStorage::default();
+        // Zeroes only. Will be provided via preloaded buffer.
+        storage.add_raw_device(c"boot_a", vec![0; 1024]);
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_v2_a.img"));
+        let buf = RefCell::new(read_test_data("android/boot_v2_a.img"));
+        // Fails if the buffer returned for the failed verification is still in use.
+        let get_partition_buffer_handler = |img: LoadPartition| match img {
+            LoadPartition::Boot => {
+                let buf = buf.try_borrow_mut().or(Err(Error::NotReady))?;
+                Ok(PartitionBuffer::Preloaded(into_refmut_bytes(buf)))
+            }
+            _ => Err(Error::NotFound),
+        };
+        // Fails the verification after libavb has loaded the partitions.
+        let mut handler =
+            |_,
+             _: Option<&CStr>,
+             _: Option<Vec<AvbProperty<'_>>>,
+             _: Option<Vec<AvbPartition<'_>>>| Err(avb::IoError::Io);
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.avb_device_status.is_unlocked = true;
+        ops.get_partition_buffer_handler = Some(&get_partition_buffer_handler);
+        ops.avb_handle_verification_result = Some(&mut handler);
+        let mut buffers = TestBootBuffer::new();
+        let (_, _, kernel) =
+            android_load_verify_fixup(&mut ops, Some(slot('a')), false, buffers.get()).unwrap();
+        assert_eq!(kernel, read_test_data("android/kernel_a.img"));
     }
 
     /// Helper for checking V2 image loaded from slot A and in normal mode.
@@ -2432,7 +2510,7 @@ pub(crate) mod tests {
     }
 
     /// Helper for getting default FakeGblOps for tests.
-    pub(crate) fn default_test_gbl_ops(storage: &FakeGblOpsStorage) -> FakeGblOps<'_> {
+    pub(crate) fn default_test_gbl_ops<'p>(storage: &FakeGblOpsStorage) -> FakeGblOps<'_, 'p> {
         let mut ops = FakeGblOps::new(storage);
         ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
         ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
