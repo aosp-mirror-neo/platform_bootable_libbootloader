@@ -128,7 +128,13 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
             return Err(e);
         }
     }
-    snp.reset(true)
+    // `Initialize()` already resets the adapter; keep `Reset(true)` for drivers that implement it
+    // (EDK2's SnpDxe rejects `Reset(false)` with `EFI_INVALID_PARAMETER`), while tolerating
+    // `EFI_UNSUPPORTED` from drivers such as OVMF's VirtioNetDxe that omit `Reset()`.
+    match snp.reset(true) {
+        Ok(()) | Err(Error::Unsupported) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Holds an open `SimpleNetworkProtocol`, either exclusively (closing on drop) or shared when
@@ -1354,6 +1360,34 @@ mod test {
 
         assert_eq!(reset_simple_network(&snp), Err(Error::DeviceError));
         assert_eq!(fake.state(), STOPPED);
+    }
+
+    #[test]
+    fn test_reset_simple_network_tolerates_unsupported_reset_only() {
+        for (reset_err, expected) in
+            [(Error::Unsupported, Ok(())), (Error::DeviceError, Err(Error::DeviceError))]
+        {
+            let fake = FakeSnp::new(STARTED);
+            let mut snp = SimpleNetworkProtocol::default();
+            let fake_mode = fake.clone();
+            snp.expect_mode().returning(move || {
+                Ok(EfiSimpleNetworkMode { state: fake_mode.state(), ..Default::default() })
+            });
+            let fake_init = fake.clone();
+            snp.expect_initialize()
+                .times(1)
+                .returning(move |_, _| fake_init.transition(STARTED, INITIALIZED));
+            let fake_reset = fake.clone();
+            snp.expect_reset().times(1).returning(move |extended_verification| {
+                assert!(extended_verification);
+                fake_reset.transition(INITIALIZED, INITIALIZED)?;
+                Err(reset_err)
+            });
+
+            assert_eq!(reset_simple_network(&snp), expected);
+            assert_eq!(fake.state(), INITIALIZED);
+            assert_eq!(fake.invalid_calls(), 0);
+        }
     }
 
     #[test]
