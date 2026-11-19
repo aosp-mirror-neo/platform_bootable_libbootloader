@@ -92,6 +92,10 @@ rust_bindgen(
         # `point_conversion_form_t`.
         "--rustified-enum=point_conversion_form_t",
         "--default-macro-constant-type=signed",
+        # Match upstream BoringSSL's header filter so transitive `gbl/libc`
+        # `string.h` symbols (bound with `u64` instead of `usize` on baremetal)
+        # aren't emitted and rejected by `suspicious_runtime_symbol_definitions`.
+        "--allowlist-file=.*[[:punct:]]include[[:punct:]]openssl[[:punct:]].*\\.h",
     ],
     cc_lib = ":crypto_with_stubs",
     header = "@boringssl//:src/rust/bssl-sys/wrapper.h",
