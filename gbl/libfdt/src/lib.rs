@@ -1330,25 +1330,34 @@ mod test {
         fdt_encode_cell_sized_property(&[0xABABABAB12121212, 0x12345678], &[2, 1], &mut buffer)
             .unwrap();
         let vals = buffer
-            .chunks_exact(size_of::<u32>())
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
             .take(3)
-            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            .copied()
+            .map(u32::from_be_bytes)
             .collect::<Vec<_>>();
         assert_eq!(vals, vec![0xABABABAB, 0x12121212, 0x12345678]);
 
         fdt_encode_cell_sized_property(&[1, 2, 3, 4, 5, 6], &[2, 2], &mut buffer).unwrap();
         let vals = buffer
-            .chunks_exact(size_of::<u32>())
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
             .take(12)
-            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            .copied()
+            .map(u32::from_be_bytes)
             .collect::<Vec<_>>();
         assert_eq!(vals, vec![0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6]);
 
         fdt_encode_cell_sized_property(&[1, 2, 3, 4, 5, 6], &[1, 3, 1], &mut buffer).unwrap();
         let vals = buffer
-            .chunks_exact(size_of::<u32>())
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
             .take(10)
-            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            .copied()
+            .map(u32::from_be_bytes)
             .collect::<Vec<_>>();
         assert_eq!(vals, vec![1, 0, 0, 2, 3, 4, 0, 0, 5, 6]);
     }
