@@ -116,8 +116,6 @@ pub use allocation::EfiAllocator;
 
 /// C wrappers for EFI based hashing.
 pub mod efi_hash_c;
-/// EFI backed implementations for profiling framework.
-pub mod profiling;
 /// Idiomatic wrappers around EFI protocols.
 pub mod protocol;
 pub mod utils;

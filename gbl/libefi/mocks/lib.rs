@@ -21,7 +21,6 @@
 
 extern crate alloc;
 
-pub mod profiling;
 pub mod protocol;
 pub mod utils;
 
