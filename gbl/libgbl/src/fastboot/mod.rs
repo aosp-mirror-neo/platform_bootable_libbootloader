@@ -68,7 +68,7 @@ const ERR_CRITICAL_LOCKED: &str = "Device is critical-locked";
 const ERR_UNLOCK_PROHIBITED: &str = "Flashing unlock is not allowed";
 const ERR_ALREADY_LOCKED: &str = "Already locked";
 const ERR_ALREADY_UNLOCKED: &str = "Already unlocked";
-use gbl_async::{join, join_mut, select, yield_now};
+use gbl_async::{block_on, join, join_mut, select, yield_now};
 use gbl_storage::{BlockIo, Disk, Gpt, GptSyncResult};
 use liberror::Error;
 use libgblutils::{
@@ -2831,6 +2831,96 @@ async fn download<'a>(
     .await;
     channel.0.borrow_mut().result.insert(res).as_ref().map_err(|e| *e)?;
     Ok(())
+}
+
+/// Provides methods to run GBL fastboot for both Android and Fuchsia boot flows.
+pub struct GblFastbootEntry<'a, G> {
+    pub(crate) ops: &'a mut G,
+    pub(crate) boot_buffer: BootBuffer<'a>,
+    pub(crate) result: &'a mut GblFastbootResult,
+    pub(crate) load_result: Option<core::result::Result<LoadedImages<'a>, &'a IntegrationError>>,
+    pub(crate) async_task_state: &'a Shared<AsyncTaskState>,
+}
+
+impl<'a, 'b, G> GblFastbootEntry<'b, G>
+where
+    G: GblOps<'a>,
+{
+    /// Runs GBL fastboot with the given buffer pool, tasks container, and transports/tcp channels.
+    ///
+    /// # Args
+    ///
+    /// * `buffer_pool`: An implementation of `BufferPool` wrapped in `Shared` for allocating
+    ///   download buffers.
+    /// * `tasks`: An implementation of `PinFutContainer` used as task container for GBL fastboot to
+    ///   schedule dynamically spawned async tasks.
+    /// * `transports`: Implementation of `GblGenericTransport` which exchanges fastboot packet
+    ///   from platform-specific channels i.e. USB.
+    /// * `tcp`: An implementation of `GblTcpStream` that represents TCP channel.
+    ///
+    /// Returns the user-defined GblOps on completion.
+    pub async fn run<'c: 'd, 'd>(
+        self,
+        buffer_pool: &'c Shared<impl BufferPool>,
+        tasks: impl PinFutContainer<'d> + 'd,
+        transports: &mut [impl GblGenericTransport],
+        tcp: Option<impl GblTcpStream>,
+    ) -> &'b mut G
+    where
+        'a: 'd,
+        'b: 'd,
+    {
+        let data = GblFbData {
+            boot_buffer: self.boot_buffer,
+            load_result: self.load_result,
+            async_task_state: Some(self.async_task_state),
+        };
+        *self.result = run_gbl_fastboot(self.ops, buffer_pool, tasks, transports, tcp, data).await;
+        self.ops
+    }
+
+    /// Runs fastboot with N pre-allocated async worker tasks.
+    ///
+    /// Comparing to `Self::run()`, this API simplifies the input by handling the implementation of
+    /// `BufferPool` and `PinFutContainer` internally. However it only supports up to N parallel
+    /// tasks where N is determined at build time. The download buffer will be split into N chunks
+    /// evenly.
+    ///
+    /// The choice of N depends on the level of parallelism the platform can support. For platform
+    /// with `n` storage devices that can independently perform non-blocking IO, it will require
+    /// `N = n + 1` in order to achieve parallel flashing to all storages plus a parallel download.
+    /// However, it is common for partitions that need to be flashed to be on the same block device
+    /// so flashing of them becomes sequential, in which case N can be smaller. Caller should take
+    /// into consideration usage pattern for determining N. If platform only has one physical disk
+    /// or does not expect disks to be parallelizable, a common choice is N=2 which allows
+    /// downloading and flashing to be performed in parallel.
+    ///
+    /// Returns the user-defined GblOps on completion.
+    pub fn run_n<const N: usize>(
+        self,
+        download: &mut [u8],
+        transports: &mut [impl GblGenericTransport],
+        tcp: Option<impl GblTcpStream>,
+    ) -> &'b mut G {
+        if N < 1 {
+            return self.run_n::<1>(download, transports, tcp);
+        }
+        // Splits into N download buffers.
+        let pool: ArrayVec<_, N> =
+            ArrayVec::from_iter(download.chunks_exact_mut(download.len() / N).map(Some));
+        let data = GblFbData {
+            boot_buffer: self.boot_buffer,
+            load_result: self.load_result,
+            async_task_state: Some(self.async_task_state),
+        };
+        *self.result = block_on(run_gbl_fastboot_stack::<N>(self.ops, pool, transports, tcp, data));
+        self.ops
+    }
+
+    /// Returns the user defined GblOps.
+    pub fn ops(&mut self) -> &mut G {
+        self.ops
+    }
 }
 
 /// Runs GBL fastboot on the given USB/TCP channels.

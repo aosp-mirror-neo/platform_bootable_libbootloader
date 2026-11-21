@@ -13,9 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    android_boot::GblFastbootEntry,
     constants::{PAGE_SIZE, ZIRCON_KERNEL_ALIGNMENT},
-    fastboot::{AsyncTaskState, LoadedImageInfo},
+    fastboot::{AsyncTaskState, GblFastbootEntry, LoadedImageInfo},
     fuchsia_boot::{
         fixup_zbi_items, read_zircon_image, vboot::zircon_verify_kernel_in_place,
         zbi_split_unused_buffer_mut, zircon_check_boot_mode, zircon_part_name, GblAbrOps,

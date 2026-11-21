@@ -18,9 +18,7 @@ use crate::{
     device_tree::{DtSourceLocation, SelectedDtComponentsMetadata},
     fastboot::{
         boot_items::{BootItem, BootItemContainer},
-        run_gbl_fastboot, run_gbl_fastboot_stack, split_loaded_android, AsyncTaskState,
-        GblFastbootResult, GblFbData, GblGenericTransport, GblTcpStream, LoadedImageInfo,
-        PinFutContainer,
+        split_loaded_android, AsyncTaskState, GblFastbootEntry, LoadedImageInfo,
     },
     gbl_avb::{ops::query_partition_buffer, ArrayMaxSpecializedParts, LoadPartition, Verification},
     gbl_println,
@@ -28,16 +26,14 @@ use crate::{
     misc::{read_bootloader_message_to, write_bootloader_message},
     ops::{BootBufferType, OneShotBootMode, RebootMode},
     slots::{slotted_part, Slot},
-    GblOps, IntegrationError, Result,
+    GblOps, Result,
 };
-use arrayvec::ArrayVec;
 use bootparams::{bootconfig::BootConfigBuilder, entry::CommandlineParser};
 use core::{ffi::CStr, fmt::Write, ops::Range};
 use fdt::Fdt;
-use gbl_async::block_on;
 use libbuild_number::{format_build_fingerprint, format_build_vcs_info, BUILD_NUMBER, VERSION};
 use liberror::Error;
-use libgblutils::{buffer_pool::BufferPool, shared::Shared};
+use libgblutils::shared::Shared;
 use misc::AndroidBootMode;
 
 mod avf;
@@ -564,97 +560,6 @@ pub(crate) struct LoadedImages<'a> {
     pub(crate) kernel: &'a [u8],
 }
 
-/// Provides methods to run GBL fastboot.
-pub struct GblFastbootEntry<'a, G> {
-    pub(crate) ops: &'a mut G,
-    pub(crate) boot_buffer: BootBuffer<'a>,
-    pub(crate) result: &'a mut GblFastbootResult,
-    pub(crate) load_result: Option<core::result::Result<LoadedImages<'a>, &'a IntegrationError>>,
-    pub(crate) async_task_state: &'a Shared<AsyncTaskState>,
-}
-
-impl<'a, 'b, G> GblFastbootEntry<'b, G>
-where
-    G: GblOps<'a>,
-{
-    /// Runs GBL fastboot with the given buffer pool, tasks container, and transports/tcp channels.
-    ///
-    /// # Args
-    ///
-    /// * `buffer_pool`: An implementation of `BufferPool` wrapped in `Shared` for allocating
-    ///   download buffers.
-    /// * `tasks`: An implementation of `PinFutContainer` used as task container for GBL fastboot to
-    ///   schedule dynamically spawned async tasks.
-    /// * `transports`: Implementation of `GblGenericTransport` which exchanges fastboot packet
-    ///   from platform.
-    ///   specific channels i.e. UX.
-    /// * `tcp`: An implementation of `GblTcpStream` that represents TCP channel.
-    ///
-    /// Returns the user-defined GblOps on completion.
-    pub async fn run<'c: 'd, 'd>(
-        self,
-        buffer_pool: &'c Shared<impl BufferPool>,
-        tasks: impl PinFutContainer<'d> + 'd,
-        transports: &mut [impl GblGenericTransport],
-        tcp: Option<impl GblTcpStream>,
-    ) -> &'b mut G
-    where
-        'a: 'd,
-        'b: 'd,
-    {
-        let data = GblFbData {
-            boot_buffer: self.boot_buffer,
-            load_result: self.load_result,
-            async_task_state: Some(self.async_task_state),
-        };
-        *self.result = run_gbl_fastboot(self.ops, buffer_pool, tasks, transports, tcp, data).await;
-        self.ops
-    }
-
-    /// Runs fastboot with N pre-allocated async worker tasks.
-    ///
-    /// Comparing  to `Self::run()`, this API   simplifies the input by handling the implementation of
-    /// `BufferPool` and `PinFutContainer` internally . However it only supports up to N parallel
-    /// tasks where N is determined at build time. The download buffer will be split into N chunks
-    /// evenly.
-    ///
-    /// The choice of N depends on the level of parallelism the platform can support. For platform
-    /// with `n` storage devices that can independently perform non-blocking IO, it will required
-    /// `N = n + 1` in order to achieve parallel flashing to all storages plus a parallel download.
-    /// However, it is common for partitions that need to be flashed to be on the same block device
-    /// so flashing of them becomes sequential, in which case N can be smaller. Caller should take
-    /// into consideration usage pattern for determining N. If platform only has one physical disk
-    /// or does not expect disks to be parallelizable, a common choice is N=2 which allows
-    /// downloading and flashing to be performed in parallel.
-    ///
-    /// Returns the user-defined GblOps on completion.
-    pub fn run_n<const N: usize>(
-        self,
-        download: &mut [u8],
-        transports: &mut [impl GblGenericTransport],
-        tcp: Option<impl GblTcpStream>,
-    ) -> &'b mut G {
-        if N < 1 {
-            return self.run_n::<1>(download, transports, tcp);
-        }
-        // Splits into N download buffers.
-        let pool: ArrayVec<_, N> =
-            ArrayVec::from_iter(download.chunks_exact_mut(download.len() / N).map(Some));
-        let data = GblFbData {
-            boot_buffer: self.boot_buffer,
-            load_result: self.load_result,
-            async_task_state: Some(self.async_task_state),
-        };
-        *self.result = block_on(run_gbl_fastboot_stack::<N>(self.ops, pool, transports, tcp, data));
-        self.ops
-    }
-
-    /// Returns the user defined GblOps
-    pub fn ops(&mut self) -> &mut G {
-        self.ops
-    }
-}
-
 /// Contains various boot buffers
 #[derive(Debug, Default)]
 pub struct BootBuffer<'a> {
@@ -894,6 +799,7 @@ pub(crate) mod tests {
             PartitionBuffer,
         },
         tests::{read_test_data, read_test_data_as_str, test_data_exists, PVMFW_DATA_ALIGNMENT},
+        IntegrationError,
     };
     use avf::{
         test::{dummy_pvmfw_partition, DUMMY_VENDOR_HANDOVER},
