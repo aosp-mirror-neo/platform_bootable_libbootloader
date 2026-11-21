@@ -23,7 +23,6 @@ use arrayvec::ArrayVec;
 use core::{convert::Infallible, ffi::CStr, fmt::Write, ops::DerefMut, ptr::null};
 use efi::{
     efi_print, efi_println,
-    profiling::EfiProfileBackend,
     protocol::{
         dt_fixup::DtFixupProtocol,
         gbl_efi_avb::GblAvbProtocol,
@@ -82,7 +81,6 @@ use libgbl::{
     GblOps, Os,
 };
 use libgblutils::buffer_pool::BufferPool;
-use libprofile::ProfileBackend;
 use spin::Mutex;
 use static_assertions::{const_assert, const_assert_eq};
 use zerocopy::IntoBytes;
@@ -1123,10 +1121,6 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
 
     fn get_base_sp(&mut self) -> Option<usize> {
         Some(self.base_sp)
-    }
-
-    fn get_profiling_backend(&self) -> impl ProfileBackend {
-        EfiProfileBackend::new(self.efi_entry)
     }
 
     fn get_firmware_version_metrics(&self) -> FirmwareVersionMetrics {

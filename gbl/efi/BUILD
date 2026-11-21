@@ -47,7 +47,6 @@ rust_library(
     }),
     crate_name = "gbl_efi",
     edition = "2024",
-    proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
     deps = [
         "@arrayvec",
         "@bytes",
@@ -62,7 +61,6 @@ rust_library(
         "@gbl//libfdt",
         "@gbl//libgbl",
         "@gbl//libgblutils",
-        "@gbl//libprofile",
         "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//libtrace",

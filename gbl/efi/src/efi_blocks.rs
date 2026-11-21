@@ -18,7 +18,6 @@ use bytes::buf::UninitSlice;
 use core::cmp::max;
 use efi::{
     efi_println,
-    profiling::EfiProfileBackend,
     protocol::{
         block_io::BlockIoProtocol, block_io2::BlockIo2Protocol, device_path::DevicePathProtocol,
         erase_block::EraseBlockProtocol, Protocol,
@@ -30,7 +29,6 @@ use gbl_async::block_on;
 use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt, GPT_MAX_NUM_ENTRIES};
 use liberror::Error;
 use libgbl::partition::GblDisk;
-use libprofile_macros::profile;
 use safemath::SafeNum;
 
 /// `EfiBlockDeviceIo` wraps an EFI `BlockIoProtocol` and optionally a `BlockIo2Protocol` and
@@ -125,7 +123,6 @@ pub type EfiGblDisk<'a> =
     GblDisk<Disk<EfiBlockDeviceIo<'a>, ArrayVec<Option<Box<[u8]>>, 2>>, Gpt<Vec<u8>>>;
 
 /// Finds and returns all EFI devices supporting either EFI_BLOCK_IO or EFI_BLOCK_IO2 protocol.
-#[profile(backend = EfiProfileBackend::new(efi_entry))]
 pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<Vec<EfiGblDisk<'_>>, Error> {
     let bs = efi_entry.system_table().boot_services();
     let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
@@ -139,7 +136,7 @@ pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<Vec<EfiGblDisk<'_>>, E
             block_io.with_lock::<EFI_TPL_APPLICATION, _>(efi_entry, || {
                 // SAFETY: the protocol is locked while we access `media`, we
                 // clone it here for safe access outside the critical section.
-                block_io.media().unwrap().clone()
+                *block_io.media().unwrap()
             })
         };
         if media.logical_partition {

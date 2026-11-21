@@ -41,7 +41,6 @@ use core::{
 #[cfg(feature = "fuchsia")]
 use libgblutils::aligned_subslice;
 use libgblutils::buffer_pool::BufferPool;
-use libprofile::ProfileBackend;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
@@ -669,9 +668,6 @@ pub trait GblOps<'a> {
         gbl_println!(self, "{s}");
     }
 
-    /// Provides backend specific hooks for profiling.
-    fn get_profiling_backend(&self) -> impl ProfileBackend;
-
     /// Gets the firmware api level.
     fn get_fw_api_level(&self) -> Result<u64, Error>;
 
@@ -1058,10 +1054,6 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         unreachable!();
     }
 
-    fn get_profiling_backend(&self) -> impl ProfileBackend {
-        self.ops.get_profiling_backend()
-    }
-
     fn get_fw_api_level(&self) -> Result<u64, Error> {
         self.ops.get_fw_api_level()
     }
@@ -1095,7 +1087,6 @@ pub(crate) mod test {
     use fdt::Fdt;
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
-    use libprofile::{ProfileTimer, Reporter};
     use libutils::snprintf;
     use std::{
         cell::{Cell, RefCell, RefMut},
@@ -1104,7 +1095,6 @@ pub(crate) mod test {
         fmt::Debug,
         fmt::Write,
         ops::{Deref, DerefMut},
-        time::Duration,
     };
     #[cfg(feature = "fuchsia")]
     use zbi::{ZbiFlags, ZbiType};
@@ -1541,29 +1531,6 @@ pub(crate) mod test {
             }
             self.write_to_partition_sync(name, off, &mut contents[..]).unwrap();
         }
-    }
-
-    #[derive(Copy, Clone)]
-    struct NullProfiler {}
-
-    impl ProfileBackend for NullProfiler {
-        fn new_timer(&self) -> impl ProfileTimer {
-            *self
-        }
-
-        fn reporter(&self) -> impl Reporter {
-            *self
-        }
-    }
-
-    impl ProfileTimer for NullProfiler {
-        fn elapsed(&self) -> Duration {
-            Duration::ZERO
-        }
-    }
-
-    impl Reporter for NullProfiler {
-        fn report(&self, _: &'static str, _: &'static str, _: Duration) {}
     }
 
     impl<'a, 'p: 'a> GblOps<'a> for FakeGblOps<'a, 'p> {
@@ -2077,10 +2044,6 @@ pub(crate) mod test {
             self.base_sp
         }
 
-        fn get_profiling_backend(&self) -> impl ProfileBackend {
-            NullProfiler {}
-        }
-
         fn get_fw_api_level(&self) -> Result<u64, Error> {
             self.fw_api_level.unwrap_or(Err(Error::Unsupported))
         }
@@ -2383,10 +2346,6 @@ pub(crate) mod test {
             _part: &str,
         ) -> Result<FastbootPartitionType, Error> {
             Err(Error::Unsupported)
-        }
-
-        fn get_profiling_backend(&self) -> impl ProfileBackend {
-            NullProfiler {}
         }
 
         fn get_fw_api_level(&self) -> Result<u64, Error> {
