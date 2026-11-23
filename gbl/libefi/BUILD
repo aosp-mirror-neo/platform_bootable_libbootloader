@@ -43,7 +43,6 @@ rust_library(
         "@gbl//libfdt",
         "@gbl//libgbl",
         "@gbl//libgblutils",
-        "@gbl//libprofile",
         "@gbl//libsafemath",
         "@gbl//libtrace",
         "@gbl//libutils",
@@ -115,7 +114,6 @@ cc_test(
 rust_test(
     name = "libefi_test",
     crate = ":libefi",
-    proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
     deps = [
         "@avb//:libavb_c_sha_staticlib",
         "@gbl//libavb:sysdeps",
@@ -140,7 +138,6 @@ rust_library(
         "@gbl//libfdt",
         "@gbl//libgbl",
         "@gbl//libgblutils",
-        "@gbl//libprofile",
         "@mockall",
     ],
 )

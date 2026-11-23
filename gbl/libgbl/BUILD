@@ -51,7 +51,6 @@ rust_library(
         "@gbl//toolchain:prod": [],
     }),
     edition = "2024",
-    proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
     visibility = ["//visibility:public"],
     deps = [
         "@arrayvec",
@@ -77,7 +76,6 @@ rust_library(
         "@gbl//liblp",
         "@gbl//libmisc",
         "@gbl//libopendice",
-        "@gbl//libprofile",
         "@gbl//libpvmfwconfig",
         "@gbl//libsafemath",
         "@gbl//libstorage",
