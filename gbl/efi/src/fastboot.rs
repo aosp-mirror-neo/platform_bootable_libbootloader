@@ -34,8 +34,8 @@ use fastboot::{Transport, MAX_COMMAND_SIZE};
 use gbl_async::{block_on_mut, YieldCounter};
 use liberror::{Error, Result};
 use libgbl::{
-    fastboot::{FutContext, GblGenericTransport, PinFutContainer},
-    {android_boot::GblFastbootEntry, GblOps},
+    fastboot::{FutContext, GblFastbootEntry, GblGenericTransport, PinFutContainer},
+    GblOps,
 };
 
 const FASTBOOT_WATCHDOG_TIMER_CODE: WatchdogTimerCode = WatchdogTimerCode::new(0x10000);
