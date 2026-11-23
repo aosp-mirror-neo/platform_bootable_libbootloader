@@ -196,15 +196,8 @@ impl ProtocolInfo for GblBootMemoryProtocol {
 }
 
 /// Helper for getting 'GblBootMemoryProtocol'.
-#[cfg(not(test))]
 fn get_protocol(entry: &EfiEntry) -> Result<Protocol<'_, GblBootMemoryProtocol>> {
     entry.system_table().boot_services().find_first_and_open::<GblBootMemoryProtocol>()
-}
-
-/// Placeholder for test build.
-#[cfg(test)]
-fn get_protocol(_: &EfiEntry) -> Result<Protocol<'static, GblBootMemoryProtocol>> {
-    unreachable!()
 }
 
 /// Represents a vendor reserved memory.
@@ -351,8 +344,6 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
                 Ok(v) => return Ok(Some(v)),
             };
 
-            // Finds an empty slot in the pool.
-            let mut add = BOOT_BUFFER_POOL.get(name, true)?;
             let (mut addr, mut sz) = (null_mut(), Default::default());
 
             let res = get_protocol(entry).and_then(|v| {
@@ -378,8 +369,15 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
                 Ok((NULL_PTR, 0)) | Err(Error::NotFound) => (NULL_PTR, default_alloc),
                 v => v?,
             };
+            if addr.is_null() && sz == 0 {
+                return Err(Error::NotFound);
+            }
+
+            // Reserves an empty slot in the pool only after confirming a non-empty buffer or
+            // fallback allocation so protocol errors or `default_alloc == 0` queries never leave a
+            // 0-byte entry registered in `BOOT_BUFFER_POOL`.
+            let mut add = BOOT_BUFFER_POOL.get(name, true)?;
             *add.0 = match (addr, sz) {
-                (NULL_PTR, 0) => return Err(Error::NotFound),
                 (NULL_PTR, size) => {
                     let buffer = vec![0u8; size + align - 1];
                     let offset = buffer.as_ptr().align_offset(align);
@@ -394,12 +392,19 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
                     efi_println!(entry, "Found {name:?} buffer: addr {addr:?}, sz: {sz:#x}.");
                     Buffer::Borrowed {
                         // SAFETY:
-                        // * `addr` is not NULL. NULL is handled by the arms above.
+                        // * `addr` is not NULL. NULL is handled by the arm above.
                         // * Protocol spec requires that the returned buffer must be valid for
                         //   read/write, have static lifetime and be exclusively accessed by GBL.
                         // * Protocol spec requires that the memory is unique for each `buf_type`
-                        //   id. `BOOT_BUFFER_POOL.get(name, true)?;` checks that we have not
-                        //   acquired the same buffer before.
+                        //   id. No live slice covers `[addr, addr + sz)`:
+                        //   `BOOT_BUFFER_POOL.get(name, false)` above returned `NotFound`, so
+                        //   `name` has no pool entry (any prior entry released via `clear(name)`
+                        //   locked its slot and dropped its slice before clearing `name`, while a
+                        //   buffer leaked through `BufferGuard::leak` keeps its slot locked and
+                        //   `name` registered so that query returns `NotReady` and never reaches
+                        //   here). Only `boot_buffer_op` touches function-local `BOOT_BUFFER_POOL`,
+                        //   and nothing between `get(name, false)` and `get(name, true)` re-enters
+                        //   it.
                         buffer: unsafe { from_raw_parts_mut(addr as _, sz) },
                         is_preloaded_partition: false,
                     }
@@ -501,5 +506,41 @@ mod test {
         assert_eq!(pool.get(&overflow, true).err(), Some(Error::OutOfResources));
         pool.clear_all().unwrap();
         assert!(pool.get(&overflow, true).is_ok(), "pool should accept entries after clear_all");
+    }
+
+    #[test]
+    fn test_get_boot_buffer_zero_default_and_protocol_error_do_not_poison_pool() {
+        crate::test::run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            // 1. A protocol lookup error (`EFI_STATUS_DEVICE_ERROR` when no `locate_handle` output
+            // is queued) must propagate without registering a 0-byte slot in `BOOT_BUFFER_POOL`.
+            assert_eq!(
+                gbl_get_boot_buffer(&efi_entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, 4096).err(),
+                Some(Error::DeviceError)
+            );
+
+            // 2. When `GblBootMemoryProtocol` is absent (`NotFound`) and `default == 0`,
+            // `gbl_get_boot_buffer` returns `Err(Error::NotFound)` without poisoning the pool.
+            crate::test::efi_call_traces().with(|traces| {
+                traces.borrow_mut().locate_handle_trace.outputs.push_back(vec![]);
+            });
+            assert_eq!(
+                gbl_get_boot_buffer(&efi_entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, 0).err(),
+                Some(Error::NotFound)
+            );
+
+            // 3. A subsequent call with `default > 0` allocates a properly aligned non-empty
+            // buffer, and `gbl_clear_boot_buffer` releases it cleanly.
+            crate::test::efi_call_traces().with(|traces| {
+                traces.borrow_mut().locate_handle_trace.outputs.push_back(vec![]);
+            });
+            let buf =
+                gbl_get_boot_buffer(&efi_entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL, 4096).unwrap();
+            assert_eq!(buf.len(), 4096);
+            assert_eq!((buf.as_ptr() as usize) % (2 * 1024 * 1024), 0);
+            drop(buf);
+            gbl_clear_boot_buffer(&efi_entry, GBL_EFI_BOOT_BUFFER_TYPE_KERNEL).unwrap();
+        });
     }
 }
