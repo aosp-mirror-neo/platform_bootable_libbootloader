@@ -34,7 +34,7 @@ use efi::{
         },
         gbl_efi_fastboot::GblFastbootProtocol,
         gbl_efi_os_configuration::GblOsConfigurationProtocol,
-        random_number_generator::{RandomNumberGeneratorProtocol, RngAlgorithm as EfiRngAlgorithm},
+        random_number_generator::{get_rng_bytes, RngAlgorithm as EfiRngAlgorithm},
         timestamp::TimestampProtocol,
         Protocol, Versioned,
     },
@@ -482,11 +482,7 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
     }
 
     fn get_random_bytes(&self, algorithm: GblRngAlgorithm, buffer: &mut [u8]) -> Result<()> {
-        self.efi_entry
-            .system_table()
-            .boot_services()
-            .find_first_and_open::<RandomNumberGeneratorProtocol>()
-            .and_then(|p| p.get_rng_bytes(gbl_to_efi_rng_algorithm(algorithm), buffer))
+        get_rng_bytes(self.efi_entry, gbl_to_efi_rng_algorithm(algorithm), buffer)
     }
 
     #[cfg(feature = "fuchsia")]

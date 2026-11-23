@@ -53,6 +53,7 @@ test_suite(
         "@gbl//libdecompress:libdecompress_test",
         "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:efi_avb_test",
+        "@gbl//libefi:libefi_rng_test",
         "@gbl//libefi:libefi_test",
         "@gbl//libefi:libefi_test_dev",
         "@gbl//libefi:mocks_test",

@@ -61,6 +61,14 @@ rust_library(
     ],
 )
 
+rust_test(
+    name = "libefi_rng_test",
+    crate = ":libefi_rng",
+    deps = [
+        "@gbl//libefi_types",
+    ],
+)
+
 cc_library(
     name = "efi_sha_header",
     hdrs = [

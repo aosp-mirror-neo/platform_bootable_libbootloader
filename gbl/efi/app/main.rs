@@ -28,7 +28,7 @@ use cfg_if::cfg_if;
 use core::panic::PanicInfo;
 use efi::{
     efi_global_allocator, efi_println, initialize,
-    protocol::random_number_generator::{RandomNumberGeneratorProtocol, RngAlgorithm},
+    protocol::random_number_generator::{get_rng, RngAlgorithm},
     report_error_and_reset_with_global_entry, EfiEntry,
 };
 use efi_types::{EfiHandle, EfiSystemTable, GBL_EFI_DEBUG_ERROR_TAG_ASSERTION_ERROR};
@@ -55,11 +55,7 @@ extern crate boringssl_sysdeps;
 extern crate efi_rng;
 
 fn generate_canary(entry: &EfiEntry) -> usize {
-    let canary = entry
-        .system_table()
-        .boot_services()
-        .find_first_and_open::<RandomNumberGeneratorProtocol>()
-        .and_then(|rng_proto| rng_proto.get_rng(RngAlgorithm::Default));
+    let canary = get_rng(entry, RngAlgorithm::Default);
 
     cfg_if! {
         if #[cfg(feature = "gbl_dev")] {
