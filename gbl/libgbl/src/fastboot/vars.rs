@@ -65,6 +65,9 @@ const BLOCK_DEVICE: &'static str = "block-device";
 const TOTAL_BLOCKS: &'static str = "total-blocks";
 const BLOCK_SIZE: &'static str = "block-size";
 
+const LOGICAL_BLOCK_SIZE: &'static str = "logical-block-size";
+const ERASE_BLOCK_SIZE: &'static str = "erase-block-size";
+
 const DEFAULT_BLOCK: &'static str = "gbl-default-block";
 
 const UNLOCKED: &'static str = "unlocked";
@@ -87,6 +90,8 @@ pub(crate) const GETVAR_ALL_FILTER: &'static [&'static str] = &[
     PARTITION_TYPE,
     PARTITION_GUID,
     BLOCK_DEVICE,
+    LOGICAL_BLOCK_SIZE,
+    ERASE_BLOCK_SIZE,
     DEFAULT_BLOCK,
     MAX_DOWNLOAD_SIZE,
     UNLOCKED,
@@ -213,7 +218,8 @@ where
         // Checks that all arguments are valid str first.
         args_str.clone().find(|v| v.is_err()).unwrap_or(Ok(""))?;
         let args_str = args_str.map(|v| v.unwrap());
-        Ok(match name.to_str()? {
+        let name_str = name.to_str()?;
+        Ok(match name_str {
             MAX_DOWNLOAD_SIZE => snprintf!(out, "{:#x}", self.max_download_size().await),
             IS_USERSPACE => snprintf!(out, "no"),
             VERSION_BOOTLOADER => snprintf!(out, "gbl.{}", BUILD_NUMBER),
@@ -236,6 +242,15 @@ where
             PARTITION_GUID => self.get_var_partition_guid(args_str, out)?,
             STREAM_SEGMENT_SIZE => self.get_var_stream_segment_size(out)?,
             BLOCK_DEVICE => self.get_var_block_device(args_str, out)?,
+            LOGICAL_BLOCK_SIZE | ERASE_BLOCK_SIZE => {
+                match self.get_var_block_geometry(name_str, args_str)? {
+                    Some(val) => snprintf!(out, "{:#x}", val),
+                    None => {
+                        let sz = self.gbl_ops.fastboot_variable(name, args, out)?;
+                        from_utf8(out.get(..sz).ok_or("Invalid variable value size")?)?
+                    }
+                }
+            }
             DEFAULT_BLOCK => self.get_var_default_block(out)?,
             UNLOCKED => self.get_var_unlocked(fastboot::LockType::Device, out)?,
             UNLOCKED_CRITICAL => self.get_var_unlocked(fastboot::LockType::Critical, out)?,
@@ -294,6 +309,13 @@ where
         send.send_var_info(MAX_FETCH_SIZE, [], MAX_FETCH_SIZE_VAL).await?;
         self.get_all_block_device(send).await?;
         send.send_var_info(DEFAULT_BLOCK, [], self.get_var_default_block(&mut buf)?).await?;
+        for var in [LOGICAL_BLOCK_SIZE, ERASE_BLOCK_SIZE] {
+            match self.get_var_block_geometry(var, [].into_iter()) {
+                Ok(Some(val)) => send.send_var_info(var, [], snprintf!(buf, "{:#x}", val)).await?,
+                Ok(None) => {}
+                Err(e) => gbl_println!(self.gbl_ops, "Failed to get {var}: {e:?}"),
+            }
+        }
         self.get_all_partition_vars(send).await?;
 
         send.send_var_info(STREAM_SEGMENT_SIZE, [], self.get_var_stream_segment_size(&mut buf)?)
@@ -530,6 +552,47 @@ where
                 .await?;
         }
         Ok(())
+    }
+
+    /// "fastboot getvar logical-block-size[:<partition>]"
+    /// "fastboot getvar erase-block-size[:<partition>]"
+    ///
+    /// With a partition argument, reports the value of the block device it resolves to (see
+    /// `parse_partition_arg()`). Otherwise, reports the value of the default block device if set,
+    /// or the maximum among all block devices.
+    ///
+    /// Returns `Ok(None)` so that the platform can provide the value if there is no block device,
+    /// or if the partition is not found on GBL's disks and the argument has no '/'.
+    fn get_var_block_geometry<'t>(
+        &self,
+        name: &str,
+        mut args: impl Iterator<Item = &'t str> + Clone,
+    ) -> CommandResult<Option<u64>> {
+        let blk_ids = match next_arg(&mut args) {
+            Some(raw_part) => {
+                let (part, blk_id, _, _) = self.parse_partition_arg(raw_part)?;
+                match self.find_partition(part, blk_id) {
+                    Ok((blk_id, _)) => blk_id..blk_id + 1,
+                    Err(Error::NotFound) if !raw_part.contains('/') => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            None => match self.default_block {
+                Some(blk_id) => blk_id..blk_id + 1,
+                None => 0..self.disks.len(),
+            },
+        };
+        let mut max = None;
+        for blk_id in blk_ids {
+            let info = self.disks[blk_id].block_info();
+            let val = match name {
+                LOGICAL_BLOCK_SIZE => info.block_size,
+                ERASE_BLOCK_SIZE => info.erase_block_size()?,
+                _ => return Err("Invalid block geometry variable".into()),
+            };
+            max = max.max(Some(val));
+        }
+        Ok(max)
     }
 
     /// "fastboot getvar gbl-default-block"

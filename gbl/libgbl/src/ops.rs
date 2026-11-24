@@ -1454,6 +1454,9 @@ pub(crate) mod test {
         /// Custom handler for `Self::handle_loaded_os`.
         pub handle_loaded_os_handler:
             Option<&'a mut dyn FnMut(&[u8], &[u8], &[u8]) -> Result<(), Error>>,
+
+        /// Custom fastboot variables returned by `fastboot_variable` in tests.
+        pub custom_fastboot_vars: Vec<(Vec<CString>, CString)>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -1843,6 +1846,17 @@ pub(crate) mod test {
             mut args: impl Iterator<Item = &'arg CStr> + Clone,
             out: &mut [u8],
         ) -> Result<usize, Error> {
+            for (k, v) in &self.custom_fastboot_vars {
+                if k.split_first().is_some_and(|(first, rest)| {
+                    first.as_c_str() == name
+                        && rest
+                            .iter()
+                            .map(CString::as_c_str)
+                            .eq(args.clone().filter(|a| !a.is_empty()))
+                }) {
+                    return Ok(snprintf!(out, "{}", v.to_str()?).len());
+                }
+            }
             match name.to_str()? {
                 Self::GBL_TEST_VAR => {
                     Ok(snprintf!(out, "{}:{:?}", Self::GBL_TEST_VAR_VAL, args.next()).len())

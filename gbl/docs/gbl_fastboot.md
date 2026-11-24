@@ -50,6 +50,20 @@ extraction commands are only available when the device is **unlocked**:
 
 Attempts to run these commands on a locked device will result in a Fastboot failure.
 
+## Block Geometry Variables
+
+`logical-block-size` and `erase-block-size` report block device sizes in bytes,
+as hex. With a partition argument (e.g.
+`fastboot getvar erase-block-size:userdata`), GBL reports the values of the
+block device that the argument resolves to, following the rules in the next
+section; if the partition is not managed by GBL and the argument contains no
+`/`, `getvar` falls back to firmware `GetVar()`. Without a partition argument,
+GBL reports the values of the default block device if set via
+`fastboot oem gbl-set-default-block`, or otherwise the maximum among all block
+devices, computed separately for each variable; if GBL has no block devices,
+`getvar` falls back to firmware `GetVar()`. `getvar all` lists only the values
+without a partition argument.
+
 ## The Partition Argument
 
 Fastboot commands such as `fastboot flash`, `fastboot fetch` and
