@@ -33,7 +33,10 @@ disk while concurrently receiving the next image over USB.
 - optional: enables block IO specific erase.
 
 If provided, GBL may use this protocol when erasing data on a block device
-instead of writing zeroes.
+instead of writing zeroes. GBL also reports `EraseLengthGranularity` multiplied
+by the block size as the erase block size (`fastboot getvar erase-block-size`).
+Without this protocol, or with a granularity of 0, the erase block size is
+reported as the logical block size.
 
 ### DevicePathProtocol
 

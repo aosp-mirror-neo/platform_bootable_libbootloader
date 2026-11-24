@@ -150,10 +150,11 @@ NULL-terminated UTF-8 encoded string.
 
 In addition to purely vendor-defined variables, GBL queries `GetVar()` (and
 allows `GetVarAll()` entries) for `has-slot`, `partition-size`,
-`partition-type`, `partition-guid`, and `partition-start` when the target
-partition is a virtual partition not managed by GBL (i.e. not a GPT or raw block
-partition, and not a `super` dynamic partition for `has-slot`). `has-slot` is
-only queried when device slotting is supported.
+`partition-type`, `partition-guid`, `partition-start`, `logical-block-size`, and
+`erase-block-size` when the target partition is a virtual partition not managed
+by GBL (i.e. not a GPT or raw block partition, and not a `super` dynamic
+partition for `has-slot`). `has-slot` is only queried when device slotting is
+supported.
 
 An example client interaction:
 

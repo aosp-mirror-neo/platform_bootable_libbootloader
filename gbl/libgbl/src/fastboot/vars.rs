@@ -74,6 +74,9 @@ const BLOCK_DEVICE: &str = "block-device";
 const TOTAL_BLOCKS: &str = "total-blocks";
 const BLOCK_SIZE: &str = "block-size";
 
+const LOGICAL_BLOCK_SIZE: &str = "logical-block-size";
+const ERASE_BLOCK_SIZE: &str = "erase-block-size";
+
 const DEFAULT_BLOCK: &str = "gbl-default-block";
 
 const UNLOCKED: &str = "unlocked";
@@ -365,6 +368,9 @@ where
             PARTITION_TYPE => self.get_var_partition_type(gbl_ops, args_str, probe_only, out)?,
             PARTITION_GUID => self.get_var_partition_guid(args_str, out)?,
             BLOCK_DEVICE => Some(self.get_var_block_device(args_str, out)?),
+            LOGICAL_BLOCK_SIZE | ERASE_BLOCK_SIZE => {
+                self.get_var_block_geometry(name_str, args_str, out)?
+            }
             // Queries the secure world via AVB.
             UNLOCKED => Some(match probe_only {
                 true => "",
@@ -452,6 +458,13 @@ where
         self.send_builtin_var(MAX_FETCH_SIZE, &mut buf, send).await?;
         self.get_all_block_device(send).await?;
         self.send_builtin_var(DEFAULT_BLOCK, &mut buf, send).await?;
+        for var in [LOGICAL_BLOCK_SIZE, ERASE_BLOCK_SIZE] {
+            match self.get_var_block_geometry(var, [].into_iter(), &mut buf) {
+                Ok(Some(val)) => send.send_var_info(var, [], val).await?,
+                Ok(None) => {}
+                Err(e) => gbl_println!(gbl_ops, "Failed to get {var}: {e}"),
+            }
+        }
         self.get_all_partition_vars(gbl_ops, send).await?;
 
         self.send_builtin_var(STREAM_SEGMENT_SIZE, &mut buf, send).await?;
@@ -740,6 +753,51 @@ where
                 .await?;
         }
         Ok(())
+    }
+
+    /// "fastboot getvar logical-block-size[:<partition>]"
+    /// "fastboot getvar erase-block-size[:<partition>]"
+    ///
+    /// With a partition argument, reports the value of the block device it resolves to (see
+    /// `parse_partition_arg()`). Otherwise, reports the value of the default block device if set,
+    /// or the maximum among all block devices.
+    ///
+    /// Returns `Ok(None)` so that the platform can provide the value if there is no block device,
+    /// or if the partition is not found on GBL's disks and the argument has no '/'.
+    fn get_var_block_geometry<'s, 't>(
+        &self,
+        name: &str,
+        mut args: impl Iterator<Item = &'t str> + Clone,
+        out: &'s mut [u8],
+    ) -> CommandResult<Option<&'s str>> {
+        let blk_ids = match next_arg(&mut args) {
+            Some(raw_part) => {
+                let (part, blk_id, _, _) = self.parse_partition_arg(raw_part)?;
+                match self.find_partition(part, blk_id) {
+                    Ok((blk_id, _)) => blk_id..blk_id + 1,
+                    Err(Error::PartitionNotFound) if !raw_part.contains('/') => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            None => match self.default_block {
+                Some(blk_id) => blk_id..blk_id + 1,
+                None => 0..self.disks.len(),
+            },
+        };
+        let mut max = None;
+        for blk_id in blk_ids {
+            let info = self.disks[blk_id].block_info();
+            let val = match name {
+                LOGICAL_BLOCK_SIZE => info.block_size,
+                ERASE_BLOCK_SIZE => info.erase_block_size()?,
+                _ => return Err("Invalid block geometry variable".into()),
+            };
+            max = max.max(Some(val));
+        }
+        let Some(val) = max else {
+            return Ok(None);
+        };
+        Ok(Some(snprintf!(out, "{:#x}", val)))
     }
 
     /// "fastboot getvar gbl-default-block"

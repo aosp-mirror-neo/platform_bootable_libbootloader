@@ -64,13 +64,23 @@ implemented by GBL. Firmware should report them via
 For virtual partitions not managed by GBL (for example, packed firmware images
 that do not exist as GPT or raw block partitions, and, for `has-slot`, are not
 dynamic partitions inside `super`), firmware may also report `has-slot`,
-`partition-size`, `partition-type`, `partition-guid`, and `partition-start` via
-`GetVar()` and `GetVarAll()`. Because GBL currently implements `partition-*`
-only for GPT and raw block partitions, firmware may also supply `partition-*`
-for dynamic partitions inside `super`. Partitions managed by GBL always take
-precedence and cannot be overridden by firmware. When device slotting is
-unsupported, GBL answers `no` for every `has-slot` query without consulting
-firmware.
+`partition-size`, `partition-type`, `partition-guid`, `partition-start`,
+`logical-block-size`, and `erase-block-size` via `GetVar()` and `GetVarAll()`.
+Because GBL currently implements `partition-*` only for GPT and raw block
+partitions, firmware may also supply `partition-*` for dynamic partitions inside
+`super`. Partitions managed by GBL always take precedence and cannot be
+overridden by firmware. When device slotting is unsupported, GBL answers `no`
+for every `has-slot` query without consulting firmware.
+
+`logical-block-size` and `erase-block-size` report block device sizes in bytes,
+as hex. With a partition argument (e.g.
+`fastboot getvar erase-block-size:userdata`), GBL reports the values of the
+block device that the argument resolves to, following the rules in the next
+section. Without one, GBL reports the values of the default block device if set
+via `fastboot oem gbl-set-default-block`, or otherwise the maximum among all
+block devices, computed separately for each variable. Firmware values for these
+variables without a partition argument are only used if GBL has no block device.
+`getvar all` lists only the values without a partition argument.
 
 ## The Partition Argument
 

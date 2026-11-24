@@ -3736,6 +3736,98 @@ pub(crate) mod test {
         check_var(&mut gbl_fb, "stream-segment-size", "", "0x1000");
     }
 
+    #[test]
+    fn test_get_var_block_geometry() {
+        let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
+        let mut load_buffer = AlignedBuffer::new(MiB!(8), KERNEL_ALIGNMENT);
+        let mut storage = FakeGblOpsStorage::default();
+        // GPT test disks use 512-byte blocks and raw test disks use 1-byte blocks. Erase blocks
+        // span 2 blocks for both.
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.custom_fastboot_vars = vec![
+            // Virtual partitions not managed by GBL fall back to the platform.
+            custom_var_entry(&["erase-block-size", "bootloader_a"], "0x80000"),
+            // Poison entries for GBL-managed values.
+            custom_var_entry(&["erase-block-size"], "0xdead"),
+            custom_var_entry(&["logical-block-size:raw_0"], "0xdead"),
+            // Extended '/' syntax must not fall back to the platform.
+            custom_var_entry(&["erase-block-size", "boot_a/2"], "0xdead"),
+        ];
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(
+            &mut gbl_ops,
+            parts,
+            Task::run,
+            &tasks,
+            &dl_buffers,
+            GblFbData { boot_buffer: load_buffer.as_mut().into(), ..Default::default() },
+        );
+
+        // Without a partition and default block, reports the maximum among all block devices.
+        check_var(&mut gbl_fb, "logical-block-size", "", "0x200");
+        check_var(&mut gbl_fb, "erase-block-size", "", "0x400");
+
+        // With a partition, reports the block device containing it.
+        check_var(&mut gbl_fb, "logical-block-size", "boot_a", "0x200");
+        check_var(&mut gbl_fb, "erase-block-size", "boot_a", "0x400");
+        check_var(&mut gbl_fb, "logical-block-size", "raw_0", "0x1");
+        check_var(&mut gbl_fb, "erase-block-size", "raw_0", "0x2");
+        check_var(&mut gbl_fb, "erase-block-size", "vendor_boot_a/1", "0x400");
+        check_var(&mut gbl_fb, "erase-block-size", "/2", "0x2");
+        check_var(&mut gbl_fb, "erase-block-size", "bootloader_a", "0x80000");
+        check_var_failure(&mut gbl_fb, "erase-block-size", "non-existent");
+        check_var_failure(&mut gbl_fb, "erase-block-size", "boot_a/2");
+
+        // Without a partition, reports the default block device if set.
+        gbl_fb.state.default_block = Some(2);
+        check_var(&mut gbl_fb, "logical-block-size", "", "0x1");
+        check_var(&mut gbl_fb, "erase-block-size", "", "0x2");
+        gbl_fb.state.default_block = None;
+
+        let mut logger = TestVarSender(vec![]);
+        block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
+        for expected in [
+            "logical-block-size: 0x200",
+            "erase-block-size: 0x400",
+            "erase-block-size:bootloader_a: 0x80000",
+        ] {
+            assert!(logger.0.iter().any(|v| v == expected), "missing expected var: {expected}");
+        }
+        for forbidden in [
+            "erase-block-size: 0xdead",
+            "logical-block-size:raw_0: 0xdead",
+            "erase-block-size:boot_a/2: 0xdead",
+        ] {
+            assert!(!logger.0.iter().any(|v| v == forbidden), "unexpected var leaked: {forbidden}");
+        }
+    }
+
+    #[test]
+    fn test_get_var_block_geometry_no_disks() {
+        let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 1]);
+        let storage = FakeGblOpsStorage::default();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        // Without block devices, GBL leaves these variables to the platform.
+        gbl_ops.custom_fastboot_vars = vec![custom_var_entry(&["erase-block-size"], "0x80000")];
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let boot_buffer = Default::default();
+        let mut gbl_fb =
+            GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers, boot_buffer);
+
+        check_var(&mut gbl_fb, "erase-block-size", "", "0x80000");
+        check_var_failure(&mut gbl_fb, "logical-block-size", "");
+
+        let mut logger = TestVarSender(vec![]);
+        block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
+        assert!(logger.0.iter().any(|v| v == "erase-block-size: 0x80000"));
+        assert!(!logger.0.iter().any(|v| v.starts_with("logical-block-size")));
+    }
+
     /// `TestVarSender` implements `TestVarSender`. It stores outputs in a vector of string.
     struct TestVarSender(Vec<String>);
 
@@ -3832,6 +3924,8 @@ pub(crate) mod test {
                 "block-device:7:total-blocks: 0x1c0",
                 "block-device:7:block-size: 0x1",
                 "gbl-default-block: None",
+                "logical-block-size: 0x200",
+                "erase-block-size: 0x400",
                 "partition-start:boot_a: 0x4400",
                 "partition-size:boot_a: 0x2000",
                 "partition-type:boot_a: raw",
@@ -6292,6 +6386,8 @@ pub(crate) mod test {
                 b"INFOblock-device:1:total-blocks: 0x100",
                 b"INFOblock-device:1:block-size: 0x200",
                 b"INFOgbl-default-block: None",
+                b"INFOlogical-block-size: 0x200",
+                b"INFOerase-block-size: 0x400",
                 b"INFOpartition-start:vendor_boot_a: 0x4400",
                 b"INFOpartition-size:vendor_boot_a: 0x1000",
                 b"INFOpartition-type:vendor_boot_a: raw",
@@ -6339,6 +6435,8 @@ pub(crate) mod test {
                 b"INFOblock-device:1:total-blocks: 0x100",
                 b"INFOblock-device:1:block-size: 0x200",
                 b"INFOgbl-default-block: None",
+                b"INFOlogical-block-size: 0x200",
+                b"INFOerase-block-size: 0x400",
                 b"INFOpartition-start:boot_a: 0x4400",
                 b"INFOpartition-size:boot_a: 0x2000",
                 b"INFOpartition-type:boot_a: raw",
